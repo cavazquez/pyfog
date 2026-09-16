@@ -5,6 +5,7 @@ from starlette.exceptions import HTTPException
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from pyfog import api, web
 from pyfog.config import PACKAGE_DIR, Settings
@@ -15,7 +16,12 @@ from pyfog.middleware import RequestLimitsMiddleware
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     application = FastAPI(
-        title="PyFog", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None
+        title="PyFog",
+        version="0.1.0",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        debug=settings.debug,
     )
     application.state.settings = settings
     application.state.engine = make_engine(settings.database_url)
@@ -34,6 +40,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.production:
         application.add_middleware(HTTPSRedirectMiddleware)
     application.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    if settings.trusted_proxy_ips:
+        application.add_middleware(ProxyHeadersMiddleware, trusted_hosts=settings.trusted_proxy_ips)
 
     async def http_error(request: Request, exc: Exception) -> Response:
         if not isinstance(exc, HTTPException):

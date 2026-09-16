@@ -72,7 +72,8 @@ unset PYFOG_INVENTORY_TOKEN
 Reemplazá la URL y el UUID por los de tu instalación. Para la prueba local se admite
 `--server http://127.0.0.1:8000`. En otro equipo se requiere HTTPS; una CA propia se configura con
 `--ca-file ca.pem`. El recolector rechaza redirecciones y no usa proxies heredados del entorno.
-El despliegue LAN con certificados y PXE pertenece a la siguiente etapa del roadmap.
+El [despliegue LAN con certificados](docs/https.md) ya está documentado; PXE pertenece a la
+siguiente etapa del roadmap.
 
 Si falla el envío, el archivo generado queda disponible. Para reenviar exactamente el mismo informe,
 con el token nuevamente en el entorno:
@@ -97,12 +98,17 @@ antiguo lo añade al historial sin reemplazar el hardware actual.
 | --- | --- |
 | `PYFOG_DATABASE_URL` | Base de datos; por defecto `sqlite:///./pyfog.db`. |
 | `PYFOG_SECRET_KEY` | Firma de cookies. Usar un valor aleatorio de al menos 32 caracteres. |
-| `PYFOG_ALLOWED_HOSTS` | Hosts permitidos, separados por comas. Por defecto solo loopback. |
-| `PYFOG_ENV` | `production` exige clave explícita, cookies seguras y redirección HTTPS. |
+| `PYFOG_SECRET_KEY_FILE` | Alternativa para leer la clave de sesión desde un archivo secreto; no se combina con la variable anterior. |
+| `PYFOG_ALLOWED_HOSTS` | Hosts permitidos, separados por comas. En desarrollo usa loopback; en producción es obligatorio y no admite `*`. |
+| `PYFOG_TRUSTED_PROXY_IPS` | IPs o CIDRs del proxy que puede enviar `X-Forwarded-*`; obligatorio en producción y no admite `*`. |
+| `PYFOG_DEBUG` | `true` o `false`; producción rechaza `true`. |
+| `PYFOG_ENV` | `production` exige clave, hosts y proxy explícitos, cookies seguras y redirección HTTPS. |
 
 Las variables se leen del entorno; no se carga automáticamente un archivo `.env`. En desarrollo,
 si falta `PYFOG_SECRET_KEY`, se genera una clave efímera y reiniciar el servidor invalida las sesiones.
-Las sesiones también tienen vencimiento del lado del servidor y se revocan al cerrar sesión.
+Las sesiones también tienen vencimiento del lado del servidor y se revocan al cerrar sesión. La guía
+de [HTTPS, proxy y CA local](docs/https.md) incluye el despliegue Docker con Caddy, certificados
+propios y el material público que recibirá el agente de arranque.
 
 Para recuperar el acceso:
 

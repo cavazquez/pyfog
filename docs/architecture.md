@@ -45,8 +45,9 @@ hardware inválido y MACs que no coinciden con el registro. Jinja2 escapa HTML y
 limita recursos al servidor.
 
 El desarrollo usa HTTP en loopback. El cliente exige HTTPS fuera de loopback y valida certificados;
-el modo `production` exige clave de sesión y cookies seguras. El empaquetado TLS, la confianza del
-agente PXE y los ajustes de proxy/red son trabajo posterior explícito en el roadmap.
+el modo `production` exige clave de sesión, hosts y proxy explícitos, cookies seguras y `DEBUG`
+apagado. [La guía HTTPS](./https.md) describe el proxy Caddy, la CA local y el material público que
+podrá recibir el agente PXE.
 
 ## Motor de imágenes previsto
 

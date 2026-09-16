@@ -1,0 +1,76 @@
+name: pyfog
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      PYFOG_ENV: production
+      PYFOG_DEBUG: "false"
+      PYFOG_DATABASE_URL: sqlite:////var/lib/pyfog/pyfog.db
+      PYFOG_ALLOWED_HOSTS: ${PYFOG_PUBLIC_HOST:?Definí PYFOG_PUBLIC_HOST},127.0.0.1
+      PYFOG_TRUSTED_PROXY_IPS: 172.30.0.0/24,127.0.0.1
+      PYFOG_SECRET_KEY_FILE: /run/secrets/pyfog_session_key
+    secrets:
+      - pyfog_session_key
+    volumes:
+      - pyfog_data:/var/lib/pyfog
+    expose:
+      - "8000"
+    networks:
+      backend:
+        ipv4_address: 172.30.0.10
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import Request, urlopen; assert urlopen(Request('http://127.0.0.1:8000/health', headers={'X-Forwarded-Proto': 'https'})).status == 200"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      PYFOG_PUBLIC_HOST: ${PYFOG_PUBLIC_HOST:?Definí PYFOG_PUBLIC_HOST}
+    ports:
+      - "${PYFOG_HTTP_PORT:-80}:80"
+      - "${PYFOG_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile.local-ca:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      backend:
+        ipv4_address: 172.30.0.2
+
+secrets:
+  pyfog_session_key:
+    file: ${PYFOG_SESSION_KEY_FILE:?Definí PYFOG_SESSION_KEY_FILE}
+
+volumes:
+  pyfog_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

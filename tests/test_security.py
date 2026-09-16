@@ -147,24 +147,66 @@ def test_untrusted_host_and_xss_are_blocked(admin, app, host_id):
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
 
 
-def test_production_requires_a_secret_and_secure_cookies():
-    import pytest
+def production_settings(**overrides):
+    values = {
+        "production": True,
+        "secret_key": "explicit-secret-with-at-least-32-characters",  # pragma: allowlist secret
+        "allowed_hosts": ["pyfog.test"],
+        "trusted_proxy_ips": ["testclient"],
+    }
+    values.update(overrides)
+    return Settings(**values)
 
-    from pyfog.app import create_app
+
+def test_production_requires_explicit_secure_configuration():
+    import pytest
 
     with pytest.raises(ValueError, match="PYFOG_SECRET_KEY"):
         Settings(production=True, secret_key="")
-    settings = Settings(
-        production=True,
-        secret_key="explicit-secret-with-at-least-32-characters",  # pragma: allowlist secret
-    )
-    app = create_app(settings)
+    with pytest.raises(ValueError, match="PYFOG_ALLOWED_HOSTS"):
+        Settings(
+            production=True,
+            secret_key="explicit-secret-with-at-least-32-characters",  # pragma: allowlist secret
+        )
+    with pytest.raises(ValueError, match="PYFOG_DEBUG"):
+        production_settings(debug=True)
+    with pytest.raises(ValueError, match="PYFOG_TRUSTED_PROXY_IPS"):
+        production_settings(trusted_proxy_ips=[])
+    with pytest.raises(ValueError, match=r"no puede incluir \*"):
+        production_settings(allowed_hosts=["*"])
+
+
+def test_production_proxy_sets_https_scheme_only_when_it_is_trusted():
     from fastapi.testclient import TestClient
 
-    with TestClient(app, base_url="https://localhost") as client:
-        response = client.get("/login")
+    from pyfog.app import create_app
+
+    app = create_app(production_settings())
+    with TestClient(app, base_url="http://pyfog.test") as client:
+        direct = client.get("/login", follow_redirects=False)
+        response = client.get("/login", headers={"x-forwarded-proto": "https"})
+        assert direct.status_code == 307
+        assert direct.headers["location"] == "https://pyfog.test/login"
+        assert response.status_code == 200
         cookie = response.headers["set-cookie"].lower()
         assert "httponly" in cookie
         assert "secure" in cookie
         assert "samesite=lax" in cookie
     app.state.engine.dispose()
+
+    app = create_app(production_settings(trusted_proxy_ips=["192.0.2.8"]))
+    with TestClient(app, base_url="http://pyfog.test") as client:
+        response = client.get(
+            "/login", headers={"x-forwarded-proto": "https"}, follow_redirects=False
+        )
+        assert response.status_code == 307
+    app.state.engine.dispose()
+
+
+def test_session_secret_file_is_supported_without_exposing_it_in_environment(tmp_path, monkeypatch):
+    secret_file = tmp_path / "session-key"
+    expected = "secret-from-file-with-at-least-32-characters"  # pragma: allowlist secret
+    secret_file.write_text(expected + "\n")
+    monkeypatch.delenv("PYFOG_SECRET_KEY", raising=False)
+    monkeypatch.setenv("PYFOG_SECRET_KEY_FILE", str(secret_file))
+    assert Settings().secret_key == expected

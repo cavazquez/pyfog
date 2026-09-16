@@ -100,7 +100,7 @@ El canal web y el canal de agente usan HTTPS con certificados de la CA de la ins
 no sigue redirecciones ni usa proxies heredados. Los tokens, claves y rutas de almacenamiento no se
 incluyen en HTML, logs de progreso ni manifiestos. La primera entrega permite un único administrador
 local; la autorización por roles queda para una etapa posterior. El detalle de despliegue TLS está
-en el issue [#7](https://github.com/cavazquez/pyfog/issues/7).
+en la [guía HTTPS](../https.md), implementada en el issue [#7](https://github.com/cavazquez/pyfog/issues/7).
 
 Cada tarea persiste una máquina de estados: `draft`, `approved`, `assigned`, `running`, `verifying`,
 `succeeded`, `failed` o `cancelled`. Sólo el coordinador puede avanzar estados; los eventos del

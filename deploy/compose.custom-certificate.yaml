@@ -1,0 +1,13 @@
+services:
+  caddy:
+    volumes:
+      - ./Caddyfile.custom-certificate:/etc/caddy/Caddyfile:ro
+    secrets:
+      - pyfog_tls_certificate
+      - pyfog_tls_private_key
+
+secrets:
+  pyfog_tls_certificate:
+    file: ${PYFOG_TLS_CERTIFICATE_FILE:?Definí PYFOG_TLS_CERTIFICATE_FILE}
+  pyfog_tls_private_key:
+    file: ${PYFOG_TLS_PRIVATE_KEY_FILE:?Definí PYFOG_TLS_PRIVATE_KEY_FILE}

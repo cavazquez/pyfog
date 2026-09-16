@@ -1,0 +1,13 @@
+{
+	admin off
+	auto_https disable_redirects
+}
+
+http://{$PYFOG_PUBLIC_HOST} {
+	redir https://{host}{uri} permanent
+}
+
+https://{$PYFOG_PUBLIC_HOST} {
+	tls /run/secrets/pyfog_tls_certificate /run/secrets/pyfog_tls_private_key
+	reverse_proxy app:8000
+}

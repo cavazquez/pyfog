@@ -1,4 +1,5 @@
 import json
+import ssl
 import stat
 import subprocess
 import uuid
@@ -80,6 +81,31 @@ def test_collector_disables_redirects(monkeypatch):
     monkeypatch.setattr(collector.urllib.request, "build_opener", opener)
     collector.send_inventory(b"{}", "https://pyfog.example", str(uuid.uuid4()), "test-token", None)
     assert any(isinstance(handler, collector.NoRedirect) for handler in seen_handlers)
+
+
+def test_collector_keeps_hostname_and_certificate_validation_enabled(monkeypatch):
+    contexts = []
+    create_context = collector.ssl.create_default_context
+
+    def secure_context(*, cafile=None):
+        context = create_context(cafile=cafile)
+        contexts.append(context)
+        return context
+
+    response = Mock()
+    response.__enter__ = Mock(return_value=Mock(status=201))
+    response.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(collector.ssl, "create_default_context", secure_context)
+    monkeypatch.setattr(
+        collector.urllib.request,
+        "build_opener",
+        lambda *handlers: Mock(open=Mock(return_value=response)),
+    )
+
+    collector.send_inventory(b"{}", "https://pyfog.example", str(uuid.uuid4()), "test-token", None)
+
+    assert contexts[0].check_hostname is True
+    assert contexts[0].verify_mode == ssl.CERT_REQUIRED
 
 
 def test_output_file_is_private_and_cannot_overwrite_existing_file(
