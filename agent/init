@@ -1,0 +1,157 @@
+#!/bin/sh
+# PyFog ephemeral Linux agent. This script intentionally never mounts block devices.
+set -eu
+set -f
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+VERSION="unknown"
+MODE="inventory"
+NETWORK="dhcp"
+SERVER=""
+HOST_ID=""
+TOKEN_FILE="/run/pyfog/token"
+CA_FILE="/etc/ssl/certs/ca-certificates.crt"
+KEEP_ALIVE="0"
+
+log() {
+    message="[pyfog-agent] $*"
+    if [ -w /dev/console ]; then
+        printf '%s\n' "$message" >/dev/console
+    else
+        printf '%s\n' "$message"
+    fi
+}
+
+read_cmdline() {
+    cmdline=$(cat /proc/cmdline 2>/dev/null || true)
+    # Kernel command-line fields are whitespace-delimited by definition. Secrets are read from
+    # TOKEN_FILE below and are never accepted as a pyfog.* value.
+    for argument in $cmdline; do
+        case "$argument" in
+            pyfog.version=*) VERSION=${argument#pyfog.version=} ;;
+            pyfog.mode=*) MODE=${argument#pyfog.mode=} ;;
+            pyfog.net=*) NETWORK=${argument#pyfog.net=} ;;
+            pyfog.server=*) SERVER=${argument#pyfog.server=} ;;
+            pyfog.host_id=*) HOST_ID=${argument#pyfog.host_id=} ;;
+            pyfog.token_file=*) TOKEN_FILE=${argument#pyfog.token_file=} ;;
+            pyfog.ca_file=*) CA_FILE=${argument#pyfog.ca_file=} ;;
+            pyfog.keep_alive=*) KEEP_ALIVE=${argument#pyfog.keep_alive=} ;;
+        esac
+    done
+}
+
+mount_pseudo() {
+    filesystem=$1
+    source=$2
+    target=$3
+    mkdir -p "$target"
+    mount -t "$filesystem" "$source" "$target" 2>/dev/null || true
+}
+
+load_modules() {
+    [ -x /sbin/modprobe ] || return 0
+    # These are common UEFI/QEMU and wired-network modules. A built-in driver simply returns an
+    # error, which is harmless. No module is allowed to trigger a disk mount.
+    for module in virtio_pci virtio_blk virtio_net ext4 vfat; do
+        /sbin/modprobe "$module" 2>/dev/null || true
+    done
+}
+
+configure_network() {
+    [ "$NETWORK" = "dhcp" ] || return 0
+    [ -d /sys/class/net ] || {
+        log "No existe /sys/class/net; se omite DHCP."
+        return 0
+    }
+    for interface_path in /sys/class/net/*; do
+        [ -e "$interface_path" ] || continue
+        interface=${interface_path##*/}
+        [ "$interface" = "lo" ] && continue
+        ip link set "$interface" up 2>/dev/null || continue
+        if udhcpc -q -n -t 5 -T 3 -i "$interface" -s /usr/libexec/pyfog-udhcpc; then
+            log "Red configurada por DHCP en $interface."
+            return 0
+        fi
+        log "No se obtuvo DHCP en $interface."
+    done
+    log "No se pudo configurar una interfaz de red; el inventario local aún puede ejecutarse."
+}
+
+stop_after_run() {
+    [ "$KEEP_ALIVE" = "1" ] && {
+        log "Modo persistente solicitado; shell disponible en consola."
+        exec sh
+    }
+    log "Agente finalizado; apagando la máquina efímera."
+    poweroff -f 2>/dev/null || reboot -f 2>/dev/null || halt -f 2>/dev/null || true
+    while :; do sleep 3600; done
+}
+
+run_inventory() {
+    mkdir -p /run/pyfog
+    if [ -n "$SERVER" ] || [ -n "$HOST_ID" ]; then
+        [ -n "$SERVER" ] && [ -n "$HOST_ID" ] || {
+            log "pyfog.server y pyfog.host_id deben indicarse juntos."
+            return 1
+        }
+        [ -r "$TOKEN_FILE" ] || {
+            log "No se encontró la capacidad efímera en $TOKEN_FILE."
+            return 1
+        }
+        token=$(cat "$TOKEN_FILE")
+        [ -n "$token" ] || {
+            log "La capacidad efímera está vacía."
+            unset token
+            return 1
+        }
+        export PYFOG_INVENTORY_TOKEN="$token"
+        # Values originate from the kernel command line but remain separate shell arguments. The
+        # URL and UUID are validated again by collect_inventory.py before any request is sent.
+        if [ -r "$CA_FILE" ]; then
+            if /usr/libexec/pyfog-agent --server "$SERVER" --host-id "$HOST_ID" --ca-file "$CA_FILE"; then
+                unset PYFOG_INVENTORY_TOKEN token
+                log "Inventario enviado a PyFog."
+                return 0
+            fi
+        elif /usr/libexec/pyfog-agent --server "$SERVER" --host-id "$HOST_ID"; then
+            unset PYFOG_INVENTORY_TOKEN token
+            log "Inventario enviado a PyFog."
+            return 0
+        fi
+        unset PYFOG_INVENTORY_TOKEN token
+        log "No se pudo enviar el inventario; se conserva una copia local."
+    fi
+    if /usr/libexec/pyfog-agent --output /run/pyfog/inventory.json; then
+        log "Inventario local disponible en /run/pyfog/inventory.json."
+        return 0
+    fi
+    log "El recolector no pudo generar un inventario."
+    return 1
+}
+
+mount_pseudo proc proc /proc
+mount_pseudo sysfs sysfs /sys
+mount_pseudo devtmpfs devtmpfs /dev
+mount_pseudo tmpfs tmpfs /run
+read_cmdline
+log "Versión $VERSION; modo $MODE; sin escrituras de disco."
+load_modules
+
+case "$MODE" in
+    inventory)
+        configure_network
+        run_inventory || true
+        stop_after_run
+        ;;
+    shell)
+        log "Shell de diagnóstico; las operaciones de bloques están deshabilitadas."
+        exec sh
+        ;;
+    halt)
+        stop_after_run
+        ;;
+    *)
+        log "Modo desconocido: $MODE (use inventory, shell o halt)."
+        stop_after_run
+        ;;
+esac

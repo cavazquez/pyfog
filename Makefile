@@ -1,4 +1,4 @@
-.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate lab-check
+.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate lab-check agent-check
 
 setup:
 	uv sync --frozen
@@ -32,9 +32,15 @@ audit: audit-dependencies audit-secrets
 lab-check:
 	bash -n lab/pyfog-lab
 
+agent-check:
+	bash -n agent/build-agent agent/init agent/pyfog-agent agent/udhcpc.script
+	@if command -v shellcheck >/dev/null 2>&1; then shellcheck agent/build-agent agent/init agent/pyfog-agent agent/udhcpc.script; fi
+	agent/build-agent --help >/dev/null
+
 check:
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run mypy
 	uv run pytest
 	$(MAKE) lab-check
+	$(MAKE) agent-check

@@ -1,0 +1,648 @@
+#!/usr/bin/env bash
+# Build a reproducible x86_64 PyFog initramfs without requiring a chroot or a running daemon.
+set -Eeuo pipefail
+
+umask 022
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+readonly SCRIPT_DIR REPO_ROOT
+readonly VERSION_FILE="$SCRIPT_DIR/VERSION"
+readonly DEFAULT_SOURCE_DATE_EPOCH=1704067200
+
+VERSION="$(tr -d '[:space:]' <"$VERSION_FILE")"
+OUTPUT_DIR="$REPO_ROOT/dist/agent"
+KERNEL_PATH="${PYFOG_KERNEL:-}"
+KERNEL_VERSION=""
+KERNEL_SHA256=""
+MODULES_DIR=""
+MODE="imaging"
+SOURCE_DATE_EPOCH_VALUE="${SOURCE_DATE_EPOCH:-$DEFAULT_SOURCE_DATE_EPOCH}"
+INCLUDE_ALL_MODULES=0
+CA_FILE_SOURCE=""
+CA_FILE_PATH="/etc/ssl/certs/ca-certificates.crt"
+CA_SHA256=""
+
+HOST_PYTHON=""
+STAGE=""
+WORK_DIR=""
+TOOLS_TSV=""
+CAPABILITIES_FILE=""
+MODULES_FILE=""
+
+error() {
+    printf 'build-agent: error: %s\n' "$*" >&2
+    exit 1
+}
+
+warning() {
+    printf 'build-agent: warning: %s\n' "$*" >&2
+}
+
+usage() {
+    cat <<'EOF'
+Uso:
+  agent/build-agent doctor [--mode inventory-only|imaging] [--kernel PATH]
+  agent/build-agent build [opciones]
+  agent/build-agent verify [--output-dir DIR]
+
+Opciones de build:
+  --output-dir DIR          Directorio de artefactos (por defecto: dist/agent)
+  --mode MODE               imaging (por defecto) o inventory-only
+  --inventory-only          Alias de --mode inventory-only
+  --kernel PATH             Kernel UEFI x86_64 legible
+  --kernel-version VERSION  Versión usada para buscar /lib/modules/VERSION
+  --modules-dir DIR         Directorio de módulos correspondiente al kernel
+  --include-all-modules     Copiar todos los módulos, no sólo los de red/almacenamiento
+  --ca-file PATH            CA PEM que se incorporará como /etc/pyfog/ca.pem
+  --source-date-epoch N     Fecha fija de archivos, en segundos UTC
+  --version VERSION         Sobrescribir la versión de agent/VERSION
+
+El modo imaging exige busybox, Python, HTTPS, red, sgdisk y Partclone ext4/FAT. El modo
+inventory-only omite las herramientas de escritura para probar un agente sin riesgo.
+EOF
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || error "falta la herramienta de construcción '$1'"
+}
+
+resolve_tool() {
+    local name=$1
+    command -v "$name" 2>/dev/null || true
+}
+
+find_kernel() {
+    if [ -n "$KERNEL_PATH" ]; then
+        printf '%s\n' "$KERNEL_PATH"
+        return 0
+    fi
+    find /boot -maxdepth 1 -type f -name 'vmlinuz-*' -readable -print 2>/dev/null \
+        | sort -V | tail -n 1
+}
+
+find_partclone() {
+    local candidate
+    for candidate in partclone.ext4 partclone.ext4dev; do
+        if [ -n "$(resolve_tool "$candidate")" ]; then
+            resolve_tool "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_partclone_fat() {
+    local candidate
+    for candidate in partclone.fat partclone.vfat; do
+        if [ -n "$(resolve_tool "$candidate")" ]; then
+            resolve_tool "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+parse_common_options() {
+    while (($# > 0)); do
+        case "$1" in
+            --output-dir)
+                (($# >= 2)) || error "--output-dir requiere un valor"
+                OUTPUT_DIR=$2
+                shift 2
+                ;;
+            --mode)
+                (($# >= 2)) || error "--mode requiere un valor"
+                MODE=$2
+                shift 2
+                ;;
+            --inventory-only)
+                MODE=inventory-only
+                shift
+                ;;
+            --kernel)
+                (($# >= 2)) || error "--kernel requiere un valor"
+                KERNEL_PATH=$2
+                shift 2
+                ;;
+            --kernel-version)
+                (($# >= 2)) || error "--kernel-version requiere un valor"
+                KERNEL_VERSION=$2
+                shift 2
+                ;;
+            --modules-dir)
+                (($# >= 2)) || error "--modules-dir requiere un valor"
+                MODULES_DIR=$2
+                shift 2
+                ;;
+            --include-all-modules)
+                INCLUDE_ALL_MODULES=1
+                shift
+                ;;
+            --ca-file)
+                (($# >= 2)) || error "--ca-file requiere un valor"
+                CA_FILE_SOURCE=$2
+                shift 2
+                ;;
+            --source-date-epoch)
+                (($# >= 2)) || error "--source-date-epoch requiere un valor"
+                SOURCE_DATE_EPOCH_VALUE=$2
+                shift 2
+                ;;
+            --version)
+                (($# >= 2)) || error "--version requiere un valor"
+                VERSION=$2
+                shift 2
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                error "opción desconocida: $1"
+                ;;
+        esac
+    done
+    [[ "$MODE" == imaging || "$MODE" == inventory-only ]] \
+        || error "--mode debe ser imaging o inventory-only"
+    [[ "$SOURCE_DATE_EPOCH_VALUE" =~ ^[0-9]+$ ]] \
+        || error "--source-date-epoch debe ser un entero no negativo"
+    [ -n "$VERSION" ] || error "la versión del agente no puede estar vacía"
+}
+
+doctor() {
+    local missing=0 path kernel
+    local -a required=(bash cpio gzip sha256sum find sort ldd readlink python3 busybox curl openssl ip)
+    if [ "$MODE" = imaging ]; then
+        required+=(sgdisk)
+    fi
+    printf 'PyFog agent %s (%s)\n' "$VERSION" "$MODE"
+    for command_name in "${required[@]}"; do
+        path=$(resolve_tool "$command_name")
+        if [ -n "$path" ]; then
+            printf '  OK      %-18s %s\n' "$command_name" "$path"
+        else
+            printf '  FALTA   %-18s\n' "$command_name"
+            missing=1
+        fi
+    done
+    if [ "$MODE" = imaging ]; then
+        if path=$(find_partclone); then
+            printf '  OK      %-18s %s\n' partclone.ext4 "$path"
+        else
+            printf '  FALTA   %-18s (partclone.ext4 o partclone.ext4dev)\n' partclone.ext4
+            missing=1
+        fi
+        if path=$(find_partclone_fat); then
+            printf '  OK      %-18s %s\n' partclone.fat "$path"
+        else
+            printf '  FALTA   %-18s (partclone.fat o partclone.vfat)\n' partclone.fat
+            missing=1
+        fi
+    fi
+    if [ -n "$CA_FILE_SOURCE" ]; then
+        if [ -r "$CA_FILE_SOURCE" ]; then
+            printf '  OK      %-18s %s\n' ca-file "$CA_FILE_SOURCE"
+        else
+            printf '  FALTA   %-18s %s\n' ca-file "$CA_FILE_SOURCE"
+            missing=1
+        fi
+    elif [ -r /etc/ssl/certs/ca-certificates.crt ]; then
+        printf '  OK      %-18s %s\n' ca-file /etc/ssl/certs/ca-certificates.crt
+    else
+        printf '  FALTA   %-18s (indique --ca-file PATH)\n' ca-file
+        missing=1
+    fi
+    kernel=$(find_kernel)
+    if [ -n "$kernel" ] && [ -r "$kernel" ]; then
+        printf '  OK      %-18s %s\n' kernel "$kernel"
+    else
+        printf '  FALTA   %-18s (indique --kernel PATH)\n' kernel
+        missing=1
+    fi
+    if [ "$missing" -ne 0 ]; then
+        printf 'Faltan requisitos para este modo.\n' >&2
+        return 1
+    fi
+    printf 'Requisitos completos.\n'
+}
+
+copy_path() {
+    local source=$1 destination=$2 target
+    [ -e "$source" ] || [ -L "$source" ] || error "no existe el archivo a empaquetar: $source"
+    target="$STAGE$destination"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        return 0
+    fi
+    install -d "$(dirname -- "$target")"
+    cp -a --no-preserve=ownership "$source" "$target"
+}
+
+copy_binary() {
+    local source=$1 destination=$2 resolved link_target target_real
+    [ -x "$source" ] || error "no es ejecutable: $source"
+    resolved=$(readlink -f "$source")
+    target_real="$(dirname -- "$destination")/$(basename -- "$resolved")"
+    copy_path "$resolved" "$target_real"
+    if [ "$source" != "$resolved" ]; then
+        install -d "$(dirname -- "$STAGE$destination")"
+        if [ ! -e "$STAGE$destination" ] && [ ! -L "$STAGE$destination" ]; then
+            link_target=$(readlink "$source")
+            ln -s "$link_target" "$STAGE$destination"
+        fi
+    fi
+    while IFS= read -r dependency; do
+        [ -n "$dependency" ] || continue
+        [ -e "$dependency" ] || [ -L "$dependency" ] || continue
+        copy_path "$dependency" "$dependency"
+    done < <(
+        ldd "$resolved" 2>/dev/null \
+            | awk '/=> \/[^ ]+/ {print $3} /^[[:space:]]*\/[^ ]+/ {print $1}' \
+            | sort -u
+    )
+}
+
+record_tool() {
+    local name=$1 destination=$2 source=$3 version_line digest
+    digest=$(sha256sum "$source" | awk '{print $1}')
+    version_line=$("$source" --version 2>&1 | head -n 1 || true)
+    version_line=$(printf '%s' "$version_line" | tr '\t\r\n' '   ')
+    printf '%s\t%s\t%s\t%s\n' "$name" "$destination" "$version_line" "$digest" >>"$TOOLS_TSV"
+}
+
+stage_binary() {
+    local name=$1 source=$2 destination=${3:-$2}
+    copy_binary "$source" "$destination"
+    record_tool "$name" "$destination" "$source"
+}
+
+copy_busybox_links() {
+    local link name target
+    for name in sh mount umount sleep cat mkdir mdev poweroff reboot halt udhcpc; do
+        case "$name" in
+            udhcpc) link="/sbin/$name"; target="../bin/busybox" ;;
+            *) link="/bin/$name"; target="busybox" ;;
+        esac
+        install -d "$(dirname -- "$STAGE$link")"
+        if [ ! -e "$STAGE$link" ] && [ ! -L "$STAGE$link" ]; then
+            ln -s "$target" "$STAGE$link"
+        fi
+    done
+}
+
+copy_modules() {
+    local module relative destination pattern module_root metadata
+    : >"$MODULES_FILE"
+    [ -n "$MODULES_DIR" ] || return 0
+    [ -d "$MODULES_DIR" ] || {
+        warning "no existe el directorio de módulos $MODULES_DIR; el kernel debe incluir los drivers"
+        return 0
+    }
+    module_root="$STAGE/lib/modules/$KERNEL_VERSION"
+    install -d "$module_root"
+    for metadata in modules.dep modules.dep.bin modules.alias modules.alias.bin modules.builtin \
+        modules.builtin.alias.bin modules.builtin.bin modules.symbols modules.symbols.bin; do
+        [ -e "$MODULES_DIR/$metadata" ] || continue
+        copy_path "$MODULES_DIR/$metadata" "/lib/modules/$KERNEL_VERSION/$metadata"
+    done
+    if [ "$INCLUDE_ALL_MODULES" -eq 1 ]; then
+        cp -a --no-preserve=ownership "$MODULES_DIR/kernel" "$module_root/"
+    else
+        # Keep the image small while covering QEMU virtio, common wired NICs, USB storage, GPT
+        # disks and the filesystems admitted by ADR 0001. Dependencies are listed explicitly so
+        # modprobe can load them without consulting the host.
+        for pattern in \
+            'virtio*.ko*' 'ext4*.ko*' 'jbd2*.ko*' 'crc*.ko*' 'mbcache*.ko*' \
+            'fat*.ko*' 'vfat*.ko*' 'nls*.ko*' 'sd_mod*.ko*' 'scsi_mod*.ko*' \
+            'nvme*.ko*' 'ahci*.ko*' 'libahci*.ko*' 'e1000*.ko*' 'igc*.ko*' \
+            'igb*.ko*' 'r8169*.ko*' 'xhci*.ko*' 'usb_storage*.ko*' 'uas*.ko*'; do
+            while IFS= read -r -d '' module; do
+                relative=${module#"$MODULES_DIR/"}
+                destination="/lib/modules/$KERNEL_VERSION/$relative"
+                copy_path "$module" "$destination"
+                printf '%s\n' "/$relative" >>"$MODULES_FILE"
+            done < <(find "$MODULES_DIR/kernel" -type f -name "$pattern" -print0 2>/dev/null)
+        done
+    fi
+    if command -v depmod >/dev/null 2>&1; then
+        depmod -b "$STAGE" "$KERNEL_VERSION" >/dev/null 2>&1 || \
+            warning "depmod no pudo reconstruir el índice de módulos; se conservan los metadatos"
+    fi
+    sort -u -o "$MODULES_FILE" "$MODULES_FILE"
+}
+
+write_metadata() {
+    local metadata="$STAGE/etc/pyfog-agent.json"
+    "$HOST_PYTHON" - "$metadata" "$VERSION" "$MODE" "$KERNEL_VERSION" "$KERNEL_SHA256" \
+        "$SOURCE_DATE_EPOCH_VALUE" "$TOOLS_TSV" "$CAPABILITIES_FILE" "$MODULES_FILE" \
+        "$CA_FILE_PATH" "$CA_SHA256" <<'PY'
+import json
+import pathlib
+import sys
+
+metadata_path = pathlib.Path(sys.argv[1])
+version, mode, kernel_version, kernel_sha, epoch = sys.argv[2:7]
+tools_path, capabilities_path, modules_path = map(pathlib.Path, sys.argv[7:10])
+ca_path, ca_sha = sys.argv[10:12]
+
+tools = []
+for line in tools_path.read_text(encoding="utf-8").splitlines():
+    name, destination, version_line, digest = line.split("\t", 3)
+    tools.append(
+        {
+            "name": name,
+            "path": destination,
+            "version": version_line,
+            "sha256": digest,
+        }
+    )
+metadata = {
+    "schema_version": 1,
+    "format": "pyfog-agent-initramfs",
+    "agent_version": version,
+    "architecture": "x86_64",
+    "mode": mode,
+    "source_date_epoch": int(epoch),
+    "kernel": {"version": kernel_version, "sha256": kernel_sha},
+    "trust_store": {"path": ca_path, "sha256": ca_sha},
+    "capabilities": capabilities_path.read_text(encoding="utf-8").splitlines(),
+    "tools": tools,
+    "kernel_modules": modules_path.read_text(encoding="utf-8").splitlines(),
+}
+metadata_path.write_text(
+    json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+}
+
+write_final_manifest() {
+    local metadata=$1 manifest=$2 kernel=$3 initramfs=$4 rootfs=$5
+    "$HOST_PYTHON" - "$metadata" "$manifest" "$kernel" "$initramfs" "$rootfs" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+metadata_path, manifest_path, kernel_path, initramfs_path, rootfs = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+def digest(path: pathlib.Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+files = []
+for path in sorted(rootfs.rglob("*"), key=lambda item: item.relative_to(rootfs).as_posix()):
+    if path.is_dir():
+        continue
+    relative = path.relative_to(rootfs).as_posix()
+    if path.is_symlink():
+        value = path.readlink().as_posix().encode("utf-8")
+        files.append(
+            {"path": "/" + relative, "type": "symlink", "target": value.decode(), "sha256": hashlib.sha256(value).hexdigest(), "size": len(value)}
+        )
+    elif path.is_file():
+        files.append({"path": "/" + relative, "type": "file", "sha256": digest(path), "size": path.stat().st_size})
+
+manifest["artifacts"] = {
+    "kernel": {"file": "vmlinuz", "sha256": digest(kernel_path), "size": kernel_path.stat().st_size},
+    "initramfs": {"file": "initramfs.img", "sha256": digest(initramfs_path), "size": initramfs_path.stat().st_size},
+}
+manifest["rootfs"] = {"file_count": len(files), "files": files}
+manifest_path.write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+}
+
+build() {
+    local kernel path partclone_ext4 partclone_fat python_stdlib python_base
+    local metadata_path final_manifest kernel_output initramfs_output manifest_output sums_output
+    [ "$(uname -m)" = "x86_64" ] || error "el builder sólo admite el host x86_64 del MVP"
+    local kernel_basename
+    require_command awk
+    require_command install
+    require_command cp
+    require_command touch
+    require_command mktemp
+    require_command tr
+    require_command head
+    require_command tail
+    require_command sort
+    require_command find
+    require_command cpio
+    require_command gzip
+    require_command sha256sum
+    require_command ldd
+    require_command readlink
+    HOST_PYTHON=$(resolve_tool python3)
+    [ -n "$HOST_PYTHON" ] || error "falta python3 para empaquetar el recolector"
+    path=$(resolve_tool busybox)
+    [ -n "$path" ] || error "falta busybox"
+    kernel=$(find_kernel)
+    [ -n "$kernel" ] || error "no se encontró un kernel legible; indique --kernel PATH"
+    [ -r "$kernel" ] || error "el kernel no se puede leer: $kernel"
+    KERNEL_PATH=$kernel
+    if [ -z "$KERNEL_VERSION" ]; then
+        kernel_basename=$(basename -- "$kernel")
+        KERNEL_VERSION=${kernel_basename#vmlinuz-}
+        [ "$KERNEL_VERSION" != "$kernel_basename" ] || KERNEL_VERSION=$(uname -r)
+    fi
+    [[ "$KERNEL_VERSION" =~ ^[A-Za-z0-9._+-]+$ ]] || error "versión de kernel inválida"
+    if [ -z "$MODULES_DIR" ]; then
+        MODULES_DIR="/lib/modules/$KERNEL_VERSION"
+    fi
+    if [ "$MODE" = imaging ]; then
+        path=$(resolve_tool sgdisk)
+        [ -n "$path" ] || error "falta sgdisk para el modo imaging"
+        partclone_ext4=$(find_partclone) || error "falta partclone.ext4 o partclone.ext4dev"
+        partclone_fat=$(find_partclone_fat) || error "falta partclone.fat o partclone.vfat"
+    else
+        partclone_ext4=""
+        partclone_fat=""
+    fi
+    if [ -n "$CA_FILE_SOURCE" ]; then
+        [ -r "$CA_FILE_SOURCE" ] || error "la CA no se puede leer: $CA_FILE_SOURCE"
+    else
+        [ -r /etc/ssl/certs/ca-certificates.crt ] || \
+            error "falta /etc/ssl/certs/ca-certificates.crt; indique --ca-file PATH"
+    fi
+
+    WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pyfog-agent.XXXXXX")
+    STAGE="$WORK_DIR/rootfs"
+    TOOLS_TSV="$WORK_DIR/tools.tsv"
+    CAPABILITIES_FILE="$WORK_DIR/capabilities"
+    MODULES_FILE="$WORK_DIR/modules"
+    mkdir -p "$STAGE" "$STAGE/etc" "$STAGE/proc" "$STAGE/sys" "$STAGE/dev" "$STAGE/run"
+    : >"$TOOLS_TSV"
+    : >"$CAPABILITIES_FILE"
+    : >"$MODULES_FILE"
+    trap 'rm -rf -- "$WORK_DIR"' EXIT
+
+    printf '%s\n' inventory https >>"$CAPABILITIES_FILE"
+    stage_binary busybox "$path" /bin/busybox
+    copy_busybox_links
+
+    path=$(resolve_tool python3)
+    [ -n "$path" ] || error "falta python3"
+    stage_binary python3 "$path" /usr/bin/python3
+    python_stdlib=$("$HOST_PYTHON" -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')
+    [ -d "$python_stdlib" ] || error "no se encontró la biblioteca estándar de Python: $python_stdlib"
+    python_base=$(basename -- "$python_stdlib")
+    copy_path "$python_stdlib" "/usr/lib/$python_base"
+    # Python's dynamically loaded stdlib modules (_ssl, _socket, _datetime, ...) live in this
+    # directory and are included by the tree copy above. Remove generated bytecode for stable cpio.
+
+    if [ -n "$CA_FILE_SOURCE" ]; then
+        copy_path "$CA_FILE_SOURCE" /etc/pyfog/ca.pem
+        CA_FILE_PATH="/etc/pyfog/ca.pem"
+        CA_SHA256=$(sha256sum "$CA_FILE_SOURCE" | awk '{print $1}')
+    else
+        copy_path /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+        CA_SHA256=$(sha256sum /etc/ssl/certs/ca-certificates.crt | awk '{print $1}')
+    fi
+    [ -f /etc/ssl/openssl.cnf ] && copy_path /etc/ssl/openssl.cnf /etc/ssl/openssl.cnf
+    for path in /lib/*/libnss_*.so* /lib/libnss_*.so* /usr/lib/*/libnss_*.so*; do
+        [ -e "$path" ] || [ -L "$path" ] || continue
+        copy_path "$path" "$path"
+    done
+
+    for tool_name in curl openssl ip lsblk blkid; do
+        path=$(resolve_tool "$tool_name")
+        [ -n "$path" ] || error "falta $tool_name"
+        case "$tool_name" in
+            ip|blkid) stage_binary "$tool_name" "$path" "/usr/sbin/$tool_name" ;;
+            *) stage_binary "$tool_name" "$path" "/usr/bin/$tool_name" ;;
+        esac
+    done
+    if [ "$MODE" = imaging ]; then
+        stage_binary sgdisk "$(resolve_tool sgdisk)" /usr/sbin/sgdisk
+        stage_binary partclone.ext4 "$partclone_ext4" /usr/sbin/partclone.ext4
+        stage_binary partclone.fat "$partclone_fat" /usr/sbin/partclone.fat
+        printf '%s\n' gpt partclone.ext4 partclone.fat >>"$CAPABILITIES_FILE"
+    fi
+    if path=$(resolve_tool modprobe); then
+        stage_binary modprobe "$path" /sbin/modprobe
+    fi
+    copy_modules
+
+    install -D -m 0755 "$SCRIPT_DIR/init" "$STAGE/init"
+    install -D -m 0755 "$SCRIPT_DIR/pyfog-agent" "$STAGE/usr/libexec/pyfog-agent"
+    install -D -m 0755 "$SCRIPT_DIR/udhcpc.script" "$STAGE/usr/libexec/pyfog-udhcpc"
+    install -D -m 0644 "$REPO_ROOT/scripts/collect_inventory.py" \
+        "$STAGE/opt/pyfog/collect_inventory.py"
+    printf '%s\n' 'NAME="PyFog ephemeral agent"' 'ID=pyfog-agent' \
+        'PRETTY_NAME="PyFog Linux inventory agent"' >"$STAGE/etc/os-release"
+    printf 'root:x:0:0:root:/root:/bin/sh\n' >"$STAGE/etc/passwd"
+    printf 'root:x:0:\n' >"$STAGE/etc/group"
+    : >"$STAGE/etc/resolv.conf"
+    printf '%s\n' "$VERSION" >"$STAGE/etc/pyfog-agent-version"
+    kernel_output="$WORK_DIR/vmlinuz"
+    cp --no-preserve=ownership "$KERNEL_PATH" "$kernel_output"
+    KERNEL_SHA256=$(sha256sum "$kernel_output" | awk '{print $1}')
+    write_metadata
+
+    # Remove host bytecode and normalize every timestamp. cpio's owner/reproducible switches make
+    # the archive independent of the builder UID and directory traversal order is sorted below.
+    find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf -- {} +
+    find "$STAGE" -type f -name '*.pyc' -delete
+    find "$STAGE" -exec touch -h -d "@$SOURCE_DATE_EPOCH_VALUE" {} +
+    initramfs_output="$WORK_DIR/initramfs.img"
+    (
+        cd "$STAGE"
+        LC_ALL=C find . -xdev -print0 | LC_ALL=C sort -z \
+            | cpio --null --create --format=newc --owner=0:0 --device-independent --reproducible \
+            2>"$WORK_DIR/cpio.log"
+    ) | gzip -n -9 >"$initramfs_output"
+    [ -s "$initramfs_output" ] || error "cpio produjo un initramfs vacío"
+
+    metadata_path="$STAGE/etc/pyfog-agent.json"
+    final_manifest="$WORK_DIR/manifest.json"
+    write_final_manifest "$metadata_path" "$final_manifest" "$kernel_output" "$initramfs_output" "$STAGE"
+    manifest_output="$WORK_DIR/manifest.json"
+    sums_output="$WORK_DIR/SHA256SUMS"
+    printf '%s  %s\n' \
+        "$(sha256sum "$kernel_output" | awk '{print $1}')" vmlinuz \
+        "$(sha256sum "$initramfs_output" | awk '{print $1}')" initramfs.img \
+        "$(sha256sum "$manifest_output" | awk '{print $1}')" manifest.json >"$sums_output"
+    find "$WORK_DIR" -maxdepth 1 -type f -exec touch -h -d "@$SOURCE_DATE_EPOCH_VALUE" {} +
+
+    mkdir -p "$OUTPUT_DIR"
+    install -m 0644 "$kernel_output" "$OUTPUT_DIR/vmlinuz"
+    install -m 0644 "$initramfs_output" "$OUTPUT_DIR/initramfs.img"
+    install -m 0644 "$manifest_output" "$OUTPUT_DIR/manifest.json"
+    install -m 0644 "$sums_output" "$OUTPUT_DIR/SHA256SUMS"
+    touch -d "@$SOURCE_DATE_EPOCH_VALUE" "$OUTPUT_DIR/vmlinuz" "$OUTPUT_DIR/initramfs.img" \
+        "$OUTPUT_DIR/manifest.json" "$OUTPUT_DIR/SHA256SUMS"
+    printf 'Artefactos PyFog agent %s publicados en %s\n' "$VERSION" "$OUTPUT_DIR"
+    printf '  kernel:    %s\n' "$OUTPUT_DIR/vmlinuz"
+    printf '  initramfs: %s\n' "$OUTPUT_DIR/initramfs.img"
+    printf '  manifest:  %s\n' "$OUTPUT_DIR/manifest.json"
+}
+
+verify() {
+    local directory=${OUTPUT_DIR:-$REPO_ROOT/dist/agent}
+    local manifest sums kernel initramfs
+    manifest="$directory/manifest.json"
+    sums="$directory/SHA256SUMS"
+    kernel="$directory/vmlinuz"
+    initramfs="$directory/initramfs.img"
+    [ -f "$manifest" ] || error "falta $manifest"
+    [ -f "$sums" ] || error "falta $sums"
+    [ -f "$kernel" ] || error "falta $kernel"
+    [ -f "$initramfs" ] || error "falta $initramfs"
+    require_command sha256sum
+    "$HOST_PYTHON" - "$manifest" "$kernel" "$initramfs" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+manifest_path, kernel_path, initramfs_path = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+if manifest.get("schema_version") != 1 or manifest.get("format") != "pyfog-agent-initramfs":
+    raise SystemExit("manifiesto incompatible")
+for artifact_path, key in ((kernel_path, "kernel"), (initramfs_path, "initramfs")):
+    expected = manifest["artifacts"][key]["sha256"]
+    digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    if digest != expected:
+        raise SystemExit(f"hash inválido para {artifact_path.name}")
+for entry in manifest.get("rootfs", {}).get("files", []):
+    if not entry["path"].startswith("/") or ".." in pathlib.PurePosixPath(entry["path"]).parts:
+        raise SystemExit(f"ruta insegura en manifiesto: {entry['path']}")
+print("Manifiesto y hashes válidos.")
+PY
+    (cd "$directory" && sha256sum --check --strict "$sums")
+}
+
+command_name=${1:-}
+if [ -z "$command_name" ]; then
+    usage
+    exit 2
+fi
+shift
+
+case "$command_name" in
+    doctor)
+        parse_common_options "$@"
+        doctor
+        ;;
+    build)
+        parse_common_options "$@"
+        build
+        ;;
+    verify)
+        parse_common_options "$@"
+        HOST_PYTHON=$(resolve_tool python3)
+        [ -n "$HOST_PYTHON" ] || error "falta python3 para verificar"
+        verify
+        ;;
+    --help|-h)
+        usage
+        ;;
+    *)
+        error "comando desconocido: $command_name"
+        ;;
+esac

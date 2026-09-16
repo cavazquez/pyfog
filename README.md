@@ -6,8 +6,9 @@ Es la primera entrega de un proyecto de imágenes por red inspirado en FOG.
 **Disponible:** alta y edición de equipos, identificación por MAC, recolector Linux, importación
 JSON, API con tokens por equipo, inventario actual e historial. Acceso mediante administrador local.
 
-**Planificado:** arranque PXE, captura de imágenes, restauración y clonación con Partclone.
-El motor de imágenes todavía no está implementado.
+**En desarrollo:** el agente Linux efímero ya puede arrancar un initramfs reproducible, obtener un
+inventario de solo lectura y enviarlo por HTTPS. El motor de imágenes todavía no está habilitado.
+El arranque PXE, la captura, restauración y clonación con Partclone siguen en los issues siguientes.
 
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
@@ -73,7 +74,8 @@ Reemplazá la URL y el UUID por los de tu instalación. Para la prueba local se 
 `--server http://127.0.0.1:8000`. En otro equipo se requiere HTTPS; una CA propia se configura con
 `--ca-file ca.pem`. El recolector rechaza redirecciones y no usa proxies heredados del entorno.
 El [despliegue LAN con certificados](docs/https.md) ya está documentado; PXE pertenece a la
-siguiente etapa del roadmap.
+siguiente etapa del roadmap. El [agente de arranque](agent/README.md) se construye con hashes
+reproducibles y tiene `inventory` como modo predeterminado; nunca monta discos ni escribe bloques.
 
 Si falla el envío, el archivo generado queda disponible. Para reenviar exactamente el mismo informe,
 con el token nuevamente en el entorno:
@@ -166,5 +168,17 @@ actual puede describir hardware fuera de esa matriz. No se promete compatibilida
 El laboratorio reproducible [lab/README.md](lab/README.md) crea dos VMs QEMU/OVMF con discos
 descartables y una red aislada en loopback. Sirve para validar el próximo flujo PXE, captura y
 restauración sin exponer discos físicos ni la red de una LAN.
+
+## Construir el agente de arranque
+
+```bash
+agent/build-agent doctor --mode inventory-only --kernel /boot/vmlinuz-$(uname -r)
+agent/build-agent build --mode inventory-only --output-dir dist/agent
+agent/build-agent verify --output-dir dist/agent
+```
+
+El modo `imaging` añade `sgdisk`, `partclone.ext4` y `partclone.fat` al initramfs y falla si alguno
+no está instalado. Antes de publicar los archivos en PXE hay que revisar `manifest.json` y
+`SHA256SUMS`; el servidor no descarga paquetes durante el arranque.
 
 Licencia del proyecto: [Apache-2.0](LICENSE).

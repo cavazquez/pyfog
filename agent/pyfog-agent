@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stable entry point used by the initramfs and by PXE diagnostics.
+set -eu
+exec /usr/bin/python3 /opt/pyfog/collect_inventory.py "$@"

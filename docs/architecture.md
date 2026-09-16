@@ -1,6 +1,6 @@
 # Arquitectura de PyFog
 
-Estado: registro e inventario implementados. El contrato que guía las próximas etapas está en la
+Estado: registro e inventario implementados; el agente efímero de inventario está disponible. El contrato que guía las próximas etapas está en la
 [ADR 0001: MVP Linux](adr/0001-mvp-linux.md).
 
 ## Primera entrega
@@ -55,5 +55,8 @@ La web programará tareas persistentes y un agente Linux arrancado por PXE ejecu
 fuera del proceso web. Partclone será la herramienta de copia para ext4, junto con herramientas GPT
 y GRUB. La [ADR 0001](adr/0001-mvp-linux.md) define la matriz Linux, el formato versionado, la
 identidad de clones, los límites de confianza, estados de tarea y pruebas de arranque requeridas.
-No se implementan estas operaciones todavía ni se realizan escrituras a dispositivos de bloques en
-esta entrega.
+El agente que se empaqueta en [`agent/`](../agent/README.md) cubre la primera parte de ese contrato:
+initramfs reproducible, red DHCP, cliente HTTPS y recolección de inventario. Su modo predeterminado
+no monta discos ni realiza escrituras; Partclone y `sgdisk` sólo se incorporan explícitamente al
+construir el modo `imaging`. La coordinación PXE, las tareas persistentes y las operaciones de
+captura/restauración todavía no se ejecutan en esta entrega.

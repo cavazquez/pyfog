@@ -1,0 +1,18 @@
+#!/bin/sh
+# BusyBox udhcpc hook. DHCP values are used only to configure the ephemeral network namespace.
+set -eu
+
+case "${1:-}" in
+    bound|renew)
+        : "${interface:?udhcpc did not provide an interface}"
+        ip link set "$interface" up 2>/dev/null || true
+        if [ -n "${router:-}" ]; then
+            first_router=${router%% *}
+            ip route replace default via "$first_router" dev "$interface" 2>/dev/null || true
+        fi
+        : > /etc/resolv.conf
+        for dns_server in ${dns:-}; do
+            printf 'nameserver %s\n' "$dns_server" >>/etc/resolv.conf
+        done
+        ;;
+esac

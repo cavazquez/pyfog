@@ -83,7 +83,7 @@ incompatible o una imagen marcada como no publicable.
 | Servicio web | Python 3.12, FastAPI 0.141.1, Pydantic 2.13.5, SQLAlchemy 2.0.54 y Alembic 1.20.0. Las versiones exactas viven en `pyproject.toml` y `uv.lock`. |
 | Base de tareas en producción | PostgreSQL 17. |
 | Agente de imágenes | Linux de Ubuntu 24.04 LTS, Partclone 0.3.45, `sgdisk` y herramientas GRUB de esa distribución. |
-| Arranque PXE | iPXE y un kernel/initramfs reproducibles. El issue [#18](https://github.com/cavazquez/pyfog/issues/18) debe publicar su revisión, paquetes y SHA-256 antes de ofrecer el artefacto. |
+| Arranque PXE | iPXE y un kernel/initramfs reproducibles. El issue [#18](https://github.com/cavazquez/pyfog/issues/18) publica un agente de inventario seguro y deja el modo de imagen bloqueado hasta verificar sus herramientas y SHA-256. |
 
 El manifiesto del agente fija las versiones y checksums efectivos de kernel, initramfs, iPXE y
 paquetes. Ningún agente toma herramientas de un repositorio mutable durante una operación.
