@@ -11,7 +11,14 @@ from tests.conftest import csrf, issue_token
 
 
 def test_anonymous_users_cannot_view_or_mutate_inventory(client, host_id):
-    for path in ("/hosts", "/hosts/new", f"/hosts/{host_id}", f"/hosts/{host_id}/import"):
+    for path in (
+        "/hosts",
+        "/hosts/new",
+        "/images",
+        "/tasks",
+        f"/hosts/{host_id}",
+        f"/hosts/{host_id}/import",
+    ):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"] == "/login"
@@ -20,7 +27,13 @@ def test_anonymous_users_cannot_view_or_mutate_inventory(client, host_id):
 
 
 def test_login_and_mutations_require_csrf(client, admin, host_id):
-    assert client.post("/login", data={"username": "admin", "password": "test"}).status_code == 403
+    assert (
+        client.post(
+            "/login",
+            data={"username": "admin", "password": "test"},  # pragma: allowlist secret
+        ).status_code
+        == 403
+    )
     assert admin.post("/hosts/new", data={"name": "invalid"}).status_code == 403
     assert admin.post(f"/hosts/{host_id}/token", data={"action": "generate"}).status_code == 403
     assert admin.get("/logout").status_code == 405
@@ -47,13 +60,23 @@ def test_login_is_rate_limited(client):
     token = csrf(client, "/login")
     for _ in range(8):
         response = client.post(
-            "/login", data={"csrf": token, "username": "missing", "password": "wrong"}
+            "/login",
+            data={
+                "csrf": token,
+                "username": "missing",
+                "password": "wrong",  # pragma: allowlist secret
+            },
         )
         assert response.status_code == 401
         assert "Usuario o contraseña incorrectos" in response.text
     assert (
         client.post(
-            "/login", data={"csrf": token, "username": "admin", "password": "test-admin-password"}
+            "/login",
+            data={
+                "csrf": token,
+                "username": "admin",
+                "password": "test-admin-password",  # pragma: allowlist secret
+            },
         ).status_code
         == 429
     )
@@ -131,7 +154,10 @@ def test_production_requires_a_secret_and_secure_cookies():
 
     with pytest.raises(ValueError, match="PYFOG_SECRET_KEY"):
         Settings(production=True, secret_key="")
-    settings = Settings(production=True, secret_key="explicit-secret-with-at-least-32-characters")
+    settings = Settings(
+        production=True,
+        secret_key="explicit-secret-with-at-least-32-characters",  # pragma: allowlist secret
+    )
     app = create_app(settings)
     from fastapi.testclient import TestClient
 

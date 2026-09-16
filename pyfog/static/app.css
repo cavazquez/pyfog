@@ -145,6 +145,7 @@
   .separator { padding: 0 9px; color: #a5b4a6; }
   .alert { padding: 17px 20px; border-radius: 7px; margin: 20px 0; font-size: 12px; overflow-wrap: anywhere; }
   .alert.error { background: #fff0ec; border: 1px solid #f1cfc4; color: #973c2c; }
+  .alert.success { background: #edf7ec; border: 1px solid #cfe5cb; color: #2d6840; }
   .alert.warning { background: #f9f4e3; border: 1px solid #e8dfbb; color: #756027; }
   .alert ul { padding-left: 18px; margin-top: 10px; }
   .alert h3 { font-size: 13px; }
@@ -172,6 +173,11 @@
   .login-card > p { font-size: 12px; }
   .login-card form { margin-top: 30px; }
   .login-help { padding-top: 28px; margin-top: 25px; border-top: 1px solid #dce4d8; color: #657662; font-size: 11px !important; }
+  .flash-wrap { margin-bottom: 21px; }
+  .flash-wrap .alert { margin: 0; }
+  form[aria-busy="true"] { cursor: progress; }
+  form[aria-busy="true"] button { cursor: progress; opacity: .72; }
+  .coming-soon { padding-block: 76px; }
 }
 @layer responsive {
   @media (max-width: 1100px) {
@@ -188,13 +194,13 @@
   }
   @media (max-width: 760px) {
     .workspace { display: block; }
-    .sidebar { position: static; height: auto; padding: 17px 20px; flex-direction: row; align-items: center; gap: 15px; }
+    .sidebar { position: static; height: auto; padding: 15px 16px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
     .brand { font-size: 25px; }
     .brand-mark { width: 29px; height: 29px; font-size: 19px; }
-    .sidebar nav { margin-left: auto; }
-    .nav-item { padding: 8px 12px; font-size: 12px; }
+    .sidebar nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin: 0; width: 100%; }
+    .nav-item { justify-content: center; padding: 8px 4px; font-size: 11px; white-space: nowrap; }
     .nav-item > span, .nav-label, .sidebar-note, .sidebar-footer .avatar, .sidebar-footer > div { display: none; }
-    .sidebar-footer { padding: 0; border: 0; }
+    .sidebar-footer { grid-column: 2; grid-row: 1; padding: 0; border: 0; }
     .sidebar-footer .logout { min-width: 30px; }
     .topbar { height: 47px; padding: 0 20px; font-size: 11px; }
     .workspace main { padding: 28px 20px 12px; }

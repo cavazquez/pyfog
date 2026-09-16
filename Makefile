@@ -1,4 +1,4 @@
-.PHONY: setup run lint format typecheck test check migrate
+.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate
 
 setup:
 	uv sync --frozen
@@ -20,6 +20,14 @@ typecheck:
 
 test:
 	uv run pytest
+
+audit-dependencies:
+	uv run pip-audit --local --strict --progress-spinner off
+
+audit-secrets:
+	git ls-files -z | xargs -0 uv run detect-secrets-hook --no-verify # pragma: allowlist secret
+
+audit: audit-dependencies audit-secrets
 
 check:
 	uv run ruff check .

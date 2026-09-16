@@ -17,7 +17,7 @@ from pyfog.security import passwords
 
 @pytest.fixture(scope="session")
 def password_hash():
-    return passwords.hash("test-admin-password")
+    return passwords.hash("test-admin-password")  # pragma: allowlist secret
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def app(tmp_path, password_hash):
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         allowed_hosts=["testserver", "localhost", "127.0.0.1"],
-        secret_key="test-only-session-secret-at-least-32-characters",
+        secret_key="test-only-session-secret-at-least-32-characters",  # pragma: allowlist secret
     )
     config = Config(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
     config.attributes["database_url"] = settings.database_url
@@ -59,7 +59,7 @@ def admin(client):
         data={
             "csrf": csrf(client, "/login"),
             "username": "admin",
-            "password": "test-admin-password",
+            "password": "test-admin-password",  # pragma: allowlist secret
         },
     )
     assert response.status_code == 200

@@ -1,6 +1,6 @@
 import secrets
 from datetime import datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, TypedDict
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
 from pyfog.config import PACKAGE_DIR
+from pyfog.content import NAVIGATION, SHELL_COPY, UPCOMING_SECTIONS
 from pyfog.database import get_db
 from pyfog.models import Host, InventoryReport, LoginSession, now
 from pyfog.schemas import HostInput, Inventory
@@ -22,6 +23,11 @@ from pyfog.services import ingest_inventory
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
 Db = Annotated[Session, Depends(get_db)]
+
+
+class Flash(TypedDict):
+    level: Literal["success"]
+    message: str
 
 
 def format_bytes(value: int | None) -> str:
@@ -43,11 +49,40 @@ templates.env.filters["bytes"] = format_bytes
 templates.env.filters["date"] = format_date
 
 
+def current_section(path: str) -> str:
+    for item in NAVIGATION:
+        if path == item.href or path.startswith(f"{item.href}/"):
+            return item.key
+    return "hosts"
+
+
+def set_flash(request: Request, message: str) -> None:
+    request.session["flash"] = {"level": "success", "message": message}
+
+
+def take_flash(request: Request) -> Flash | None:
+    value = request.session.pop("flash", None)
+    if not isinstance(value, dict) or value.get("level") != "success":
+        return None
+    message = value.get("message")
+    if not isinstance(message, str):
+        return None
+    return {"level": "success", "message": message}
+
+
 def render(request: Request, template: str, *, status: int = 200, **context: Any) -> Response:
+    section = context.pop("section", current_section(request.url.path))
     return templates.TemplateResponse(
         request=request,
         name=template,
-        context={"csrf": csrf_token(request), **context},
+        context={
+            "csrf": csrf_token(request),
+            "flash": take_flash(request),
+            "navigation": NAVIGATION,
+            "shell": SHELL_COPY,
+            "section": section,
+            **context,
+        },
         status_code=status,
     )
 
@@ -91,6 +126,7 @@ async def login(request: Request, db: Db) -> Response:
     user = authenticate(request, db, username, password)
     if user is None:
         return render(request, "login.html", error="Usuario o contraseña incorrectos.", status=401)
+    set_flash(request, "Sesión iniciada.")
     return RedirectResponse("/hosts", 303)
 
 
@@ -104,12 +140,35 @@ async def logout(request: Request, db: Db) -> Response:
     )
     db.commit()
     request.session.clear()
+    set_flash(request, "Sesión cerrada.")
     return RedirectResponse("/login", 303)
 
 
 @router.get("/")
 def home() -> Response:
     return RedirectResponse("/hosts", 303)
+
+
+@router.get("/images", response_class=HTMLResponse)
+def images_placeholder(request: Request, db: Db) -> Response:
+    return render(
+        request,
+        "coming_soon.html",
+        user=require_user(request, db),
+        section="images",
+        upcoming=UPCOMING_SECTIONS["images"],
+    )
+
+
+@router.get("/tasks", response_class=HTMLResponse)
+def tasks_placeholder(request: Request, db: Db) -> Response:
+    return render(
+        request,
+        "coming_soon.html",
+        user=require_user(request, db),
+        section="tasks",
+        upcoming=UPCOMING_SECTIONS["tasks"],
+    )
 
 
 @router.get("/hosts", response_class=HTMLResponse)
@@ -185,6 +244,7 @@ async def host_create(request: Request, db: Db) -> Response:
             db.rollback()
             errors["mac_address"] = "Ya existe un equipo registrado con esta MAC."
         else:
+            set_flash(request, "Equipo registrado. Ya podés cargar su primer inventario.")
             return RedirectResponse(f"/hosts/{host.id}", 303)
     return render(request, "host_form.html", user=user, values=values, errors=errors, status=422)
 
@@ -253,6 +313,7 @@ async def host_update(request: Request, host_id: UUID, db: Db) -> Response:
         )
     host.name, host.notes = data.name, data.notes
     db.commit()
+    set_flash(request, "Cambios guardados.")
     return RedirectResponse(f"/hosts/{host.id}", 303)
 
 
@@ -280,12 +341,14 @@ async def import_report(request: Request, host_id: UUID, db: Db) -> Response:
             payload = await upload.read(request.app.state.settings.max_body_bytes + 1)
             try:
                 inventory = Inventory.model_validate_json(payload)
-                report, _ = ingest_inventory(db, host, inventory, "web")
+                report, created = ingest_inventory(db, host, inventory, "web")
             except ValidationError as error:
                 error_text = validation_message(error)
             except HTTPException as error:
                 error_text = str(error.detail)
             else:
+                message = "Inventario importado." if created else "El informe ya estaba registrado."
+                set_flash(request, message)
                 return RedirectResponse(f"/hosts/{host.id}/reports/{report.id}", 303)
     return render(request, "import.html", user=user, host=host, error=error_text, status=422)
 
@@ -309,6 +372,7 @@ async def inventory_token(request: Request, host_id: UUID, db: Db) -> Response:
     if form.get("action") == "revoke":
         host.token_hash, host.token_expires_at = None, None
         db.commit()
+        set_flash(request, "Token de inventario revocado.")
         return RedirectResponse(f"/hosts/{host.id}", 303)
     if form.get("action") != "generate":
         raise HTTPException(400, "Acción inválida.")

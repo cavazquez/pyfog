@@ -11,11 +11,12 @@ El motor de imágenes todavía no está implementado.
 
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
-[Arquitectura](docs/architecture.md)
+[Arquitectura](docs/architecture.md) ·
+[Contrato del MVP Linux](docs/adr/0001-mvp-linux.md)
 
 ## Iniciar en desarrollo
 
-Requisitos: Python 3.12 o superior y [uv](https://docs.astral.sh/uv/).
+Requisitos: Python 3.12 a 3.14 y [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --frozen
@@ -122,12 +123,17 @@ uv run ruff format --check .  # verificar sin modificar
 uv run mypy
 uv run pytest
 uv run alembic check          # luego de aplicar migraciones
+make audit                    # vulnerabilidades y secretos versionados
 ```
 
 `make check` ejecuta lint, comprobación de formato, tipos y pruebas. Mypy está configurado en modo
 estricto para aplicación y recolector. Ruff incluye reglas de errores, imports, modernización,
 bugs, simplificaciones, comprehensions, nombres, seguridad, asincronía, pathlib, fechas, pytest,
 builtins, retornos y uso de `print`; las excepciones están acotadas por archivo o línea.
+
+`make audit` ejecuta `pip-audit` y el escaneo de secretos sobre los archivos versionados. La misma
+comprobación bloquea pull requests y pushes; la política de excepciones y respuesta ante una
+credencial expuesta está en [docs/security.md](docs/security.md).
 
 Las dependencias directas tienen versiones exactas en `pyproject.toml`; `uv.lock` fija también las
 transitivas. La CI instala con `uv sync --frozen` y verifica Python 3.12 y 3.14. Dependabot revisa

@@ -1,14 +1,15 @@
-# Decisión inicial: registro e inventario
+# Arquitectura de PyFog
 
-Estado: base implementada; el contrato del motor de imágenes se completa en
-[el issue de arquitectura](https://github.com/cavazquez/pyfog/issues/2).
+Estado: registro e inventario implementados. El contrato que guía las próximas etapas está en la
+[ADR 0001: MVP Linux](adr/0001-mvp-linux.md).
 
 ## Primera entrega
 
 Se utiliza FastAPI, plantillas Jinja2 y CSS local. No se incorpora Django ni una aplicación frontend
 separada. La UI opera sin servicios externos ni CDNs. SQLAlchemy separa la persistencia de las rutas;
 Alembic aplica migraciones explícitas. SQLite permite comenzar con un solo proceso y sin instalar
-una base externa; la migración a PostgreSQL se evaluará antes del coordinador de imágenes.
+una base externa. La ADR fija PostgreSQL 17 como persistencia de tareas antes de habilitar el
+coordinador de imágenes.
 
 ```mermaid
 flowchart LR
@@ -49,17 +50,9 @@ agente PXE y los ajustes de proxy/red son trabajo posterior explícito en el roa
 
 ## Motor de imágenes previsto
 
-La web programará tareas persistentes; el agente Linux arrancado por PXE ejecutará las operaciones
-fuera del proceso web. Se propone [Partclone](https://github.com/Thomas-Tsai/partclone) para capturar
-y restaurar los bloques usados de las particiones admitidas, junto con herramientas GPT y GRUB.
-El formato propio incluirá manifiesto versionado, layout, artefactos y checksums.
-
-Capturar lee el origen; restaurar recupera su disco e identidad; clonar despliega la imagen en otro
-equipo y prepara una identidad nueva. La preparación de la identidad seguirá el perfil soportado de
-Linux y las [indicaciones de systemd](https://systemd.io/BUILDING_IMAGES/). No se implementan estas
-operaciones todavía ni se realizan escrituras a dispositivos de bloques en esta entrega.
-
-La matriz propuesta es Linux x86_64 con systemd/GRUB, UEFI sin Secure Boot, GPT, ext4, ESP FAT32 y
-swap opcional. Un disco por tarea, sector lógico compatible y capacidad destino igual o mayor;
-sin redimensionado automático, LVM, RAID ni cifrado. El laboratorio fijará la distribución de
-referencia y validará arranque real en VMs antes de habilitar una restauración.
+La web programará tareas persistentes y un agente Linux arrancado por PXE ejecutará las operaciones
+fuera del proceso web. Partclone será la herramienta de copia para ext4, junto con herramientas GPT
+y GRUB. La [ADR 0001](adr/0001-mvp-linux.md) define la matriz Linux, el formato versionado, la
+identidad de clones, los límites de confianza, estados de tarea y pruebas de arranque requeridas.
+No se implementan estas operaciones todavía ni se realizan escrituras a dispositivos de bloques en
+esta entrega.
