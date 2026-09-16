@@ -43,6 +43,13 @@ def test_agent_help_describes_safe_default() -> None:
     assert "Partclone" in result.stdout
 
 
+def test_agent_init_supports_approval_pairing_without_a_host_token() -> None:
+    init = (AGENT / "init").read_text(encoding="utf-8")
+    assert "pyfog.pair=" in init
+    assert "--pair --server" in init
+    assert "pyfog.token_file" in init
+
+
 def test_inventory_only_doctor_accepts_a_readable_kernel() -> None:
     required = [
         "bash",

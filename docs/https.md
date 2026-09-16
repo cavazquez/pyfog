@@ -74,12 +74,12 @@ permite verificar al servidor.
 
 ## Arranque PXE
 
-TFTP/PXE es un bootstrap sin confianza. En esta etapa podrá transportar iPXE, kernel, initramfs y,
-si hace falta, la CA pública. No transportará contraseñas, tokens persistentes, imágenes ni claves
-privadas. El agente de los issues posteriores debe pasar a HTTPS por el nombre configurado antes de
-registrarse o solicitar una tarea; un error de red o certificado termina en diagnóstico y retorno al
-disco local, nunca en una operación de disco. El perfil reproducible, el layout de TFTP/HTTPS y la
-configuración de DHCP existente están documentados en [pxe/README.md](../pxe/README.md).
+TFTP/PXE es un bootstrap sin confianza. Transporta iPXE, kernel, initramfs y, si hace falta, la CA
+pública. No transporta contraseñas, tokens persistentes, imágenes ni claves privadas. El agente usa
+HTTPS por el nombre configurado antes de solicitar el registro; un error de red o certificado
+termina en diagnóstico y retorno al disco local, nunca en una operación de disco. El perfil
+reproducible, el layout de TFTP/HTTPS y la configuración de DHCP existente están documentados en
+[pxe/README.md](../pxe/README.md).
 
 ## Verificación y operación
 

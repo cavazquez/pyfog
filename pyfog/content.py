@@ -21,6 +21,7 @@ class UpcomingSection:
 
 NAVIGATION = (
     NavigationItem(key="hosts", href="/hosts", label="Equipos", icon="▣"),
+    NavigationItem(key="pairing", href="/pairing", label="Descubiertos", icon="⌁"),
     NavigationItem(key="images", href="/images", label="Imágenes", icon="◈"),
     NavigationItem(key="tasks", href="/tasks", label="Tareas", icon="◷"),
 )
@@ -44,8 +45,8 @@ UPCOMING_SECTIONS = {
         eyebrow="PRÓXIMA ENTREGA",
         title="Las imágenes llegan después del arranque por red.",
         description=(
-            "El catálogo, la captura y la verificación de imágenes se habilitarán cuando el "
-            "entorno PXE y el agente efímero estén listos."
+            "El catálogo, la captura y la verificación de imágenes se habilitarán después del "
+            "descubrimiento y el inventario inicial del equipo."
         ),
         issue_number=22,
     ),

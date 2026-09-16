@@ -83,7 +83,7 @@ incompatible o una imagen marcada como no publicable.
 | Servicio web | Python 3.12, FastAPI 0.141.1, Pydantic 2.13.5, SQLAlchemy 2.0.54 y Alembic 1.20.0. Las versiones exactas viven en `pyproject.toml` y `uv.lock`. |
 | Base de tareas en producción | PostgreSQL 17. |
 | Agente de imágenes | Linux de Ubuntu 24.04 LTS, Partclone 0.3.45, `sgdisk` y herramientas GRUB de esa distribución. |
-| Arranque PXE | iPXE y un kernel/initramfs reproducibles. El issue [#18](https://github.com/cavazquez/pyfog/issues/18) publica un agente de inventario seguro y deja el modo de imagen bloqueado hasta verificar sus herramientas y SHA-256. |
+| Arranque PXE | iPXE y un kernel/initramfs reproducibles. Los issues [#18](https://github.com/cavazquez/pyfog/issues/18), [#19](https://github.com/cavazquez/pyfog/issues/19) y [#20](https://github.com/cavazquez/pyfog/issues/20) publican un agente de inventario seguro, retorno al disco local y aprobación de equipos descubiertos; el modo de imagen queda bloqueado hasta verificar sus herramientas y SHA-256. |
 
 El manifiesto del agente fija las versiones y checksums efectivos de kernel, initramfs, iPXE y
 paquetes. Ningún agente toma herramientas de un repositorio mutable durante una operación.
@@ -91,10 +91,11 @@ paquetes. Ningún agente toma herramientas de un repositorio mutable durante una
 ## Seguridad y operación
 
 La dirección MAC sirve para reconocer un equipo, nunca para autenticarlo. El agente se registra con
-un desafío de un solo uso y recibe una capacidad efímera ligada a `task_id`, UUID del equipo,
-operación, vencimiento y número de uso. El coordinador revoca la capacidad al terminar, cancelar o
-expirar la tarea. La interfaz exige una confirmación explícita que nombra equipo, operación y disco
-destino antes de que el coordinador entregue esa capacidad.
+un desafío de un solo uso visible en la consola y recibe una capacidad efímera ligada a la sesión,
+UUID del equipo, vencimiento y número de uso. La capacidad se consume al aceptar el inventario; las
+tareas de imagen tendrán otra autorización explícita cuando se implementen. La interfaz exige una
+confirmación que nombra equipo, operación y disco destino antes de que el coordinador entregue una
+capacidad de tarea.
 
 El canal web y el canal de agente usan HTTPS con certificados de la CA de la instalación; el agente
 no sigue redirecciones ni usa proxies heredados. Los tokens, claves y rutas de almacenamiento no se

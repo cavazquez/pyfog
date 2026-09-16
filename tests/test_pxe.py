@@ -32,6 +32,7 @@ def test_pxe_menu_has_local_default_and_no_chain_loop() -> None:
     assert "goto local" in template
     assert "sanboot --no-describe --drive 0x80" in template
     assert "iseq ${platform} efi && sanboot --no-describe --drive 0" in template
+    assert "pyfog.server=${pyfog_server} pyfog.pair=1" in template
     assert "chain " not in template
 
 
@@ -113,8 +114,11 @@ def test_pxe_builder_publishes_a_verified_profile_without_ipxe_binary(tmp_path: 
     assert result.returncode == 0, result.stderr
     profile = (output_dir / "tftp" / "boot.ipxe").read_text(encoding="utf-8")
     assert "https://pyfog.example/boot/agent/initramfs.img" in profile
+    assert "pyfog.server=${pyfog_server} pyfog.pair=1" in profile
     assert "choose --default local --timeout 5000" in profile
     assert "token" not in profile.lower()
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["server_url"] == "https://pyfog.example"
 
 
 @pytest.mark.parametrize("unsafe", ["https://user:pass@example.com/boot", "https://host/boot?x=1"])

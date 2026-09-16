@@ -9,6 +9,7 @@ MODE="inventory"
 NETWORK="dhcp"
 SERVER=""
 HOST_ID=""
+PAIRING="0"
 TOKEN_FILE="/run/pyfog/token"
 CA_FILE="/etc/ssl/certs/ca-certificates.crt"
 KEEP_ALIVE="0"
@@ -33,6 +34,7 @@ read_cmdline() {
             pyfog.net=*) NETWORK=${argument#pyfog.net=} ;;
             pyfog.server=*) SERVER=${argument#pyfog.server=} ;;
             pyfog.host_id=*) HOST_ID=${argument#pyfog.host_id=} ;;
+            pyfog.pair=*) PAIRING=${argument#pyfog.pair=} ;;
             pyfog.token_file=*) TOKEN_FILE=${argument#pyfog.token_file=} ;;
             pyfog.ca_file=*) CA_FILE=${argument#pyfog.ca_file=} ;;
             pyfog.keep_alive=*) KEEP_ALIVE=${argument#pyfog.keep_alive=} ;;
@@ -89,7 +91,24 @@ stop_after_run() {
 
 run_inventory() {
     mkdir -p /run/pyfog
-    if [ -n "$SERVER" ] || [ -n "$HOST_ID" ]; then
+    if [ "$PAIRING" = "1" ]; then
+        if [ -z "$SERVER" ] || [ -n "$HOST_ID" ]; then
+            log "pyfog.pair requiere pyfog.server y no acepta pyfog.host_id."
+        else
+            # The collector creates a fresh challenge and keeps its short-lived capability in memory
+            # while the administrator approves the request in the web interface.
+            if [ -r "$CA_FILE" ]; then
+                if /usr/libexec/pyfog-agent --pair --server "$SERVER" --ca-file "$CA_FILE"; then
+                    log "Equipo aprobado e inventario enviado a PyFog."
+                    return 0
+                fi
+            elif /usr/libexec/pyfog-agent --pair --server "$SERVER"; then
+                log "Equipo aprobado e inventario enviado a PyFog."
+                return 0
+            fi
+            log "No se aprobó el registro PXE; se conserva una copia local."
+        fi
+    elif [ -n "$SERVER" ] || [ -n "$HOST_ID" ]; then
         [ -n "$SERVER" ] && [ -n "$HOST_ID" ] || {
             log "pyfog.server y pyfog.host_id deben indicarse juntos."
             return 1

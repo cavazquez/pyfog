@@ -1,9 +1,10 @@
 # Perfil PXE/UEFI de PyFog
 
 `build-pxe` publica un perfil iPXE junto con los artefactos del agente ya verificados. El perfil
-ofrece dos opciones: inventario de solo lectura o disco local. El valor predeterminado es el disco
-local después de un timeout de cinco segundos. Los errores de DHCP, HTTPS, descarga o arranque van
-a `local` una sola vez; no hay `chain` recursivo ni una ruta que escriba dispositivos.
+ofrece dos opciones: descubrimiento e inventario de solo lectura o disco local. El valor
+predeterminado es el disco local después de un timeout de cinco segundos. Los errores de DHCP,
+HTTPS, descarga o arranque van a `local` una sola vez; no hay `chain` recursivo ni una ruta que
+escriba dispositivos.
 
 El repositorio no contiene un binario iPXE precompilado. Es intencional: el administrador debe
 obtener o compilar `ipxe.efi` para su política de firmware, revisar su SHA-256 y pasarlo al builder.
@@ -31,6 +32,11 @@ pxe/build-pxe build \
   --output-dir dist/pxe
 pxe/build-pxe verify --output-dir dist/pxe
 ```
+
+Por defecto, el perfil deriva la URL de la API (`pyfog.server`) del origen de `--base-url`. Si la
+API está en otro origen HTTPS, indicá `--server-url https://pyfog-api.example`. El equipo arranca
+el agente con `pyfog.pair=1`: muestra un desafío en consola, aparece en **Descubiertos**, y sólo
+después de la aprobación administrativa envía su primer inventario.
 
 La salida tiene esta forma:
 

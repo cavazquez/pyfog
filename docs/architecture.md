@@ -1,6 +1,7 @@
 # Arquitectura de PyFog
 
-Estado: registro e inventario implementados; el agente efímero de inventario está disponible. El contrato que guía las próximas etapas está en la
+Estado: registro, inventario y descubrimiento PXE aprobado están implementados; el agente efímero
+de inventario está disponible. El contrato que guía las próximas etapas está en la
 [ADR 0001: MVP Linux](adr/0001-mvp-linux.md).
 
 ## Primera entrega
@@ -14,7 +15,8 @@ coordinador de imágenes.
 ```mermaid
 flowchart LR
     Web[Navegador del administrador] -->|Sesión + CSRF| API[FastAPI]
-    Linux[Recolector Linux] -->|JSON + token por equipo| API
+    Linux[Agente Linux PXE] -->|Desafío + capacidad temporal| API
+    Linux -->|JSON + token efímero| API
     Linux -->|Archivo JSON| Web
     API --> Validación[Esquema Pydantic v1]
     Validación --> Servicio[Servicio de inventario]
@@ -23,8 +25,11 @@ flowchart LR
 
 Cada equipo tiene un UUID estable y una MAC principal normalizada y única. La MAC es inmutable en
 la edición inicial; nombre y notas se pueden cambiar. Las interfaces adicionales se describen en
-los informes sin constituir nuevas credenciales. La aprobación de dispositivos descubiertos por
-PXE es una característica posterior.
+los informes sin constituir nuevas credenciales. Los equipos descubiertos por PXE aparecen como
+solicitudes de corta duración. La MAC sólo sirve para encontrar candidatos; el administrador
+verifica un desafío que el agente muestra localmente y recién entonces asocia la sesión a un equipo
+nuevo o existente. La capacidad temporal sólo permite publicar el primer inventario y se consume al
+aceptarlo.
 
 Los informes guardan `report_id`, datos validados, fecha de recolección y fecha de recepción UTC.
 La combinación equipo/report_id es única. Reenviar el mismo contenido no crea otro informe;
@@ -60,5 +65,5 @@ initramfs reproducible, red DHCP, cliente HTTPS y recolección de inventario. Su
 no monta discos ni realiza escrituras; Partclone y `sgdisk` sólo se incorporan explícitamente al
 construir el modo `imaging`. El perfil iPXE de [`pxe/`](../pxe/README.md) publica ese agente por
 HTTPS, ofrece inventario o retorno al disco local con timeout y no toma control del DHCP. La
-aprobación desde la web, las tareas persistentes y las operaciones de captura/restauración todavía
-no se ejecutan en esta entrega.
+aprobación desde la web ya habilita el inventario inicial; las tareas persistentes y las operaciones
+de captura/restauración todavía no se ejecutan en esta entrega.

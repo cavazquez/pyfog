@@ -178,6 +178,21 @@
   form[aria-busy="true"] { cursor: progress; }
   form[aria-busy="true"] button { cursor: progress; opacity: .72; }
   .coming-soon { padding-block: 76px; }
+  .pairing-list { display: grid; gap: 0; }
+  .pairing-card { padding: 24px; border-top: 1px solid var(--line); }
+  .pairing-card:first-child { border-top: 0; }
+  .pairing-summary { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+  .pairing-summary h3 { margin: 5px 0; }
+  .pairing-summary p { color: var(--muted); font-size: 11px; }
+  .pairing-challenge { display: flex; flex-wrap: wrap; align-items: baseline; gap: 13px; margin: 22px 0 4px; padding: 14px 16px; border: 1px dashed #b8c9af; border-radius: 7px; background: #f6f9f2; }
+  .pairing-challenge .eyebrow { margin: 0; }
+  .pairing-challenge code { color: var(--green); font-size: 14px; letter-spacing: 1px; word-break: break-all; }
+  .pairing-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 20px; }
+  .pairing-form .form-actions { grid-column: 1 / -1; }
+  .pairing-reject { display: flex; align-items: end; gap: 10px; margin-top: 18px; padding-top: 18px; border-top: 1px solid #eff2ec; }
+  .pairing-reject label { flex: 0 0 auto; margin: 0; font-size: 11px; color: var(--muted); }
+  .pairing-reject input { flex: 1; min-width: 0; font-size: 12px; }
+  .badge.muted { color: #68726d; background: #f0f2ef; border: 1px solid #dce2dd; }
 }
 @layer responsive {
   @media (max-width: 1100px) {
@@ -197,7 +212,7 @@
     .sidebar { position: static; height: auto; padding: 15px 16px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
     .brand { font-size: 25px; }
     .brand-mark { width: 29px; height: 29px; font-size: 19px; }
-    .sidebar nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin: 0; width: 100%; }
+    .sidebar nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin: 0; width: 100%; }
     .nav-item { justify-content: center; padding: 8px 4px; font-size: 11px; white-space: nowrap; }
     .nav-item > span, .nav-label, .sidebar-note, .sidebar-footer .avatar, .sidebar-footer > div { display: none; }
     .sidebar-footer { grid-column: 2; grid-row: 1; padding: 0; border: 0; }
@@ -252,6 +267,13 @@
     input, select, textarea { font-size: 16px; }
     .filters input, .filters select { font-size: 14px; }
     .upload-zone { padding: 20px 14px; }
+    .pairing-card { padding: 20px 18px; }
+    .pairing-form { grid-template-columns: minmax(0, 1fr); }
+    .pairing-form .form-actions { grid-column: auto; }
+    .pairing-form .form-actions .button { width: 100%; }
+    .pairing-reject { align-items: stretch; flex-wrap: wrap; }
+    .pairing-reject label { flex-basis: 100%; }
+    .pairing-reject .button { flex: 0 0 auto; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
 }

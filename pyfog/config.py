@@ -52,6 +52,7 @@ class Settings:
     )
     session_seconds: int = 3600
     token_seconds: int = 86400
+    pairing_seconds: int = 900
     max_body_bytes: int = 1_048_576
 
     def __post_init__(self) -> None:

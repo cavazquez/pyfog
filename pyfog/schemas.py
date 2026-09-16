@@ -111,3 +111,11 @@ class Inventory(Schema):
         if len({i.name for i in value}) != len(value):
             raise ValueError("Hay nombres de interfaces repetidos.")
         return value
+
+
+class PairingRequestInput(Schema):
+    session_id: UUID
+    mac_address: str
+    challenge: str = Field(min_length=16, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+    _mac = field_validator("mac_address")(normalize_mac)

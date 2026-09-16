@@ -7,6 +7,7 @@ from tests.conftest import csrf
 def test_workspace_navigation_has_one_active_section_and_local_assets(admin):
     pages = {
         "/hosts": "Equipos",
+        "/pairing": "Descubiertos",
         "/images": "Imágenes",
         "/tasks": "Tareas",
     }

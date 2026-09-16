@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
@@ -15,7 +15,7 @@ from starlette.datastructures import UploadFile
 from pyfog.config import PACKAGE_DIR
 from pyfog.content import NAVIGATION, SHELL_COPY, UPCOMING_SECTIONS
 from pyfog.database import get_db
-from pyfog.models import Host, InventoryReport, LoginSession, now
+from pyfog.models import Host, InventoryReport, LoginSession, PairingRequest, now
 from pyfog.schemas import HostInput, Inventory
 from pyfog.security import authenticate, csrf_token, digest, require_user, verify_csrf
 from pyfog.services import ingest_inventory
@@ -94,6 +94,13 @@ def get_host(db: Session, host_id: UUID) -> Host:
     return host
 
 
+def get_pairing_request(db: Session, pairing_id: UUID) -> PairingRequest:
+    pairing = db.get(PairingRequest, str(pairing_id))
+    if pairing is None:
+        raise HTTPException(404, "No se encontró la solicitud de registro.")
+    return pairing
+
+
 def latest_report(db: Session, host: Host) -> InventoryReport | None:
     return db.scalar(
         select(InventoryReport)
@@ -169,6 +176,100 @@ def tasks_placeholder(request: Request, db: Db) -> Response:
         section="tasks",
         upcoming=UPCOMING_SECTIONS["tasks"],
     )
+
+
+@router.get("/pairing", response_class=HTMLResponse)
+def pairing_list(request: Request, db: Db) -> Response:
+    user = require_user(request, db)
+    current = now()
+    expired = db.execute(
+        update(PairingRequest)
+        .where(
+            PairingRequest.status.in_(["pending", "approved"]),
+            PairingRequest.expires_at <= current,
+        )
+        .values(status="expired", challenge=None)
+    )
+    if expired.rowcount:
+        db.commit()
+    requests = db.scalars(
+        select(PairingRequest).order_by(PairingRequest.created_at.desc()).limit(50)
+    ).all()
+    hosts = db.scalars(select(Host).order_by(Host.name.asc())).all()
+    return render(
+        request,
+        "pairing.html",
+        user=user,
+        requests=requests,
+        hosts=hosts,
+        section="pairing",
+    )
+
+
+@router.post("/pairing/{pairing_id}/approve")
+async def pairing_approve(request: Request, pairing_id: UUID, db: Db) -> Response:
+    require_user(request, db)
+    pairing = get_pairing_request(db, pairing_id)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    current = now()
+    if pairing.status != "pending" or pairing.expires_at <= current:
+        if pairing.status == "pending" and pairing.expires_at <= current:
+            pairing.status, pairing.challenge = "expired", None
+            db.commit()
+        raise HTTPException(409, "La solicitud ya no está pendiente.")
+    challenge = str(form.get("challenge", ""))
+    if not challenge or not secrets.compare_digest(digest(challenge), pairing.challenge_hash):
+        raise HTTPException(422, "El desafío no coincide con el que muestra el equipo.")
+    selected_host = str(form.get("host_id", "")).strip()
+    host: Host | None
+    if selected_host:
+        try:
+            host = get_host(db, UUID(selected_host))
+        except ValueError:
+            raise HTTPException(422, "El equipo seleccionado no es válido.") from None
+        if host.mac_address != pairing.mac_address:
+            raise HTTPException(422, "La MAC descubierta no coincide con el equipo seleccionado.")
+    else:
+        host = db.scalar(select(Host).where(Host.mac_address == pairing.mac_address))
+        if host is None:
+            host = Host(
+                name=f"PXE {pairing.mac_address}",
+                mac_address=pairing.mac_address,
+                notes="Registrado desde una solicitud PXE aprobada.",
+            )
+            db.add(host)
+            db.flush()
+    pairing.host_id = host.id
+    pairing.status = "approved"
+    pairing.approved_at = current
+    pairing.challenge = None
+    db.commit()
+    set_flash(request, "Solicitud PXE aprobada. El equipo ya puede enviar su inventario.")
+    return RedirectResponse("/pairing", 303)
+
+
+@router.post("/pairing/{pairing_id}/reject")
+async def pairing_reject(request: Request, pairing_id: UUID, db: Db) -> Response:
+    require_user(request, db)
+    pairing = get_pairing_request(db, pairing_id)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    if pairing.status == "pending" and pairing.expires_at <= now():
+        pairing.status, pairing.challenge = "expired", None
+        db.commit()
+    if pairing.status != "pending":
+        raise HTTPException(409, "La solicitud ya no está pendiente.")
+    reason = str(form.get("reason", "Solicitud rechazada por el administrador.")).strip()
+    if len(reason) > 500:
+        raise HTTPException(422, "El motivo no puede superar 500 caracteres.")
+    pairing.status = "rejected"
+    pairing.rejected_at = now()
+    pairing.rejection_reason = reason or "Solicitud rechazada por el administrador."
+    pairing.challenge = None
+    db.commit()
+    set_flash(request, "Solicitud PXE rechazada.")
+    return RedirectResponse("/pairing", 303)
 
 
 @router.get("/hosts", response_class=HTMLResponse)

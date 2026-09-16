@@ -2,6 +2,7 @@
 # PyFog PXE profile. This file is rendered by pxe/build-pxe; it contains no credentials.
 
 set pyfog_base __PYFOG_BASE_URL__
+set pyfog_server __PYFOG_SERVER_URL__
 set pyfog_version __PYFOG_AGENT_VERSION__
 set pyfog_timeout __PYFOG_TIMEOUT_MS__
 
@@ -14,7 +15,7 @@ iseq ${pyfog_choice} inventory && goto inventory || goto local
 
 :inventory
 dhcp || goto local
-kernel ${pyfog_base}/agent/vmlinuz pyfog.version=${pyfog_version} pyfog.mode=inventory pyfog.net=dhcp || goto local
+kernel ${pyfog_base}/agent/vmlinuz pyfog.version=${pyfog_version} pyfog.mode=inventory pyfog.net=dhcp pyfog.server=${pyfog_server} pyfog.pair=1 || goto local
 initrd ${pyfog_base}/agent/initramfs.img || goto local
 boot || goto local
 

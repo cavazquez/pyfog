@@ -3,12 +3,14 @@
 Registro e inventario de equipos Linux con **FastAPI**, SQLAlchemy y una interfaz web responsive.
 Es la primera entrega de un proyecto de imágenes por red inspirado en FOG.
 
-**Disponible:** alta y edición de equipos, identificación por MAC, recolector Linux, importación
-JSON, API con tokens por equipo, inventario actual e historial. Acceso mediante administrador local.
+**Disponible:** alta y edición de equipos, identificación por MAC, descubrimiento PXE con aprobación
+administrativa, recolector Linux, importación JSON, API con tokens por equipo, inventario actual e
+historial. Acceso mediante administrador local.
 
-**En desarrollo:** el agente Linux efímero ya puede arrancar un initramfs reproducible, obtener un
-inventario de solo lectura y enviarlo por HTTPS. El motor de imágenes todavía no está habilitado.
-El arranque PXE, la captura, restauración y clonación con Partclone siguen en los issues siguientes.
+**En desarrollo:** el agente Linux efímero ya puede arrancar un initramfs reproducible, solicitar
+aprobación desde PXE, obtener un inventario de solo lectura y enviarlo por HTTPS. El motor de
+imágenes todavía no está habilitado; la captura, restauración y clonación con Partclone siguen en
+los issues siguientes.
 
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
@@ -73,9 +75,26 @@ unset PYFOG_INVENTORY_TOKEN
 Reemplazá la URL y el UUID por los de tu instalación. Para la prueba local se admite
 `--server http://127.0.0.1:8000`. En otro equipo se requiere HTTPS; una CA propia se configura con
 `--ca-file ca.pem`. El recolector rechaza redirecciones y no usa proxies heredados del entorno.
-El [despliegue LAN con certificados](docs/https.md) ya está documentado; PXE pertenece a la
-siguiente etapa del roadmap. El [agente de arranque](agent/README.md) se construye con hashes
+El [despliegue LAN con certificados](docs/https.md) ya está documentado. El [agente de arranque](agent/README.md) se construye con hashes
 reproducibles y tiene `inventory` como modo predeterminado; nunca monta discos ni escribe bloques.
+
+### Descubrimiento desde PXE
+
+El perfil [PXE/UEFI](pxe/README.md) pasa la URL HTTPS del servidor y activa `pyfog.pair=1`. Al
+arrancar, el agente muestra un desafío efímero en la consola y publica una solicitud en **Equipos
+descubiertos**. El administrador compara el desafío, la asocia a un equipo nuevo o existente y la
+aprueba. El agente recibe una capacidad temporal, envía un único inventario y la capacidad deja de
+servir para cualquier otra operación. Una solicitud rechazada o vencida no habilita tareas.
+
+Para probar el mismo flujo desde un Linux con red, ejecutá `python3 collect_inventory.py --pair
+--server https://pyfog.example --ca-file ca.pem`. El comando conserva el informe en memoria durante
+la espera; `--pair-timeout` permite ajustar el tiempo máximo de aprobación.
+
+El flujo usa `POST /api/v1/pairing/requests` para crear la solicitud, `GET
+/api/v1/pairing/requests/{id}` para consultar su estado y `POST
+/api/v1/pairing/requests/{id}/inventory` para entregar el primer informe. Las dos últimas rutas
+requieren la capacidad Bearer efímera que devuelve la primera; después del informe, esa capacidad
+no permite otro `report_id`.
 
 Si falla el envío, el archivo generado queda disponible. Para reenviar exactamente el mismo informe,
 con el token nuevamente en el entorno:

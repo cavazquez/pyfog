@@ -13,6 +13,7 @@ readonly AGENT_BUILDER="$PROJECT_ROOT/agent/build-agent"
 OUTPUT_DIR="$PROJECT_ROOT/dist/pxe"
 AGENT_DIR="$PROJECT_ROOT/dist/agent"
 BASE_URL=""
+SERVER_URL=""
 IPXE_EFI=""
 PROFILE_ONLY=0
 TIMEOUT_MS=5000
@@ -35,6 +36,7 @@ Opciones de build:
   --agent-dir DIR       Artefactos del agente (por defecto: dist/agent)
   --output-dir DIR      Publicación PXE (por defecto: dist/pxe)
   --base-url URL        Raíz HTTPS sin credenciales, query ni fragmento
+  --server-url URL      API HTTPS de PyFog; por defecto, el origen de --base-url
   --ipxe-efi PATH       Binario UEFI iPXE para la raíz TFTP
   --profile-only        Generar el script sin exigir --ipxe-efi
   --timeout-ms N        Timeout del menú; por defecto 5000, entre 1000 y 60000
@@ -59,6 +61,11 @@ parse_options() {
             --base-url)
                 (($# >= 2)) || error "--base-url requiere un valor"
                 BASE_URL=$2
+                shift 2
+                ;;
+            --server-url)
+                (($# >= 2)) || error "--server-url requiere un valor"
+                SERVER_URL=$2
                 shift 2
                 ;;
             --ipxe-efi)
@@ -149,6 +156,39 @@ PY
     ) || error "--base-url inválida"
 }
 
+validate_server_url() {
+    SERVER_URL=$(
+        python3 - "$SERVER_URL" <<'PY'
+from urllib.parse import urlsplit, urlunsplit
+import sys
+
+value = sys.argv[1]
+try:
+    parsed = urlsplit(value)
+    hostname = parsed.hostname
+    port = parsed.port
+except ValueError:
+    raise SystemExit("la URL del servidor no es válida")
+if (
+    parsed.scheme != "https"
+    or not hostname
+    or parsed.username
+    or parsed.password
+    or parsed.query
+    or parsed.fragment
+    or parsed.path not in {"", "/"}
+    or not value.isascii()
+    or any(char.isspace() for char in value)
+    or any(char in value for char in (";", "'", '"', "`", "$", "{", "}"))
+):
+    raise SystemExit("la URL del servidor debe ser HTTPS, raíz y sin credenciales")
+if port is not None and not 1 <= port <= 65535:
+    raise SystemExit("el puerto de la URL del servidor no es válido")
+print(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+PY
+    ) || error "--server-url inválida"
+}
+
 read_agent_metadata() {
     [ -d "$AGENT_DIR" ] || error "no existe el directorio del agente: $AGENT_DIR"
     for file in vmlinuz initramfs.img manifest.json SHA256SUMS; do
@@ -180,6 +220,17 @@ PY
 build() {
     local work source_dir http_dir tftp_dir manifest_path sums_path
     validate_base_url
+    if [ -z "$SERVER_URL" ]; then
+        SERVER_URL=$(python3 - "$BASE_URL" <<'PY'
+from urllib.parse import urlsplit, urlunsplit
+import sys
+
+parsed = urlsplit(sys.argv[1])
+print(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+PY
+        ) || error "no se pudo derivar --server-url"
+    fi
+    validate_server_url
     read_agent_metadata
     if [ "$PROFILE_ONLY" -eq 0 ]; then
         [ -n "$IPXE_EFI" ] || error "--ipxe-efi es obligatorio (o use --profile-only)"
@@ -197,16 +248,17 @@ build() {
     if [ -n "$IPXE_EFI" ]; then
         install -m 0644 "$IPXE_EFI" "$tftp_dir/ipxe.efi"
     fi
-    python3 - "$TEMPLATE" "$tftp_dir/boot.ipxe" "$BASE_URL" "$VERSION" "$TIMEOUT_MS" <<'PY'
+    python3 - "$TEMPLATE" "$tftp_dir/boot.ipxe" "$BASE_URL" "$SERVER_URL" "$VERSION" "$TIMEOUT_MS" <<'PY'
 import pathlib
 import sys
 
 template_path = pathlib.Path(sys.argv[1])
 output_path = pathlib.Path(sys.argv[2])
-base_url, version, timeout = sys.argv[3:6]
+base_url, server_url, version, timeout = sys.argv[3:7]
 content = template_path.read_text(encoding="utf-8")
 for placeholder, value in {
     "__PYFOG_BASE_URL__": base_url,
+    "__PYFOG_SERVER_URL__": server_url,
     "__PYFOG_AGENT_VERSION__": version,
     "__PYFOG_TIMEOUT_MS__": timeout,
 }.items():
@@ -217,7 +269,7 @@ output_path.write_text(content, encoding="utf-8")
 PY
     manifest_path="$work/manifest.json"
     sums_path="$work/SHA256SUMS"
-    python3 - "$manifest_path" "$http_dir" "$tftp_dir" "$BASE_URL" "$VERSION" "$TIMEOUT_MS" \
+    python3 - "$manifest_path" "$http_dir" "$tftp_dir" "$BASE_URL" "$SERVER_URL" "$VERSION" "$TIMEOUT_MS" \
         "$SOURCE_DATE_EPOCH_VALUE" <<'PY'
 import hashlib
 import json
@@ -227,7 +279,7 @@ import sys
 manifest_path = pathlib.Path(sys.argv[1])
 http_dir = pathlib.Path(sys.argv[2])
 tftp_dir = pathlib.Path(sys.argv[3])
-base_url, version, timeout, epoch = sys.argv[4:8]
+base_url, server_url, version, timeout, epoch = sys.argv[4:9]
 
 def digest(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -248,6 +300,7 @@ metadata = {
     "format": "pyfog-pxe-profile",
     "profile_version": version,
     "base_url": base_url,
+    "server_url": server_url,
     "menu_timeout_ms": int(timeout),
     "source_date_epoch": int(epoch),
     "files": files,
