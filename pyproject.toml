@@ -1,0 +1,50 @@
+[project]
+name = "pyfog"
+version = "0.1.0"
+description = "Registro e inventario de equipos Linux, como base para imágenes por red."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.141.1",
+  "starlette==1.6.0",
+  "pydantic==2.13.5",
+  "uvicorn==0.53.0",
+  "sqlalchemy==2.0.54",
+  "alembic==1.20.0",
+  "jinja2==3.1.6",
+  "python-multipart==0.0.32",
+  "itsdangerous==2.2.0",
+  "pwdlib[argon2]==0.3.1",
+]
+
+[dependency-groups]
+dev = ["ruff==0.16.7", "mypy==1.20.2", "pytest==9.1.1", "httpx==0.28.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["pyfog", "scripts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F", "I", "UP", "B", "SIM", "C4", "PIE", "RUF", "N",
+  "ASYNC", "S", "PTH", "DTZ", "PT", "A", "RET", "T20",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106"]
+"pyfog/__main__.py" = ["T201"]
+"scripts/collect_inventory.py" = ["T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Credencial de inventario{% endblock %}
+{% block content %}
+<a class="back-link" href="/hosts/{{ host.id }}">← {{ host.name }}</a><div class="page-heading"><div><p class="eyebrow">ENVÍO DIRECTO</p><h1>Token de inventario</h1><p>Una credencial exclusiva para {{ host.name }}.</p></div></div>
+<section class="panel form-panel narrow"><div class="alert warning">Copiá este token ahora. Se muestra una sola vez y vence el {{ host.token_expires_at|date }}.</div><label for="token">Token</label><textarea id="token" readonly rows="2" spellcheck="false">{{ token }}</textarea><h2>Enviar desde el equipo Linux</h2><p>Ingresá el token en una variable sin dejarlo en el historial de Bash:</p><pre><code>read -rsp 'Token: ' PYFOG_INVENTORY_TOKEN; echo
+export PYFOG_INVENTORY_TOKEN
+python3 collect_inventory.py \
+  --server {{ request.base_url|string|trim('/') }} \
+  --host-id {{ host.id }}
+unset PYFOG_INVENTORY_TOKEN</code></pre><p class="muted">Para otro equipo, usá la dirección HTTPS del servidor. HTTP está permitido solo en loopback local. Si usás una CA propia, agregá <code>--ca-file ca.pem</code>.</p><a class="button primary" href="/hosts/{{ host.id }}">Volver al equipo</a></section>
+{% endblock %}

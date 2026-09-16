@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Importar inventario{% endblock %}
+{% block content %}
+<a class="back-link" href="/hosts/{{ host.id }}">← {{ host.name }}</a><div class="page-heading"><div><p class="eyebrow">ACTUALIZAR INVENTARIO</p><h1>Conocé el hardware.</h1><p>Agregá el informe de <strong>{{ host.name }}</strong> · <code>{{ host.mac_address }}</code></p></div></div>
+<div class="form-layout"><section class="panel form-panel"><h2>Importar informe JSON</h2><p class="muted">El archivo debe incluir la MAC principal de este equipo.</p>{% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
+<form method="post" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf }}"><div class="upload-zone"><label for="inventory">Seleccioná el archivo de inventario</label><input id="inventory" name="inventory" type="file" accept=".json,application/json" required aria-describedby="file-help"><small id="file-help">JSON generado por el recolector · Máximo 1 MB</small></div><div class="form-actions"><a class="button secondary" href="/hosts/{{ host.id }}">Cancelar</a><button class="button primary">Importar inventario <span aria-hidden="true">→</span></button></div></form></section>
+<aside class="guide-card"><span class="guide-number">02 / INVENTARIO</span><h2>Desde el equipo Linux</h2><p>Copiá <code>scripts/collect_inventory.py</code> del proyecto al equipo y ejecutá:</p><pre><code>python3 collect_inventory.py --output inventory.json</code></pre><p>No requiere paquetes Python adicionales ni modifica el sistema. Después, seleccioná ese archivo en este formulario.</p><hr><p class="muted">También podés enviar informes directamente al servidor con un token desde la ficha del equipo.</p></aside></div>
+{% endblock %}
