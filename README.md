@@ -161,4 +161,10 @@ Las imágenes tendrán una matriz inicial acotada a Linux x86_64, UEFI sin Secur
 ESP FAT32 y swap opcional; un disco por tarea y destino de igual o mayor capacidad. El inventario
 actual puede describir hardware fuera de esa matriz. No se promete compatibilidad de formato con FOG.
 
+## Laboratorio UEFI
+
+El laboratorio reproducible [lab/README.md](lab/README.md) crea dos VMs QEMU/OVMF con discos
+descartables y una red aislada en loopback. Sirve para validar el próximo flujo PXE, captura y
+restauración sin exponer discos físicos ni la red de una LAN.
+
 Licencia del proyecto: [Apache-2.0](LICENSE).

@@ -223,3 +223,6 @@ __marimo__/
 *.db-shm
 *.db-wal
 inventory*.json
+
+# Disposable QEMU/OVMF laboratory
+.lab/

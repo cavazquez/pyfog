@@ -1,0 +1,774 @@
+#!/usr/bin/env bash
+# Reproducible, deliberately isolated QEMU/OVMF laboratory for PyFog.
+set -euo pipefail
+
+IFS=$'\n\t'
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+readonly SCRIPT_DIR
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+readonly PROJECT_ROOT
+LAB_ROOT="$PROJECT_ROOT/.lab"
+readonly LAB_ROOT
+MARKER_FILE="$LAB_ROOT/.pyfog-lab-marker"
+readonly MARKER_FILE
+MARKER_VALUE="pyfog-lab-v1"
+readonly MARKER_VALUE
+MANIFEST_FILE="$SCRIPT_DIR/reference-image.env"
+readonly MANIFEST_FILE
+SOURCE_NAME="source"
+readonly SOURCE_NAME
+TARGET_NAME="target"
+readonly TARGET_NAME
+SOURCE_MAC="52:54:00:17:00:01"
+readonly SOURCE_MAC
+TARGET_MAC="52:54:00:17:00:02"
+readonly TARGET_MAC
+SOURCE_IP="192.0.2.1"
+readonly SOURCE_IP
+TARGET_IP="192.0.2.2"
+readonly TARGET_IP
+NETWORK_PORT="45170"
+readonly NETWORK_PORT
+
+die() {
+    printf 'Error: %s\n' "$*" >&2
+    exit 1
+}
+
+info() {
+    printf '==> %s\n' "$*"
+}
+
+usage() {
+    cat <<'EOF'
+Uso: ./lab/pyfog-lab COMANDO [VM]
+
+Comandos:
+  doctor                 Comprueba las herramientas del host.
+  create                 Descarga y verifica la referencia; crea discos y semillas.
+  up                     Equivale a create y arranca source y target.
+  start source|target|all
+  stop source|target|all
+  status                 Muestra el estado de las dos VMs.
+  console source|target  Abre la consola serie de una VM.
+  monitor source|target  Abre el monitor QMP de una VM.
+  inspect source|target  Muestra MAC, IP, disco y metadatos QCOW2.
+  validate-layout        Verifica GPT, ESP FAT32, raíz ext4 y ausencia de LVM/cifrado.
+  destroy                Detiene las VMs y borra únicamente recursos del laboratorio.
+
+Los recursos se crean siempre en .lab/ dentro de este repositorio.
+EOF
+}
+
+if [[ ! -r "$MANIFEST_FILE" ]]; then
+    die "No se puede leer el manifiesto de la imagen: $MANIFEST_FILE"
+fi
+
+# The path is computed from this script and is checked for readability above.
+# shellcheck disable=SC1090,SC1091
+source "$MANIFEST_FILE"
+
+readonly REFERENCE_IMAGE_URL
+readonly REFERENCE_IMAGE_SHA256
+readonly REFERENCE_IMAGE_FILENAME
+
+assert_lab_path() {
+    [[ -n "$PROJECT_ROOT" && "$PROJECT_ROOT" != "/" ]] ||
+        die "La raíz del proyecto no es segura para el laboratorio."
+    [[ "$LAB_ROOT" == "$PROJECT_ROOT/.lab" ]] ||
+        die "El laboratorio solo puede usar .lab/ dentro del proyecto."
+    [[ ! -L "$LAB_ROOT" ]] ||
+        die "Se rechaza .lab/ porque es un enlace simbólico."
+    [[ ! -e "$LAB_ROOT" || -d "$LAB_ROOT" ]] ||
+        die ".lab/ existe pero no es un directorio."
+}
+
+validate_manifest() {
+    [[ "$REFERENCE_IMAGE_URL" == https://* ]] ||
+        die "La URL de referencia debe usar HTTPS."
+    [[ "$REFERENCE_IMAGE_FILENAME" != */* && -n "$REFERENCE_IMAGE_FILENAME" ]] ||
+        die "El nombre de la imagen de referencia no es seguro."
+    [[ "$REFERENCE_IMAGE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] ||
+        die "El SHA-256 de la imagen de referencia no es válido."
+}
+
+initialize_lab() {
+    assert_lab_path
+
+    if [[ ! -e "$LAB_ROOT" ]]; then
+        mkdir --mode=700 "$LAB_ROOT"
+    elif [[ ! -f "$MARKER_FILE" ]]; then
+        if [[ -n "$(find "$LAB_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+            die ".lab/ no pertenece al laboratorio o contiene recursos ajenos."
+        fi
+    fi
+
+    if [[ ! -f "$MARKER_FILE" ]]; then
+        printf '%s\n' "$MARKER_VALUE" >"$MARKER_FILE"
+    fi
+
+    verify_lab_marker
+    mkdir -p "$LAB_ROOT/cache" "$LAB_ROOT/$SOURCE_NAME" "$LAB_ROOT/$TARGET_NAME"
+    chmod 700 "$LAB_ROOT" "$LAB_ROOT/cache" "$LAB_ROOT/$SOURCE_NAME" "$LAB_ROOT/$TARGET_NAME"
+}
+
+verify_lab_marker() {
+    assert_lab_path
+    [[ -d "$LAB_ROOT" && -f "$MARKER_FILE" ]] ||
+        die "No existe un laboratorio PyFog inicializado en $LAB_ROOT."
+
+    local marker
+    marker="$(<"$MARKER_FILE")"
+    [[ "$marker" == "$MARKER_VALUE" ]] ||
+        die "El marcador de $LAB_ROOT no corresponde a este laboratorio."
+}
+
+reference_image() {
+    printf '%s/cache/%s\n' "$LAB_ROOT" "$REFERENCE_IMAGE_FILENAME"
+}
+
+vm_directory() {
+    case "$1" in
+        "$SOURCE_NAME" | "$TARGET_NAME")
+            printf '%s/%s\n' "$LAB_ROOT" "$1"
+            ;;
+        *)
+            die "VM desconocida: $1"
+            ;;
+    esac
+}
+
+disk_path() {
+    local directory
+    directory="$(vm_directory "$1")"
+    printf '%s/disk.disposable.qcow2\n' "$directory"
+}
+
+seed_path() {
+    local directory
+    directory="$(vm_directory "$1")"
+    printf '%s/cloud-init.seed.iso\n' "$directory"
+}
+
+firmware_vars_path() {
+    local directory
+    directory="$(vm_directory "$1")"
+    printf '%s/OVMF_VARS.fd\n' "$directory"
+}
+
+pid_path() {
+    local directory
+    directory="$(vm_directory "$1")"
+    printf '%s/qemu.pid\n' "$directory"
+}
+
+serial_socket_path() {
+    local directory
+    directory="$(vm_directory "$1")"
+    printf '%s/serial.sock\n' "$directory"
+}
+
+serial_log_path() {
+    local directory
+    directory="$(vm_directory "$1")"
+    printf '%s/serial.log\n' "$directory"
+}
+
+monitor_socket_path() {
+    local directory
+    directory="$(vm_directory "$1")"
+    printf '%s/monitor.sock\n' "$directory"
+}
+
+vm_mac() {
+    case "$1" in
+        "$SOURCE_NAME")
+            printf '%s\n' "$SOURCE_MAC"
+            ;;
+        "$TARGET_NAME")
+            printf '%s\n' "$TARGET_MAC"
+            ;;
+        *)
+            die "VM desconocida: $1"
+            ;;
+    esac
+}
+
+vm_ip() {
+    case "$1" in
+        "$SOURCE_NAME")
+            printf '%s\n' "$SOURCE_IP"
+            ;;
+        "$TARGET_NAME")
+            printf '%s\n' "$TARGET_IP"
+            ;;
+        *)
+            die "VM desconocida: $1"
+            ;;
+    esac
+}
+
+firmware_paths() {
+    local code variables
+
+    for code in \
+        /usr/share/OVMF/OVMF_CODE.fd \
+        /usr/share/OVMF/OVMF_CODE_4M.fd \
+        /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+        /usr/share/edk2-ovmf/x64/OVMF_CODE_4M.fd; do
+        variables="$(dirname "$code")/$(basename "$code" | sed 's/CODE/VARS/')"
+        if [[ -r "$code" && -r "$variables" ]]; then
+            printf '%s\n%s\n' "$code" "$variables"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+firmware_code() {
+    firmware_paths | sed -n '1p'
+}
+
+firmware_variables() {
+    firmware_paths | sed -n '2p'
+}
+
+doctor() {
+    local missing=0 tool
+
+    for tool in \
+        curl sha256sum qemu-img qemu-system-x86_64 cloud-localds file sgdisk socat python3; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            printf 'OK       %s\n' "$tool"
+        else
+            printf 'FALTA    %s\n' "$tool" >&2
+            missing=1
+        fi
+    done
+
+    if firmware_paths >/dev/null; then
+        printf 'OK       OVMF sin Secure Boot\n'
+    else
+        printf 'FALTA    firmware OVMF sin Secure Boot\n' >&2
+        missing=1
+    fi
+
+    if ((missing)); then
+        printf '%s\n' \
+            'En Ubuntu: sudo apt-get install qemu-system-x86 qemu-utils ovmf cloud-image-utils file gdisk socat' >&2
+        return 1
+    fi
+}
+
+ensure_host_tools() {
+    if ! doctor; then
+        die "Instalá los prerrequisitos y ejecutá doctor nuevamente."
+    fi
+}
+
+verify_reference_checksum() {
+    local image
+    image="$1"
+    printf '%s *%s\n' "$REFERENCE_IMAGE_SHA256" "$image" | sha256sum --check --status
+}
+
+fetch_reference_image() {
+    local image temporary
+    image="$(reference_image)"
+
+    if [[ -f "$image" ]]; then
+        if verify_reference_checksum "$image"; then
+            chmod 0444 "$image"
+            info "La imagen de referencia ya está verificada: $image"
+            return 0
+        fi
+        die "La imagen en caché no coincide con el SHA-256 fijado; se conserva para inspección."
+    fi
+
+    temporary="$(mktemp "$LAB_ROOT/cache/.reference-download.XXXXXX")"
+    info "Descargando la imagen Linux de referencia desde Canonical."
+    if ! curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        --retry 3 --retry-delay 2 --output "$temporary" "$REFERENCE_IMAGE_URL"; then
+        rm -f -- "$temporary"
+        die "No se pudo descargar la imagen de referencia."
+    fi
+
+    if ! verify_reference_checksum "$temporary"; then
+        rm -f -- "$temporary"
+        die "La descarga no coincide con el SHA-256 fijado."
+    fi
+
+    chmod 0444 "$temporary"
+    mv -- "$temporary" "$image"
+    chmod 0444 "$image"
+    info "Referencia descargada y verificada: $image"
+}
+
+validate_reference_layout() {
+    local image raw_image gpt
+    local number start code signature root_ext4=0 esp_fat32=0
+    image="$(reference_image)"
+    [[ -r "$image" ]] || die "Primero ejecutá create o validate-layout."
+
+    raw_image="$LAB_ROOT/cache/layout-check.$$.raw"
+    rm -f -- "$raw_image"
+    info "Verificando la tabla GPT de la referencia."
+    if ! qemu-img convert -O raw "$image" "$raw_image"; then
+        rm -f -- "$raw_image"
+        die "No se pudo convertir temporalmente la imagen para inspeccionar GPT."
+    fi
+
+    gpt="$(sgdisk --print "$raw_image")"
+    printf '%s\n' "$gpt"
+
+    while IFS=' ' read -r number start code; do
+        signature="$(dd if="$raw_image" bs=512 skip="$start" count=8 status=none | file -)"
+        printf 'Partición %s (%s): %s\n' "$number" "$code" "$signature"
+
+        if grep -Eqi 'LVM2|LUKS|crypto' <<<"$signature"; then
+            rm -f -- "$raw_image"
+            die "La referencia contiene LVM o cifrado, que no pertenece al alcance del laboratorio."
+        fi
+        if [[ "$code" == "EF00" ]] && grep -Eqi 'FAT \(32 bit\)|FAT32' <<<"$signature"; then
+            esp_fat32=1
+        fi
+        if [[ "$code" == "8300" ]] && grep -Eqi 'ext4 filesystem data' <<<"$signature"; then
+            root_ext4=1
+        fi
+    done < <(awk '$1 ~ /^[0-9]+$/ && NF >= 6 { print $1, $2, $6 }' <<<"$gpt")
+    rm -f -- "$raw_image"
+
+    ((esp_fat32)) || die "La imagen no contiene una ESP GPT EF00 con FAT32."
+    ((root_ext4)) || die "La imagen no contiene una raíz ext4 en una partición Linux (8300)."
+
+    info "Layout válido: GPT, ESP FAT32, raíz ext4 y sin LVM/cifrado."
+}
+
+ensure_credentials() {
+    local credentials password
+    credentials="$LAB_ROOT/credentials.env"
+
+    if [[ -f "$credentials" ]]; then
+        return 0
+    fi
+
+    password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
+    {
+        printf '%s\n' '# Credencial efímera de consola; no usar fuera de .lab/.'
+        printf '%s\n' 'PYFOG_LAB_USER=pyfog'
+        printf 'PYFOG_LAB_PASSWORD=%s\n' "$password"
+    } >"$credentials"
+    chmod 600 "$credentials"
+}
+
+lab_password() {
+    local credentials password
+    credentials="$LAB_ROOT/credentials.env"
+    password="$(sed -n 's/^PYFOG_LAB_PASSWORD=//p' "$credentials")"
+    [[ -n "$password" ]] || die "No se pudo leer la credencial efímera del laboratorio."
+    printf '%s\n' "$password"
+}
+
+prepare_vm() {
+    local vm directory disk seed variables user_data meta_data network_data password
+    local firmware_vars mac address image
+
+    vm="$1"
+    ensure_vm_stopped "$vm"
+    directory="$(vm_directory "$vm")"
+    disk="$(disk_path "$vm")"
+    seed="$(seed_path "$vm")"
+    variables="$(firmware_vars_path "$vm")"
+    user_data="$directory/user-data"
+    meta_data="$directory/meta-data"
+    network_data="$directory/network-config"
+    firmware_vars="$(firmware_variables)"
+    mac="$(vm_mac "$vm")"
+    address="$(vm_ip "$vm")"
+    image="$(reference_image)"
+
+    mkdir -p "$directory"
+    chmod 700 "$directory"
+
+    if [[ ! -f "$disk" ]]; then
+        info "Creando el disco descartable de $vm: $disk"
+        qemu-img create -f qcow2 -F qcow2 -b "$image" "$disk"
+    fi
+    qemu-img info --output=json "$disk" >/dev/null
+
+    if [[ ! -f "$variables" ]]; then
+        cp --reflink=auto "$firmware_vars" "$variables"
+        chmod 600 "$variables"
+    fi
+
+    password="$(lab_password)"
+    {
+        printf '%s\n' '#cloud-config'
+        printf 'hostname: pyfog-%s\n' "$vm"
+        printf 'manage_etc_hosts: true\n'
+        printf '%s\n' 'users:'
+        printf '%s\n' '  - name: pyfog'
+        printf '%s\n' '    groups: [sudo]'
+        printf '%s\n' '    sudo: "ALL=(ALL) NOPASSWD:ALL"'
+        printf '%s\n' '    shell: /bin/bash'
+        printf '%s\n' '    lock_passwd: false'
+        printf '%s\n' 'chpasswd:'
+        printf '%s\n' '  expire: false'
+        printf '%s\n' '  users:'
+        printf '%s\n' '    - name: pyfog'
+        printf '      password: "%s"\n' "$password"
+        printf '%s\n' '      type: text'
+        printf '%s\n' 'ssh_pwauth: false'
+    } >"$user_data"
+    {
+        printf 'instance-id: pyfog-lab-%s-v1\n' "$vm"
+        printf 'local-hostname: pyfog-%s\n' "$vm"
+    } >"$meta_data"
+    {
+        printf '%s\n' 'version: 2'
+        printf '%s\n' 'ethernets:'
+        printf '%s\n' '  lab0:'
+        printf '%s\n' '    match:'
+        printf '      macaddress: "%s"\n' "$mac"
+        printf '%s\n' '    set-name: lab0'
+        printf '%s\n' '    addresses:'
+        printf '      - %s/30\n' "$address"
+    } >"$network_data"
+    chmod 600 "$user_data" "$meta_data" "$network_data"
+
+    rm -f -- "$seed"
+    cloud-localds --network-config "$network_data" "$seed" "$user_data" "$meta_data"
+    chmod 600 "$seed"
+    {
+        printf '%s\n' 'Este directorio pertenece al laboratorio PyFog.'
+        printf '%s\n' 'disk.disposable.qcow2 es un overlay descartable; nunca es un disco físico.'
+    } >"$directory/DISPOSABLE"
+}
+
+vm_state() {
+    local vm pid_file pid cmdline
+    vm="$1"
+    pid_file="$(pid_path "$vm")"
+
+    if [[ ! -f "$pid_file" ]]; then
+        printf '%s\n' 'missing'
+        return 0
+    fi
+
+    pid="$(<"$pid_file")"
+    if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+        printf '%s\n' 'stale'
+        return 0
+    fi
+
+    cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+    if [[ "$cmdline" == *"pyfog-lab-$vm"* && "$cmdline" == *"$(disk_path "$vm")"* ]]; then
+        printf '%s\n' 'running'
+    else
+        printf '%s\n' 'unsafe'
+    fi
+}
+
+clear_vm_runtime_files() {
+    local vm
+    vm="$1"
+    rm -f -- "$(pid_path "$vm")" "$(serial_socket_path "$vm")" "$(monitor_socket_path "$vm")"
+}
+
+ensure_vm_stopped() {
+    local state
+    state="$(vm_state "$1")"
+    case "$state" in
+        missing)
+            ;;
+        stale)
+            clear_vm_runtime_files "$1"
+            ;;
+        running)
+            die "La VM $1 está activa; detenela antes de modificar su disco o semilla."
+            ;;
+        unsafe)
+            die "El PID de $1 no corresponde al QEMU del laboratorio; se rechaza modificarlo."
+            ;;
+    esac
+}
+
+create_lab() {
+    validate_manifest
+    ensure_host_tools
+    initialize_lab
+    fetch_reference_image
+    validate_reference_layout
+    ensure_credentials
+    prepare_vm "$SOURCE_NAME"
+    prepare_vm "$TARGET_NAME"
+    info "Laboratorio preparado en $LAB_ROOT"
+}
+
+start_vm() {
+    local vm state disk seed variables serial serial_log monitor backend firmware
+    vm="$1"
+    verify_lab_marker
+    ensure_host_tools
+
+    disk="$(disk_path "$vm")"
+    seed="$(seed_path "$vm")"
+    variables="$(firmware_vars_path "$vm")"
+    serial="$(serial_socket_path "$vm")"
+    serial_log="$(serial_log_path "$vm")"
+    monitor="$(monitor_socket_path "$vm")"
+    firmware="$(firmware_code)"
+    [[ -f "$disk" && -f "$seed" && -f "$variables" ]] ||
+        die "La VM $vm no está preparada; ejecutá ./lab/pyfog-lab create."
+
+    state="$(vm_state "$vm")"
+    case "$state" in
+        running)
+            info "La VM $vm ya está activa."
+            return 0
+            ;;
+        stale)
+            clear_vm_runtime_files "$vm"
+            ;;
+        unsafe)
+            die "El PID de $vm no corresponde al QEMU del laboratorio; se rechaza iniciarlo."
+            ;;
+    esac
+
+    if [[ "$vm" == "$SOURCE_NAME" ]]; then
+        backend="socket,id=labnet,listen=127.0.0.1:$NETWORK_PORT"
+    else
+        state="$(vm_state "$SOURCE_NAME")"
+        [[ "$state" == "running" ]] ||
+            die "Iniciá source antes de target para crear el enlace de red aislado."
+        backend="socket,id=labnet,connect=127.0.0.1:$NETWORK_PORT"
+    fi
+
+    info "Arrancando $vm con su disco descartable y red aislada."
+    qemu-system-x86_64 \
+        -name "pyfog-lab-$vm" \
+        -machine q35,accel=kvm:tcg \
+        -cpu max \
+        -m 2048 \
+        -smp 2 \
+        -boot order=c,menu=on,strict=on \
+        -display none \
+        -no-reboot \
+        -drive if=pflash,format=raw,readonly=on,file="$firmware" \
+        -drive if=pflash,format=raw,file="$variables" \
+        -drive if=virtio,format=qcow2,file="$disk" \
+        -drive file="$seed",media=cdrom,readonly=on,format=raw \
+        -nic none \
+        -netdev "$backend" \
+        -device virtio-net-pci,netdev=labnet,mac="$(vm_mac "$vm")" \
+        -chardev socket,id=serial0,path="$serial",server=on,wait=off,logfile="$serial_log",logappend=on \
+        -serial chardev:serial0 \
+        -qmp "unix:$monitor,server=on,wait=off" \
+        -pidfile "$(pid_path "$vm")" \
+        -daemonize
+
+    local attempt
+    for ((attempt = 0; attempt < 20; attempt++)); do
+        if [[ "$(vm_state "$vm")" == "running" && -S "$serial" && -S "$monitor" ]]; then
+            info "$vm está activa. Consola: ./lab/pyfog-lab console $vm"
+            return 0
+        fi
+        sleep 0.25
+    done
+
+    die "QEMU no dejó $vm listo; revisá el soporte de virtualización y ejecutá status."
+}
+
+start_all() {
+    start_vm "$SOURCE_NAME"
+    start_vm "$TARGET_NAME"
+}
+
+stop_vm() {
+    local vm state pid attempt
+    vm="$1"
+    verify_lab_marker
+    state="$(vm_state "$vm")"
+
+    case "$state" in
+        missing)
+            info "La VM $vm ya está detenida."
+            return 0
+            ;;
+        stale)
+            clear_vm_runtime_files "$vm"
+            info "Se retiraron archivos de ejecución obsoletos de $vm."
+            return 0
+            ;;
+        unsafe)
+            die "El PID de $vm no corresponde al QEMU del laboratorio; no se envía ninguna señal."
+            ;;
+    esac
+
+    pid="$(<"$(pid_path "$vm")")"
+    info "Deteniendo la VM descartable $vm."
+    kill -TERM "$pid"
+    for ((attempt = 0; attempt < 40; attempt++)); do
+        if [[ "$(vm_state "$vm")" != "running" ]]; then
+            clear_vm_runtime_files "$vm"
+            return 0
+        fi
+        sleep 0.25
+    done
+
+    if [[ "$(vm_state "$vm")" == "running" ]]; then
+        kill -KILL "$pid"
+        sleep 0.25
+    fi
+    [[ "$(vm_state "$vm")" != "running" ]] ||
+        die "No se pudo detener la VM $vm."
+    clear_vm_runtime_files "$vm"
+}
+
+stop_all() {
+    stop_vm "$TARGET_NAME"
+    stop_vm "$SOURCE_NAME"
+}
+
+show_status() {
+    local vm state
+    if [[ ! -d "$LAB_ROOT" ]]; then
+        info "No existe un laboratorio en $LAB_ROOT."
+        return 0
+    fi
+    verify_lab_marker
+
+    for vm in "$SOURCE_NAME" "$TARGET_NAME"; do
+        state="$(vm_state "$vm")"
+        printf '%-7s %s\n' "$vm" "$state"
+    done
+}
+
+open_console() {
+    local socket
+    verify_lab_marker
+    socket="$(serial_socket_path "$1")"
+    [[ -S "$socket" ]] ||
+        die "La consola de $1 no está disponible; iniciá la VM primero."
+    info "Para salir de socat usá Ctrl-]."
+    exec socat -,raw,echo=0 "UNIX-CONNECT:$socket"
+}
+
+open_monitor() {
+    local socket
+    verify_lab_marker
+    socket="$(monitor_socket_path "$1")"
+    [[ -S "$socket" ]] ||
+        die "El monitor de $1 no está disponible; iniciá la VM primero."
+    exec socat - "UNIX-CONNECT:$socket"
+}
+
+inspect_vm() {
+    local vm disk
+    vm="$1"
+    verify_lab_marker
+    disk="$(disk_path "$vm")"
+    [[ -f "$disk" ]] || die "La VM $vm no está preparada."
+    printf 'VM: %s\nMAC: %s\nIP aislada: %s/30\nDisco descartable: %s\n' \
+        "$vm" "$(vm_mac "$vm")" "$(vm_ip "$vm")" "$disk"
+    qemu-img info "$disk"
+}
+
+destroy_lab() {
+    local entry
+    assert_lab_path
+    if [[ ! -e "$LAB_ROOT" ]]; then
+        info "No existe un laboratorio para destruir."
+        return 0
+    fi
+    verify_lab_marker
+    stop_all
+
+    for entry in cache "$SOURCE_NAME" "$TARGET_NAME" credentials.env .pyfog-lab-marker; do
+        rm -rf -- "${LAB_ROOT:?}/$entry"
+    done
+
+    if [[ -z "$(find "$LAB_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        rmdir "$LAB_ROOT"
+        info "Laboratorio destruido."
+    else
+        info "Se conservaron entradas ajenas en $LAB_ROOT; no se eliminó el directorio."
+    fi
+}
+
+if (( $# == 0 )); then
+    usage
+    exit 2
+fi
+
+command_name="$1"
+shift
+
+case "$command_name" in
+    doctor)
+        (($# == 0)) || die "doctor no recibe argumentos."
+        doctor
+        ;;
+    create)
+        (($# == 0)) || die "create no recibe argumentos."
+        create_lab
+        ;;
+    up)
+        (($# == 0)) || die "up no recibe argumentos."
+        create_lab
+        start_all
+        ;;
+    start)
+        (($# == 1)) || die "Uso: ./lab/pyfog-lab start source|target|all"
+        if [[ "$1" == "all" ]]; then
+            start_all
+        else
+            start_vm "$1"
+        fi
+        ;;
+    stop)
+        (($# == 1)) || die "Uso: ./lab/pyfog-lab stop source|target|all"
+        if [[ "$1" == "all" ]]; then
+            stop_all
+        else
+            stop_vm "$1"
+        fi
+        ;;
+    status)
+        (($# == 0)) || die "status no recibe argumentos."
+        show_status
+        ;;
+    console)
+        (($# == 1)) || die "Uso: ./lab/pyfog-lab console source|target"
+        open_console "$1"
+        ;;
+    monitor)
+        (($# == 1)) || die "Uso: ./lab/pyfog-lab monitor source|target"
+        open_monitor "$1"
+        ;;
+    inspect)
+        (($# == 1)) || die "Uso: ./lab/pyfog-lab inspect source|target"
+        inspect_vm "$1"
+        ;;
+    validate-layout)
+        (($# == 0)) || die "validate-layout no recibe argumentos."
+        validate_manifest
+        ensure_host_tools
+        initialize_lab
+        fetch_reference_image
+        validate_reference_layout
+        ;;
+    destroy)
+        (($# == 0)) || die "destroy no recibe argumentos."
+        destroy_lab
+        ;;
+    help | --help | -h)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

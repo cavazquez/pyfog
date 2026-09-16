@@ -1,4 +1,4 @@
-.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate
+.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate lab-check
 
 setup:
 	uv sync --frozen
@@ -29,8 +29,12 @@ audit-secrets:
 
 audit: audit-dependencies audit-secrets
 
+lab-check:
+	bash -n lab/pyfog-lab
+
 check:
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run mypy
 	uv run pytest
+	$(MAKE) lab-check
