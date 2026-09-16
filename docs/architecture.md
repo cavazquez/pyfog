@@ -61,7 +61,8 @@ fuera del proceso web. Partclone será la herramienta de copia para ext4, junto 
 y GRUB. La [ADR 0001](adr/0001-mvp-linux.md) define la matriz Linux, el formato versionado, la
 identidad de clones, los límites de confianza, estados de tarea y pruebas de arranque requeridas.
 El agente que se empaqueta en [`agent/`](../agent/README.md) cubre la primera parte de ese contrato:
-initramfs reproducible, red DHCP, cliente HTTPS y recolección de inventario. Su modo predeterminado
+initramfs reproducible, red DHCP, cliente HTTPS y recolección de inventario. El manifiesto de imagen
+v1 y su validador están documentados en [`docs/image-manifest.md`](image-manifest.md). Su modo predeterminado
 no monta discos ni realiza escrituras; Partclone y `sgdisk` sólo se incorporan explícitamente al
 construir el modo `imaging`. El perfil iPXE de [`pxe/`](../pxe/README.md) publica ese agente por
 HTTPS, ofrece inventario o retorno al disco local con timeout y no toma control del DHCP. La

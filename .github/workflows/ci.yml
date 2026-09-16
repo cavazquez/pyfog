@@ -34,6 +34,8 @@ jobs:
         run: make agent-check
       - name: PXE profile checks
         run: make pxe-check
+      - name: Image manifest checks
+        run: make image-manifest-check
       - name: Tests
         run: uv run pytest -q
       - name: Migration consistency

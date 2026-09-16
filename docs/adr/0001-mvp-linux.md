@@ -72,9 +72,10 @@ informes son inmutables e idempotentes por `report_id`. Las rutas futuras de age
 serán `/api/v1`, con JSON versionado, timestamps UTC ISO-8601 y errores documentados. Un cambio
 incompatible abre una versión nueva; no se reinterpretan manifiestos existentes.
 
-Una imagen contiene un manifiesto `format_version`, el UUID de imagen, la geometría de disco, las
-particiones admitidas, el algoritmo de checksum y el SHA-256 de cada artefacto. La captura escribe
-primero a un espacio temporal, verifica todo el manifiesto y recién entonces publica la versión.
+Una imagen contiene el manifiesto `pyfog-disk-image` v1, el UUID de imagen, la geometría de disco,
+las particiones admitidas, el algoritmo de checksum y el SHA-256 de cada artefacto. El contrato
+completo está en [`docs/image-manifest.md`](../image-manifest.md). La captura escribe primero a un
+espacio temporal, verifica todo el manifiesto y recién entonces publica la versión.
 Una restauración o clonación rechaza un manifiesto incompleto, una suma inválida, una geometría
 incompatible o una imagen marcada como no publicable.
 

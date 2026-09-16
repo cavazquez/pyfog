@@ -1,4 +1,5 @@
-.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate lab-check agent-check pxe-check
+.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate lab-check agent-check pxe-check \
+	image-manifest-check
 
 setup:
 	uv sync --frozen
@@ -42,6 +43,10 @@ pxe-check:
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck pxe/build-pxe; fi
 	pxe/build-pxe --help >/dev/null
 
+image-manifest-check:
+	python3 -m py_compile pyfog/image_manifest.py scripts/validate_image_manifest.py
+	uv run python -m scripts.validate_image_manifest --help >/dev/null
+
 check:
 	uv run ruff check .
 	uv run ruff format --check .
@@ -50,3 +55,4 @@ check:
 	$(MAKE) lab-check
 	$(MAKE) agent-check
 	$(MAKE) pxe-check
+	$(MAKE) image-manifest-check

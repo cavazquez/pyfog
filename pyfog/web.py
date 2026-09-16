@@ -182,7 +182,7 @@ def tasks_placeholder(request: Request, db: Db) -> Response:
 def pairing_list(request: Request, db: Db) -> Response:
     user = require_user(request, db)
     current = now()
-    expired = db.execute(
+    db.execute(
         update(PairingRequest)
         .where(
             PairingRequest.status.in_(["pending", "approved"]),
@@ -190,8 +190,7 @@ def pairing_list(request: Request, db: Db) -> Response:
         )
         .values(status="expired", challenge=None)
     )
-    if expired.rowcount:
-        db.commit()
+    db.commit()
     requests = db.scalars(
         select(PairingRequest).order_by(PairingRequest.created_at.desc()).limit(50)
     ).all()

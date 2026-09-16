@@ -15,7 +15,8 @@ los issues siguientes.
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
 [Arquitectura](docs/architecture.md) ·
-[Contrato del MVP Linux](docs/adr/0001-mvp-linux.md)
+[Contrato del MVP Linux](docs/adr/0001-mvp-linux.md) ·
+[Manifiesto de imágenes](docs/image-manifest.md)
 
 ## Iniciar en desarrollo
 
