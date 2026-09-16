@@ -23,12 +23,12 @@ def test_workspace_navigation_has_one_active_section_and_local_assets(admin):
         assert all(url.endswith(("/static/app.css", "/static/app.js")) for url in resource_urls)
 
 
-def test_planned_sections_explain_their_current_state(admin):
+def test_image_catalog_and_planned_tasks_explain_their_current_state(admin):
     images = admin.get("/images")
     tasks = admin.get("/tasks")
-    assert "Las imágenes llegan después del arranque por red." in images.text
+    assert "Tu catálogo empieza acá" in images.text
+    assert "Crear primera imagen" in images.text
     assert "Las tareas aparecerán cuando exista un agente para ejecutarlas." in tasks.text
-    assert "Volver a equipos" in images.text
 
 
 def test_success_notice_is_announced_once_after_registering_a_host(admin):

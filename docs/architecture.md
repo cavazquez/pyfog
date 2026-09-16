@@ -54,7 +54,13 @@ el modo `production` exige clave de sesión, hosts y proxy explícitos, cookies 
 apagado. [La guía HTTPS](./https.md) describe el proxy Caddy, la CA local y el material público que
 podrá recibir el agente PXE.
 
-## Motor de imágenes previsto
+## Catálogo y motor de imágenes previsto
+
+El catálogo web ya conserva la identidad, descripción, estado y metadatos de publicación de cada
+imagen. Una ficha se crea como `draft`, tiene un UUID estable y no permite que una nueva captura
+reemplace silenciosamente una versión lista: los nombres exactos son únicos y la edición web sólo
+modifica sus datos descriptivos. La selección para restaurar queda habilitada cuando el estado es
+`ready`, existe un manifiesto y se registró su verificación de integridad.
 
 La web programará tareas persistentes y un agente Linux arrancado por PXE ejecutará las operaciones
 fuera del proceso web. Partclone será la herramienta de copia para ext4, junto con herramientas GPT

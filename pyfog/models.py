@@ -2,7 +2,16 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from pyfog.database import Base
@@ -98,3 +107,34 @@ class PairingRequest(Base):
     approved_at: Mapped[datetime | None]
     rejected_at: Mapped[datetime | None]
     rejection_reason: Mapped[str] = mapped_column(String(500), default="")
+
+
+class Image(Base):
+    """Catalog metadata for one immutable image identity and its publication state."""
+
+    __tablename__ = "images"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'capturing', 'ready', 'failed')", name="ck_images_status"
+        ),
+        CheckConstraint("total_size_bytes IS NULL OR total_size_bytes >= 0", name="ck_images_size"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    manifest_image_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    manifest_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    manifest_sha256: Mapped[str | None] = mapped_column(String(64))
+    source_host_id: Mapped[str | None] = mapped_column(
+        ForeignKey("hosts.id", ondelete="SET NULL"), index=True
+    )
+    source_hostname: Mapped[str] = mapped_column(String(253), default="")
+    captured_at: Mapped[datetime | None]
+    total_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    compatibility: Mapped[str] = mapped_column(String(500), default="")
+    integrity_verified_at: Mapped[datetime | None]
+    failure_reason: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(default=now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=now, onupdate=now)

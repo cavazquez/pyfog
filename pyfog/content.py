@@ -39,17 +39,6 @@ SHELL_COPY = {
 }
 
 UPCOMING_SECTIONS = {
-    "images": UpcomingSection(
-        key="images",
-        label="Imágenes",
-        eyebrow="PRÓXIMA ENTREGA",
-        title="Las imágenes llegan después del arranque por red.",
-        description=(
-            "El catálogo, la captura y la verificación de imágenes se habilitarán después del "
-            "descubrimiento y el inventario inicial del equipo."
-        ),
-        issue_number=22,
-    ),
     "tasks": UpcomingSection(
         key="tasks",
         label="Tareas",

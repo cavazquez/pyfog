@@ -15,8 +15,9 @@ from starlette.datastructures import UploadFile
 from pyfog.config import PACKAGE_DIR
 from pyfog.content import NAVIGATION, SHELL_COPY, UPCOMING_SECTIONS
 from pyfog.database import get_db
-from pyfog.models import Host, InventoryReport, LoginSession, PairingRequest, now
-from pyfog.schemas import HostInput, Inventory
+from pyfog.image_catalog import IMAGE_STATUSES, image_is_selectable
+from pyfog.models import Host, Image, InventoryReport, LoginSession, PairingRequest, now
+from pyfog.schemas import HostInput, ImageInput, Inventory
 from pyfog.security import authenticate, csrf_token, digest, require_user, verify_csrf
 from pyfog.services import ingest_inventory
 
@@ -28,6 +29,14 @@ Db = Annotated[Session, Depends(get_db)]
 class Flash(TypedDict):
     level: Literal["success"]
     message: str
+
+
+IMAGE_STATUS_LABELS = {
+    "draft": "Borrador",
+    "capturing": "Capturando",
+    "ready": "Lista",
+    "failed": "Fallida",
+}
 
 
 def format_bytes(value: int | None) -> str:
@@ -101,6 +110,13 @@ def get_pairing_request(db: Session, pairing_id: UUID) -> PairingRequest:
     return pairing
 
 
+def get_image(db: Session, image_id: UUID) -> Image:
+    image = db.get(Image, str(image_id))
+    if image is None:
+        raise HTTPException(404, "No se encontró la imagen.")
+    return image
+
+
 def latest_report(db: Session, host: Host) -> InventoryReport | None:
     return db.scalar(
         select(InventoryReport)
@@ -157,13 +173,151 @@ def home() -> Response:
 
 
 @router.get("/images", response_class=HTMLResponse)
-def images_placeholder(request: Request, db: Db) -> Response:
+def image_list(
+    request: Request,
+    db: Db,
+    q: Annotated[str, Query(max_length=200)] = "",
+    image_status: Annotated[
+        str, Query(alias="status", pattern="^(all|draft|capturing|ready|failed)$")
+    ] = "all",
+    page: Annotated[int, Query(ge=1, le=100000)] = 1,
+) -> Response:
+    user = require_user(request, db)
+    query = select(Image)
+    if q.strip():
+        term = q.strip()
+        query = query.where(
+            or_(
+                Image.name.icontains(term, autoescape=True),
+                Image.description.icontains(term, autoescape=True),
+            )
+        )
+    if image_status != "all":
+        query = query.where(Image.status == image_status)
+    matching = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    page = min(page, max(1, (matching + 19) // 20))
+    images = db.scalars(
+        query.order_by(Image.created_at.desc()).offset((page - 1) * 20).limit(20)
+    ).all()
+    source_ids = {image.source_host_id for image in images if image.source_host_id}
+    hosts = (
+        {
+            host.id: host.name
+            for host in db.scalars(select(Host).where(Host.id.in_(source_ids))).all()
+        }
+        if source_ids
+        else {}
+    )
     return render(
         request,
-        "coming_soon.html",
-        user=require_user(request, db),
+        "images.html",
+        user=user,
+        images=images,
+        source_hosts=hosts,
+        status_labels=IMAGE_STATUS_LABELS,
+        statuses=IMAGE_STATUSES,
+        q=q,
+        image_status=image_status,
+        page=page,
+        pages=max(1, (matching + 19) // 20),
+        matching=matching,
         section="images",
-        upcoming=UPCOMING_SECTIONS["images"],
+    )
+
+
+@router.get("/images/new", response_class=HTMLResponse)
+def image_new(request: Request, db: Db) -> Response:
+    return render(request, "image_form.html", user=require_user(request, db), values={}, errors={})
+
+
+@router.post("/images/new")
+async def image_create(request: Request, db: Db) -> Response:
+    user = require_user(request, db)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    values = {key: str(form.get(key, "")) for key in ("name", "description")}
+    errors: dict[str, str] = {}
+    try:
+        data = ImageInput.model_validate(values)
+    except ValidationError as error:
+        errors = {str(e["loc"][0]): e["msg"] for e in error.errors()}
+    else:
+        image = Image(**data.model_dump())
+        db.add(image)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            errors["name"] = "Ya existe una imagen con ese nombre."
+        else:
+            set_flash(request, "Imagen creada como borrador.")
+            return RedirectResponse(f"/images/{image.id}", 303)
+    return render(request, "image_form.html", user=user, values=values, errors=errors, status=422)
+
+
+@router.get("/images/{image_id}", response_class=HTMLResponse)
+def image_detail(request: Request, image_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    image = get_image(db, image_id)
+    source_host = db.get(Host, image.source_host_id) if image.source_host_id else None
+    return render(
+        request,
+        "image_detail.html",
+        user=user,
+        image=image,
+        source_host=source_host,
+        status_label=IMAGE_STATUS_LABELS.get(image.status, image.status),
+        selectable=image_is_selectable(image),
+        section="images",
+    )
+
+
+@router.get("/images/{image_id}/edit", response_class=HTMLResponse)
+def image_edit(request: Request, image_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    image = get_image(db, image_id)
+    return render(
+        request,
+        "image_form.html",
+        user=user,
+        image=image,
+        values={"name": image.name, "description": image.description},
+        errors={},
+        section="images",
+    )
+
+
+@router.post("/images/{image_id}/edit")
+async def image_update(request: Request, image_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    image = get_image(db, image_id)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    values = {key: str(form.get(key, "")) for key in ("name", "description")}
+    errors: dict[str, str] = {}
+    try:
+        data = ImageInput.model_validate(values)
+    except ValidationError as error:
+        errors = {str(e["loc"][0]): e["msg"] for e in error.errors()}
+    else:
+        image.name, image.description = data.name, data.description
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            errors["name"] = "Ya existe una imagen con ese nombre."
+        else:
+            set_flash(request, "Imagen actualizada.")
+            return RedirectResponse(f"/images/{image.id}", 303)
+    return render(
+        request,
+        "image_form.html",
+        user=user,
+        image=image,
+        values=values,
+        errors=errors,
+        status=422,
+        section="images",
     )
 
 

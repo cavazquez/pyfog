@@ -4,6 +4,11 @@ PyFog usa un formato propio para que una restauración pueda comprobar el layout
 un destino. No es un formato compatible con FOG ni con Clonezilla. El archivo se publica junto a
 los artefactos de las particiones y se valida antes de entregarlo a un agente.
 
+La pantalla **Imágenes** crea la ficha y su UUID antes de capturar. La ficha empieza en `draft`;
+la captura futura la asociará con este manifiesto y actualizará estado, origen, tamaño y
+compatibilidad. Sólo una ficha `ready` con manifiesto y verificación de integridad puede elegirse
+para restaurar.
+
 ## Contrato
 
 El documento raíz tiene `format: "pyfog-disk-image"` y `format_version: 1`. Registra el UUID de la

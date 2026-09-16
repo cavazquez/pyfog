@@ -79,6 +79,11 @@ espacio temporal, verifica todo el manifiesto y recién entonces publica la vers
 Una restauración o clonación rechaza un manifiesto incompleto, una suma inválida, una geometría
 incompatible o una imagen marcada como no publicable.
 
+El catálogo web registra esa identidad antes de la captura. El nombre exacto es único, la ficha
+empieza en `draft` y su UUID no cambia al editar la descripción. El coordinador sólo podrá ofrecer
+una imagen `ready` cuya publicación y verificación de integridad hayan terminado; una captura nueva
+debe crear o reservar otra versión en lugar de reemplazar una versión lista.
+
 | Componente | Elección inicial |
 | --- | --- |
 | Servicio web | Python 3.12, FastAPI 0.141.1, Pydantic 2.13.5, SQLAlchemy 2.0.54 y Alembic 1.20.0. Las versiones exactas viven en `pyproject.toml` y `uv.lock`. |

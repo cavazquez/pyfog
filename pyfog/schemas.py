@@ -119,3 +119,8 @@ class PairingRequestInput(Schema):
     challenge: str = Field(min_length=16, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
 
     _mac = field_validator("mac_address")(normalize_mac)
+
+
+class ImageInput(Schema):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=4000)

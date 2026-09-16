@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Editar imagen' if image else 'Nueva imagen' }}{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ '/images/' ~ image.id if image else '/images' }}">← {{ image.name if image else 'Catálogo de imágenes' }}</a>
+<div class="page-heading"><div><p class="eyebrow">CATÁLOGO DE IMÁGENES</p><h1>{{ 'Editar imagen' if image else 'Nueva imagen' }}</h1><p>{{ 'Actualizá el nombre y la descripción sin cambiar su identidad.' if image else 'Creá la ficha que recibirá el manifiesto de la futura captura.' }}</p></div></div>
+<div class="form-layout"><section class="panel form-panel"><h2>Identificación de la imagen</h2>
+<form method="post">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="field"><label for="name">Nombre</label><input id="name" name="name" value="{{ values.name or '' }}" placeholder="Ej. Ubuntu aula 2026-09" required maxlength="100" autofocus {% if errors.name %}aria-invalid="true" aria-describedby="name-error"{% endif %}>{% if errors.name %}<span class="field-error" id="name-error">{{ errors.name }}</span>{% endif %}</div>
+  <div class="field"><label for="description">Descripción <span class="muted">(opcional)</span></label><textarea id="description" name="description" rows="5" maxlength="4000" placeholder="Origen, propósito o cambios incluidos…" {% if errors.description %}aria-invalid="true" aria-describedby="description-error"{% endif %}>{{ values.description or '' }}</textarea>{% if errors.description %}<span class="field-error" id="description-error">{{ errors.description }}</span>{% endif %}</div>
+  <div class="form-actions"><a class="button secondary" href="{{ '/images/' ~ image.id if image else '/images' }}">Cancelar</a><button class="button primary" type="submit" data-loading-text="Guardando…">{{ 'Guardar cambios' if image else 'Crear borrador' }} <span aria-hidden="true">→</span></button></div>
+</form></section><aside class="guide-card"><span class="guide-number">02 / IMÁGENES</span><h2>Una ficha antes de los bloques.</h2><p>El nombre identifica la versión que vas a capturar o desplegar. El manifiesto y sus sumas se incorporarán en la siguiente etapa.</p><hr><h3>Estado inicial</h3><p>La ficha queda como borrador. No reserva equipos, no publica archivos y no habilita restauraciones.</p></aside></div>
+{% endblock %}

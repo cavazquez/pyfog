@@ -5,12 +5,12 @@ Es la primera entrega de un proyecto de imágenes por red inspirado en FOG.
 
 **Disponible:** alta y edición de equipos, identificación por MAC, descubrimiento PXE con aprobación
 administrativa, recolector Linux, importación JSON, API con tokens por equipo, inventario actual e
-historial. Acceso mediante administrador local.
+historial, y catálogo web de fichas de imágenes. Acceso mediante administrador local.
 
 **En desarrollo:** el agente Linux efímero ya puede arrancar un initramfs reproducible, solicitar
-aprobación desde PXE, obtener un inventario de solo lectura y enviarlo por HTTPS. El motor de
-imágenes todavía no está habilitado; la captura, restauración y clonación con Partclone siguen en
-los issues siguientes.
+aprobación desde PXE, obtener un inventario de solo lectura y enviarlo por HTTPS. El catálogo ya
+permite preparar fichas de imágenes y reservarles una identidad estable; la captura, restauración y
+clonación con Partclone siguen en los issues siguientes.
 
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
@@ -113,6 +113,16 @@ El cuerpo de cualquier carga está limitado a 1 MiB, incluyendo el multipart de 
 El [esquema de inventario](pyfog/schemas.py) valida tipos, fechas, límites y versión. Los informes
 son inmutables y el más reciente por fecha de recolección alimenta la ficha; importar un informe
 antiguo lo añade al historial sin reemplazar el hardware actual.
+
+### Catálogo de imágenes
+
+En **Imágenes** podés crear y editar la ficha de una versión Linux con un nombre único y una
+descripción. Cada ficha conserva su UUID aunque cambie el nombre. La lista admite búsqueda,
+filtro por estado y paginación, y muestra origen, captura, tamaño y compatibilidad cuando el
+manifiesto los informa. Una ficha nueva queda en `Borrador`; también existen `Capturando`, `Lista`
+y `Fallida` para el ciclo que implementarán las próximas tareas. Sólo una imagen `Lista` con
+manifiesto y verificación de integridad puede seleccionarse para restaurar. Crear una ficha con el
+mismo nombre exacto devuelve un error y no reemplaza una imagen existente.
 
 ## Configuración
 
