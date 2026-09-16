@@ -32,6 +32,8 @@ jobs:
         run: uv run mypy
       - name: Agent shell checks
         run: make agent-check
+      - name: PXE profile checks
+        run: make pxe-check
       - name: Tests
         run: uv run pytest -q
       - name: Migration consistency

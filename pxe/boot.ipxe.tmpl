@@ -1,0 +1,25 @@
+#!ipxe
+# PyFog PXE profile. This file is rendered by pxe/build-pxe; it contains no credentials.
+
+set pyfog_base __PYFOG_BASE_URL__
+set pyfog_version __PYFOG_AGENT_VERSION__
+set pyfog_timeout __PYFOG_TIMEOUT_MS__
+
+:menu
+menu PyFog — arranque seguro
+item --key i inventory Inventariar este equipo (modo de solo lectura)
+item --key l local Arrancar el disco local
+choose --default local --timeout ${pyfog_timeout} pyfog_choice || goto local
+iseq ${pyfog_choice} inventory && goto inventory || goto local
+
+:inventory
+dhcp || goto local
+kernel ${pyfog_base}/agent/vmlinuz pyfog.version=${pyfog_version} pyfog.mode=inventory pyfog.net=dhcp || goto local
+initrd ${pyfog_base}/agent/initramfs.img || goto local
+boot || goto local
+
+:local
+echo PyFog no pudo iniciar el agente; se devuelve el control al disco local.
+# UEFI uses drive 0 (any matching EFI disk); legacy iPXE uses BIOS drive 0x80. A final exit lets
+# firmware choose its next entry if neither local boot path is available.
+iseq ${platform} efi && sanboot --no-describe --drive 0 || sanboot --no-describe --drive 0x80 || exit

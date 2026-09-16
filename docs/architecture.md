@@ -58,5 +58,7 @@ identidad de clones, los límites de confianza, estados de tarea y pruebas de ar
 El agente que se empaqueta en [`agent/`](../agent/README.md) cubre la primera parte de ese contrato:
 initramfs reproducible, red DHCP, cliente HTTPS y recolección de inventario. Su modo predeterminado
 no monta discos ni realiza escrituras; Partclone y `sgdisk` sólo se incorporan explícitamente al
-construir el modo `imaging`. La coordinación PXE, las tareas persistentes y las operaciones de
-captura/restauración todavía no se ejecutan en esta entrega.
+construir el modo `imaging`. El perfil iPXE de [`pxe/`](../pxe/README.md) publica ese agente por
+HTTPS, ofrece inventario o retorno al disco local con timeout y no toma control del DHCP. La
+aprobación desde la web, las tareas persistentes y las operaciones de captura/restauración todavía
+no se ejecutan en esta entrega.

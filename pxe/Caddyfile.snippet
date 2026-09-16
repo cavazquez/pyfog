@@ -1,0 +1,11 @@
+# Include this block inside the existing PyFog HTTPS site. Mount dist/pxe/http at
+# /srv/pyfog/pxe/http:ro in the Caddy container.
+handle_path /boot/* {
+	root * /srv/pyfog/pxe/http
+	header Cache-Control "no-store"
+	file_server
+}
+
+handle {
+	reverse_proxy app:8000
+}

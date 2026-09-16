@@ -181,4 +181,9 @@ El modo `imaging` añade `sgdisk`, `partclone.ext4` y `partclone.fat` al initram
 no está instalado. Antes de publicar los archivos en PXE hay que revisar `manifest.json` y
 `SHA256SUMS`; el servidor no descarga paquetes durante el arranque.
 
+El perfil [PXE/UEFI](pxe/README.md) genera el menú iPXE con inventario y retorno al disco local.
+Usa el DHCP existente, exige una URL HTTPS sin credenciales y separa la raíz TFTP de la publicación
+HTTPS. Si el servidor o la descarga fallan, el perfil abandona una sola vez hacia el firmware o el
+disco local.
+
 Licencia del proyecto: [Apache-2.0](LICENSE).
