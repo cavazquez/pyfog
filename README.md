@@ -22,7 +22,9 @@ del token del equipo.
 [Backup y recuperación](docs/backup-recovery.md) ·
 [Guía operativa en español](docs/guia-es.md) ·
 [Accesibilidad](docs/accessibility.md) ·
-[Despliegue LAN](deploy/README.md)
+[Despliegue LAN](deploy/README.md) ·
+[Release v0.1.0](docs/release-0.1.0.md) ·
+[Procedencia](docs/provenance.md)
 
 ## Iniciar en desarrollo
 
@@ -183,6 +185,10 @@ ese script. Mypy está configurado en modo estricto para aplicación y recolecto
 bugs, simplificaciones, comprehensions, nombres, seguridad, asincronía, pathlib, fechas, pytest,
 builtins, retornos y uso de `print`; las excepciones están acotadas por archivo o línea.
 
+`make release-check` comprueba la versión común del servidor y agente, la documentación de entrega
+y, si se agrega `--require-artifacts`, los manifiestos y checksums de `dist/agent` y `dist/pxe`.
+`make e2e-plan` muestra la matriz reproducible; `make e2e` requiere un host Linux con QEMU/OVMF.
+
 `make audit` ejecuta `pip-audit` y el escaneo de secretos sobre los archivos versionados. La misma
 comprobación bloquea pull requests y pushes; la política de excepciones y respuesta ante una
 credencial expuesta está en [docs/security.md](docs/security.md).
@@ -193,25 +199,25 @@ Python/uv y GitHub Actions **cada 1 de diciembre a las 09:00 de Buenos Aires**, 
 revisión. Esta programación usa el [soporte cron de Dependabot](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#schedule)
 y no configura ni desactiva las actualizaciones de seguridad del repositorio.
 
-## Alcance siguiente
+## Estado de la entrega
 
-El [roadmap](https://github.com/cavazquez/pyfog/issues/1) organiza cinco entregas:
+El [roadmap](https://github.com/cavazquez/pyfog/issues/1) organizó cinco entregas:
 
 1. Registro e inventario Linux.
 2. Arranque PXE y registro desde el entorno de arranque.
-3. Captura de imágenes Linux con validación y publicación verificadas (implementada).
-4. Restauración y clonación.
-5. Operación, documentación y validación completa del MVP.
+3. Captura de imágenes Linux con validación y publicación verificadas (completa).
+4. Restauración y clonación (completa).
+5. Operación, documentación y validación del MVP (completa; la ejecución UEFI requiere el host del laboratorio).
 
 Las imágenes tendrán una matriz inicial acotada a Linux x86_64, UEFI sin Secure Boot, GPT, raíz ext4,
 ESP FAT32 y swap opcional; un disco por tarea y destino de igual o mayor capacidad. El inventario
 actual puede describir hardware fuera de esa matriz. No se promete compatibilidad de formato con FOG.
 
-## Laboratorio UEFI
+## Laboratorio y E2E UEFI
 
 El laboratorio reproducible [lab/README.md](lab/README.md) crea dos VMs QEMU/OVMF con discos
-descartables y una red aislada en loopback. Sirve para validar el flujo PXE y preparar pruebas de
-captura y restauración sin exponer discos físicos ni la red de una LAN.
+descartables y una red aislada en loopback. `./lab/e2e.sh run` combina el contrato del coordinador,
+los casos negativos y el smoke de arranque UEFI sin exponer discos físicos ni la red de una LAN.
 
 ## Construir el agente de arranque
 

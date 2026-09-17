@@ -36,6 +36,8 @@ jobs:
         run: make pxe-check
       - name: Image manifest checks
         run: make image-manifest-check
+      - name: Release metadata
+        run: make release-check
       - name: Tests
         run: uv run pytest -q
       - name: Migration consistency

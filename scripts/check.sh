@@ -35,6 +35,7 @@ run_check "Laboratorio shell" make lab-check
 run_check "Agente shell" make agent-check
 run_check "Perfil PXE" make pxe-check
 run_check "Manifiesto de imagen" make image-manifest-check
+run_check "Metadatos de release" uv run python -m scripts.release_check
 
 run_check "Migraciones" env PYFOG_DATABASE_URL="${database_url}" uv run python -m pyfog init-db
 run_check "Consistencia de migraciones" env PYFOG_DATABASE_URL="${database_url}" uv run alembic check

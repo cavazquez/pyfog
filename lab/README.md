@@ -82,6 +82,25 @@ Se puede ejecutar la comprobación sola con:
 
     ./lab/pyfog-lab validate-layout
 
+## Prueba E2E reproducible
+
+El runner [`e2e.sh`](e2e.sh) combina el contrato de tareas/agente con un smoke real de arranque UEFI:
+
+    ./lab/e2e.sh plan
+    ./lab/e2e.sh run
+
+`run` exige las herramientas de `doctor`, ejecuta las pruebas de captura, restauración, clonación,
+cancelación y reconciliación con una base temporal, y luego arranca `source` y `target` con OVMF
+sobre los overlays del laboratorio. Guarda versión de commit, versiones de herramientas, resultados,
+logs de pytest y consolas en `.lab/e2e/run.*`; no recibe tokens por argumentos ni los escribe en esos
+archivos. Un fallo conserva los recursos para diagnóstico; después de revisar el informe usá
+`./lab/pyfog-lab destroy`.
+
+La prueba de disco usa solamente los recursos marcados por el laboratorio. El runner no acepta ni
+monta una ruta de bloque del host y el perfil PXE no agrega DHCP. En un host sin QEMU/OVMF se puede
+usar `plan` para revisar la matriz, pero `run` debe ejecutarse en una VM Linux equipada antes de
+afirmar una validación UEFI completa.
+
 La referencia y los overlays quedan fuera de Git mediante <code>.gitignore</code>.
 
 ## Detener y limpiar
