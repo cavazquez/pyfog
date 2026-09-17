@@ -14,6 +14,8 @@ NAVIGATION = (
     NavigationItem(key="pairing", href="/pairing", label="Descubiertos", icon="⌁"),
     NavigationItem(key="images", href="/images", label="Imágenes", icon="◈"),
     NavigationItem(key="tasks", href="/tasks", label="Tareas", icon="◷"),
+    NavigationItem(key="status", href="/status", label="Estado", icon="✓"),
+    NavigationItem(key="audit", href="/audit", label="Auditoría", icon="≡"),
 )
 
 SHELL_COPY = {

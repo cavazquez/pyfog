@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -250,6 +251,31 @@ class ArtifactStore:
             raise StorageError("La publicación de la imagen no existe.")
         return self._safe_child(directory, relative)
 
+    def delete_published_image(self, image_id: str) -> bool:
+        """Delete exactly one UUID publication; a missing publication is already deleted."""
+
+        directory = self.published_directory(image_id)
+        published_root = self.root / "published"
+        self.ensure_layout()
+        if directory.parent != published_root:
+            raise StorageError("La ruta publicada de la imagen no es segura.")
+        if directory.is_symlink():
+            raise StorageError("La publicación de la imagen no es un directorio seguro.")
+        if not directory.exists():
+            return False
+        if not directory.is_dir():
+            raise StorageError("La publicación de la imagen no es un directorio seguro.")
+        try:
+            shutil.rmtree(directory)
+            parent_descriptor = os.open(published_root, os.O_RDONLY)
+            try:
+                os.fsync(parent_descriptor)
+            finally:
+                os.close(parent_descriptor)
+        except OSError as error:
+            raise StorageError(f"No se pudo borrar la publicación de la imagen: {error}") from None
+        return True
+
     def remove_task_staging(self, task_id: str) -> bool:
         """Remove one task's unpublished staging directory, never a published image."""
 
@@ -268,12 +294,47 @@ class ArtifactStore:
             raise StorageError(f"No se pudo limpiar el staging de la tarea: {error}") from None
         return True
 
+    def staging_status(self, active_task_ids: Collection[str]) -> dict[str, list[str]]:
+        """List active/orphaned temporary task directories without deleting any of them."""
+
+        self.ensure_layout()
+        active = set(active_task_ids)
+        orphaned: list[str] = []
+        active_entries: list[str] = []
+        unsafe: list[str] = []
+        try:
+            entries = sorted((self.root / "staging").iterdir(), key=lambda path: path.name)
+            for entry in entries:
+                if entry.is_symlink() or not entry.is_dir():
+                    unsafe.append(entry.name)
+                    continue
+                try:
+                    task_id = _uuid_text(entry.name)
+                except StorageError:
+                    unsafe.append(entry.name)
+                    continue
+                if task_id in active:
+                    active_entries.append(task_id)
+                else:
+                    orphaned.append(task_id)
+        except OSError as error:
+            raise StorageError(f"No se pudo inspeccionar el staging: {error}") from None
+        return {"active": active_entries, "orphaned": orphaned, "unsafe": unsafe}
+
     def status(self) -> dict[str, int | str]:
         self.ensure_layout()
         try:
             usage = shutil.disk_usage(self.root)
-            staging = sum(1 for entry in (self.root / "staging").iterdir() if entry.is_dir())
-            published = sum(1 for entry in (self.root / "published").iterdir() if entry.is_dir())
+            staging = sum(
+                1
+                for entry in (self.root / "staging").iterdir()
+                if entry.is_dir() and not entry.is_symlink()
+            )
+            published = sum(
+                1
+                for entry in (self.root / "published").iterdir()
+                if entry.is_dir() and not entry.is_symlink()
+            )
         except OSError as error:
             raise StorageError(f"No se pudo consultar el estado del almacén: {error}") from None
         return {

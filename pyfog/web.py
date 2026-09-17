@@ -13,12 +13,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
+from pyfog.audit import record_audit
 from pyfog.config import PACKAGE_DIR
 from pyfog.content import NAVIGATION, SHELL_COPY
 from pyfog.database import get_db
+from pyfog.health import operational_snapshot
 from pyfog.image_catalog import IMAGE_STATUSES, image_is_selectable
 from pyfog.image_manifest import ImageManifest, parse_image_manifest
 from pyfog.models import (
+    AuditEvent,
     Host,
     Image,
     InventoryReport,
@@ -27,6 +30,7 @@ from pyfog.models import (
     Task,
     TaskAttempt,
     TaskEvent,
+    User,
     now,
 )
 from pyfog.schemas import CloneInput, HostInput, ImageInput, Inventory
@@ -34,6 +38,7 @@ from pyfog.security import authenticate, csrf_token, digest, require_user, verif
 from pyfog.services import ingest_inventory
 from pyfog.storage import StorageError
 from pyfog.tasking import (
+    ACTIVE_TASK_STATES,
     TASK_LABELS,
     TASK_OPERATION_LABELS,
     TaskError,
@@ -58,6 +63,7 @@ IMAGE_STATUS_LABELS = {
     "capturing": "Capturando",
     "ready": "Lista",
     "failed": "Fallida",
+    "deleted": "Eliminada",
 }
 
 
@@ -137,6 +143,12 @@ def get_image(db: Session, image_id: UUID) -> Image:
     if image is None:
         raise HTTPException(404, "No se encontró la imagen.")
     return image
+
+
+def image_status_label(image: Image) -> str:
+    return "Eliminada" if image.deleted_at is not None else IMAGE_STATUS_LABELS.get(
+        image.status, image.status
+    )
 
 
 def latest_report(db: Session, host: Host) -> InventoryReport | None:
@@ -334,13 +346,77 @@ def home() -> Response:
     return RedirectResponse("/hosts", 303)
 
 
+@router.get("/status", response_class=HTMLResponse)
+def status_page(request: Request, db: Db) -> Response:
+    user = require_user(request, db)
+    snapshot: dict[str, Any] | None
+    try:
+        snapshot = operational_snapshot(db, request.app.state.artifact_store)
+    except Exception:  # pragma: no cover - deployment failure path
+        db.rollback()
+        snapshot = None
+    return render(
+        request,
+        "status.html",
+        user=user,
+        snapshot=snapshot,
+        section="status",
+        status=200 if snapshot is not None else 503,
+    )
+
+
+@router.get("/audit", response_class=HTMLResponse)
+def audit_list(
+    request: Request,
+    db: Db,
+    page: Annotated[int, Query(ge=1, le=100000)] = 1,
+) -> Response:
+    user = require_user(request, db)
+    query = select(AuditEvent)
+    matching = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    pages = max(1, (matching + 49) // 50)
+    page = min(page, pages)
+    events = db.scalars(
+        query.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+        .offset((page - 1) * 50)
+        .limit(50)
+    ).all()
+    user_ids = {event.actor_user_id for event in events if event.actor_user_id is not None}
+    host_ids = {event.actor_host_id for event in events if event.actor_host_id}
+    users = (
+        {
+            actor.id: actor.username
+            for actor in db.scalars(select(User).where(User.id.in_(user_ids)))
+        }
+        if user_ids
+        else {}
+    )
+    hosts = (
+        {actor.id: actor.name for actor in db.scalars(select(Host).where(Host.id.in_(host_ids)))}
+        if host_ids
+        else {}
+    )
+    return render(
+        request,
+        "audit.html",
+        user=user,
+        events=events,
+        audit_users=users,
+        audit_hosts=hosts,
+        matching=matching,
+        page=page,
+        pages=pages,
+        section="audit",
+    )
+
+
 @router.get("/images", response_class=HTMLResponse)
 def image_list(
     request: Request,
     db: Db,
     q: Annotated[str, Query(max_length=200)] = "",
     image_status: Annotated[
-        str, Query(alias="status", pattern="^(all|draft|capturing|ready|failed)$")
+        str, Query(alias="status", pattern="^(all|draft|capturing|ready|failed|deleted)$")
     ] = "all",
     page: Annotated[int, Query(ge=1, le=100000)] = 1,
 ) -> Response:
@@ -354,8 +430,11 @@ def image_list(
                 Image.description.icontains(term, autoescape=True),
             )
         )
-    if image_status != "all":
+    if image_status == "deleted":
+        query = query.where(Image.deleted_at.is_not(None))
+    elif image_status != "all":
         query = query.where(Image.status == image_status)
+        query = query.where(Image.deleted_at.is_(None))
     matching = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     page = min(page, max(1, (matching + 19) // 20))
     images = db.scalars(query.order_by(Image.name.asc()).offset((page - 1) * 20).limit(20)).all()
@@ -405,6 +484,15 @@ async def image_create(request: Request, db: Db) -> Response:
         image = Image(**data.model_dump())
         db.add(image)
         try:
+            db.flush()
+            record_audit(
+                db,
+                actor_user_id=user.id,
+                action="image.create",
+                resource_type="image",
+                resource_id=image.id,
+                detail="Ficha de imagen creada como borrador.",
+            )
             db.commit()
         except IntegrityError:
             db.rollback()
@@ -426,7 +514,7 @@ def image_detail(request: Request, image_id: UUID, db: Db) -> Response:
         user=user,
         image=image,
         source_host=source_host,
-        status_label=IMAGE_STATUS_LABELS.get(image.status, image.status),
+        status_label=image_status_label(image),
         selectable=image_is_selectable(image),
         section="images",
     )
@@ -436,6 +524,8 @@ def image_detail(request: Request, image_id: UUID, db: Db) -> Response:
 def image_edit(request: Request, image_id: UUID, db: Db) -> Response:
     user = require_user(request, db)
     image = get_image(db, image_id)
+    if image.deleted_at is not None:
+        raise HTTPException(409, "Una imagen eliminada conserva su historial y no se puede editar.")
     return render(
         request,
         "image_form.html",
@@ -451,6 +541,8 @@ def image_edit(request: Request, image_id: UUID, db: Db) -> Response:
 async def image_update(request: Request, image_id: UUID, db: Db) -> Response:
     user = require_user(request, db)
     image = get_image(db, image_id)
+    if image.deleted_at is not None:
+        raise HTTPException(409, "Una imagen eliminada conserva su historial y no se puede editar.")
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     values = {key: str(form.get(key, "")) for key in ("name", "description")}
@@ -462,6 +554,15 @@ async def image_update(request: Request, image_id: UUID, db: Db) -> Response:
     else:
         image.name, image.description = data.name, data.description
         try:
+            db.flush()
+            record_audit(
+                db,
+                actor_user_id=user.id,
+                action="image.update",
+                resource_type="image",
+                resource_id=image.id,
+                detail="Ficha de imagen actualizada.",
+            )
             db.commit()
         except IntegrityError:
             db.rollback()
@@ -481,6 +582,46 @@ async def image_update(request: Request, image_id: UUID, db: Db) -> Response:
     )
 
 
+@router.post("/images/{image_id}/delete")
+async def image_delete(request: Request, image_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    image = get_image(db, image_id)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    confirmation = str(form.get("confirm_name", "")).strip()
+    if confirmation != image.name:
+        raise HTTPException(422, "Escribí el nombre exacto de la imagen para confirmar el borrado.")
+    if image.deleted_at is not None:
+        set_flash(request, "La imagen ya estaba eliminada; su historial se conserva.")
+        return RedirectResponse(f"/images/{image.id}", 303)
+    if db.scalar(
+        select(Task.id)
+        .where(Task.image_id == image.id, Task.status.in_(ACTIVE_TASK_STATES))
+        .limit(1)
+    ):
+        raise HTTPException(409, "No se puede borrar una imagen con una tarea activa.")
+    try:
+        request.app.state.artifact_store.delete_published_image(image.id)
+    except StorageError as error:
+        raise HTTPException(409, str(error)) from None
+    image.deleted_at = now()
+    image.integrity_verified_at = None
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="image.delete",
+        resource_type="image",
+        resource_id=image.id,
+        detail="Publicación eliminada; fila histórica conservada.",
+    )
+    db.commit()
+    set_flash(
+        request,
+        "Imagen eliminada. Se conservó su historial y no se puede volver a desplegar.",
+    )
+    return RedirectResponse(f"/images/{image.id}", 303)
+
+
 @router.get("/hosts/{host_id}/capture", response_class=HTMLResponse)
 def capture_page(request: Request, host_id: UUID, db: Db) -> Response:
     user = require_user(request, db)
@@ -490,7 +631,9 @@ def capture_page(request: Request, host_id: UUID, db: Db) -> Response:
         raise HTTPException(409, "El equipo necesita un inventario antes de capturar una imagen.")
     disks = inventory_disks(report)
     images = db.scalars(
-        select(Image).where(Image.status == "draft").order_by(Image.name.asc())
+        select(Image)
+        .where(Image.status == "draft", Image.deleted_at.is_(None))
+        .order_by(Image.name.asc())
     ).all()
     return render(
         request,
@@ -521,7 +664,9 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
     report = latest_report(db, host)
     disks = inventory_disks(report)
     images = db.scalars(
-        select(Image).where(Image.status == "draft").order_by(Image.name.asc())
+        select(Image)
+        .where(Image.status == "draft", Image.deleted_at.is_(None))
+        .order_by(Image.name.asc())
     ).all()
     if report is None:
         errors["form"] = "El equipo necesita un inventario antes de capturar una imagen."
@@ -539,7 +684,7 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
         except (ValueError, HTTPException):
             errors["image_id"] = "La ficha de imagen seleccionada no es válida."
         else:
-            if image.status != "draft":
+            if image.status != "draft" or image.deleted_at is not None:
                 errors["image_id"] = "Sólo se puede capturar sobre una ficha en borrador."
     else:
         try:
@@ -586,6 +731,22 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
             status=422,
             section="hosts",
         )
+    try:
+        request.app.state.artifact_store.check_capacity()
+    except StorageError as error:
+        return render(
+            request,
+            "capture.html",
+            user=user,
+            host=host,
+            report=report,
+            disks=disks,
+            images=images,
+            values=values,
+            errors={"form": str(error)},
+            status=409,
+            section="hosts",
+        )
     if image.id is None:
         db.add(image)
         db.flush()
@@ -620,9 +781,28 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
         message=task.message,
     )
     try:
+        db.flush()
+        record_audit(
+            db,
+            actor_user_id=user.id,
+            action="task.create",
+            resource_type="task",
+            resource_id=task.id,
+            detail="Tarea de captura creada.",
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
+        record_audit(
+            db,
+            actor_user_id=user.id,
+            action="task.create",
+            resource_type="host",
+            resource_id=host.id,
+            outcome="failure",
+            detail="No se pudo reservar el equipo para la captura.",
+        )
+        db.commit()
         return render(
             request,
             "capture.html",
@@ -641,7 +821,7 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
 
 
 def deployment_images(db: Session, host: Host, operation: str) -> list[Image]:
-    query = select(Image).where(Image.status == "ready")
+    query = select(Image).where(Image.status == "ready", Image.deleted_at.is_(None))
     if operation == "restore":
         query = query.where(Image.source_host_id == host.id)
     else:
@@ -764,6 +944,24 @@ async def deployment_request(
             status=422,
             section="hosts",
         )
+    try:
+        request.app.state.artifact_store.check_capacity()
+    except StorageError as error:
+        return render(
+            request,
+            "deployment.html",
+            user=user,
+            host=host,
+            report=report,
+            disks=disks,
+            images=images,
+            operation=operation,
+            operation_label=TASK_OPERATION_LABELS[operation],
+            values=values,
+            errors={"form": str(error)},
+            status=409,
+            section="hosts",
+        )
     task = Task(
         operation=operation,
         status="approved",
@@ -799,9 +997,28 @@ async def deployment_request(
         message=task.message,
     )
     try:
+        db.flush()
+        record_audit(
+            db,
+            actor_user_id=user.id,
+            action="task.create",
+            resource_type="task",
+            resource_id=task.id,
+            detail=f"Tarea de {TASK_OPERATION_LABELS[operation].lower()} creada.",
+        )
         db.commit()
     except IntegrityError:
         db.rollback()
+        record_audit(
+            db,
+            actor_user_id=user.id,
+            action="task.create",
+            resource_type="host",
+            resource_id=host.id,
+            outcome="failure",
+            detail="No se pudo reservar el equipo para la operación.",
+        )
+        db.commit()
         return render(
             request,
             "deployment.html",
@@ -959,6 +1176,19 @@ async def task_cancel(request: Request, task_id: UUID, db: Db) -> Response:
         )
     except TaskError as error:
         raise HTTPException(409, str(error)) from None
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="task.cancel",
+        resource_type="task",
+        resource_id=task.id,
+        outcome="success" if changed else "failure",
+        detail=(
+            "Cancelación aplicada o solicitada al agente."
+            if changed
+            else "La tarea ya estaba terminada o cancelada."
+        ),
+    )
     db.commit()
     set_flash(
         request,
@@ -971,7 +1201,7 @@ async def task_cancel(request: Request, task_id: UUID, db: Db) -> Response:
 
 @router.post("/tasks/{task_id}/reconcile")
 async def task_reconcile(request: Request, task_id: UUID, db: Db) -> Response:
-    require_user(request, db)
+    user = require_user(request, db)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     if form.get("confirm") != "1":
@@ -995,6 +1225,14 @@ async def task_reconcile(request: Request, task_id: UUID, db: Db) -> Response:
     except StorageError as error:
         db.rollback()
         raise HTTPException(409, str(error)) from None
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="task.reconcile",
+        resource_type="task",
+        resource_id=task.id,
+        detail="Operador confirmó que el agente anterior está detenido.",
+    )
     db.commit()
     set_flash(
         request,
@@ -1032,7 +1270,7 @@ def pairing_list(request: Request, db: Db) -> Response:
 
 @router.post("/pairing/{pairing_id}/approve")
 async def pairing_approve(request: Request, pairing_id: UUID, db: Db) -> Response:
-    require_user(request, db)
+    user = require_user(request, db)
     pairing = get_pairing_request(db, pairing_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -1047,6 +1285,7 @@ async def pairing_approve(request: Request, pairing_id: UUID, db: Db) -> Respons
         raise HTTPException(422, "El desafío no coincide con el que muestra el equipo.")
     selected_host = str(form.get("host_id", "")).strip()
     host: Host | None
+    host_created = False
     if selected_host:
         try:
             host = get_host(db, UUID(selected_host))
@@ -1064,10 +1303,28 @@ async def pairing_approve(request: Request, pairing_id: UUID, db: Db) -> Respons
             )
             db.add(host)
             db.flush()
+            host_created = True
     pairing.host_id = host.id
     pairing.status = "approved"
     pairing.approved_at = current
     pairing.challenge = None
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="pairing.approve",
+        resource_type="pairing",
+        resource_id=pairing.id,
+        detail="Solicitud PXE aprobada.",
+    )
+    if host_created:
+        record_audit(
+            db,
+            actor_user_id=user.id,
+            action="host.create",
+            resource_type="host",
+            resource_id=host.id,
+            detail="Equipo creado desde una solicitud PXE aprobada.",
+        )
     db.commit()
     set_flash(request, "Solicitud PXE aprobada. El equipo ya puede enviar su inventario.")
     return RedirectResponse("/pairing", 303)
@@ -1075,7 +1332,7 @@ async def pairing_approve(request: Request, pairing_id: UUID, db: Db) -> Respons
 
 @router.post("/pairing/{pairing_id}/reject")
 async def pairing_reject(request: Request, pairing_id: UUID, db: Db) -> Response:
-    require_user(request, db)
+    user = require_user(request, db)
     pairing = get_pairing_request(db, pairing_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -1091,6 +1348,14 @@ async def pairing_reject(request: Request, pairing_id: UUID, db: Db) -> Response
     pairing.rejected_at = now()
     pairing.rejection_reason = reason or "Solicitud rechazada por el administrador."
     pairing.challenge = None
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="pairing.reject",
+        resource_type="pairing",
+        resource_id=pairing.id,
+        detail="Solicitud PXE rechazada.",
+    )
     db.commit()
     set_flash(request, "Solicitud PXE rechazada.")
     return RedirectResponse("/pairing", 303)
@@ -1164,6 +1429,15 @@ async def host_create(request: Request, db: Db) -> Response:
         host = Host(**data.model_dump())
         db.add(host)
         try:
+            db.flush()
+            record_audit(
+                db,
+                actor_user_id=user.id,
+                action="host.create",
+                resource_type="host",
+                resource_id=host.id,
+                detail="Equipo registrado desde la web.",
+            )
             db.commit()
         except IntegrityError:
             db.rollback()
@@ -1237,6 +1511,14 @@ async def host_update(request: Request, host_id: UUID, db: Db) -> Response:
             status=422,
         )
     host.name, host.notes = data.name, data.notes
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="host.update",
+        resource_type="host",
+        resource_id=host.id,
+        detail="Datos administrativos del equipo actualizados.",
+    )
     db.commit()
     set_flash(request, "Cambios guardados.")
     return RedirectResponse(f"/hosts/{host.id}", 303)
@@ -1268,10 +1550,41 @@ async def import_report(request: Request, host_id: UUID, db: Db) -> Response:
                 inventory = Inventory.model_validate_json(payload)
                 report, created = ingest_inventory(db, host, inventory, "web")
             except ValidationError as error:
+                db.rollback()
+                record_audit(
+                    db,
+                    actor_user_id=user.id,
+                    action="inventory.import",
+                    resource_type="host",
+                    resource_id=host.id,
+                    outcome="failure",
+                    detail="El JSON de inventario no pasó la validación.",
+                )
+                db.commit()
                 error_text = validation_message(error)
             except HTTPException as error:
+                db.rollback()
+                record_audit(
+                    db,
+                    actor_user_id=user.id,
+                    action="inventory.import",
+                    resource_type="host",
+                    resource_id=host.id,
+                    outcome="failure",
+                    detail="El informe fue rechazado por las reglas de inventario.",
+                )
+                db.commit()
                 error_text = str(error.detail)
             else:
+                record_audit(
+                    db,
+                    actor_user_id=user.id,
+                    action="inventory.import",
+                    resource_type="host",
+                    resource_id=host.id,
+                    detail="Informe de inventario importado o repetido de forma idempotente.",
+                )
+                db.commit()
                 message = "Inventario importado." if created else "El informe ya estaba registrado."
                 set_flash(request, message)
                 return RedirectResponse(f"/hosts/{host.id}/reports/{report.id}", 303)
@@ -1296,6 +1609,14 @@ async def inventory_token(request: Request, host_id: UUID, db: Db) -> Response:
     verify_csrf(request, form.get("csrf"))
     if form.get("action") == "revoke":
         host.token_hash, host.token_expires_at = None, None
+        record_audit(
+            db,
+            actor_user_id=user.id,
+            action="token.revoke",
+            resource_type="host",
+            resource_id=host.id,
+            detail="Token de inventario revocado.",
+        )
         db.commit()
         set_flash(request, "Token de inventario revocado.")
         return RedirectResponse(f"/hosts/{host.id}", 303)
@@ -1304,5 +1625,13 @@ async def inventory_token(request: Request, host_id: UUID, db: Db) -> Response:
     token = secrets.token_urlsafe(32)
     host.token_hash = digest(token)
     host.token_expires_at = now() + timedelta(seconds=request.app.state.settings.token_seconds)
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="token.issue",
+        resource_type="host",
+        resource_id=host.id,
+        detail="Token de inventario emitido; el valor no se registra.",
+    )
     db.commit()
     return render(request, "token.html", user=user, host=host, token=token)

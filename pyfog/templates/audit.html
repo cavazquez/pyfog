@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Auditoría{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">CONTROL OPERATIVO</p><h1>Auditoría</h1><p>Eventos persistentes de administración y agentes, sin contraseñas, tokens ni contenido de imágenes.</p></div><span class="count-badge">{{ matching }} eventos</span></div>
+<section class="panel"><div class="table-wrap"><table class="audit-table"><caption class="sr-only">Eventos de auditoría ordenados del más reciente al más antiguo</caption><thead><tr><th>Fecha</th><th>Actor</th><th>Acción</th><th>Recurso</th><th>Resultado</th><th>Detalle</th></tr></thead><tbody>
+{% for event in events %}<tr><td class="date-cell">{{ event.created_at|date }}</td><td>{% if event.actor_user_id %}Web · {{ audit_users.get(event.actor_user_id, 'usuario eliminado') }}{% elif event.actor_host_id %}Agente · {{ audit_hosts.get(event.actor_host_id, 'equipo eliminado') }}{% else %}Sistema{% endif %}</td><td><code>{{ event.action }}</code></td><td>{{ event.resource_type }}{% if event.resource_id %}<small><code>{{ event.resource_id }}</code></small>{% endif %}</td><td><span class="badge {{ 'ready' if event.outcome == 'success' else 'muted' }}">{{ 'Correcto' if event.outcome == 'success' else 'Fallido' }}</span></td><td>{{ event.detail or 'Sin detalle' }}</td></tr>{% endfor %}
+</tbody></table></div>{% if not events %}<div class="empty-state"><h2>Todavía no hay eventos</h2><p>Las acciones administrativas y de los agentes aparecerán acá.</p></div>{% endif %}
+{% if pages > 1 %}<nav class="pagination" aria-label="Páginas de auditoría">{% if page > 1 %}<a class="button secondary" href="{{ request.url.include_query_params(page=page-1) }}">Anterior</a>{% endif %}<span>Página {{ page }} de {{ pages }}</span>{% if page < pages %}<a class="button secondary" href="{{ request.url.include_query_params(page=page+1) }}">Siguiente</a>{% endif %}</nav>{% endif %}</section>
+<p class="footnote">Los identificadores son internos y los detalles están acotados para evitar guardar secretos o contenido de artefactos.</p>
+{% endblock %}

@@ -16,7 +16,8 @@ controlada del token del equipo.
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
 [Arquitectura](docs/architecture.md) ·
 [Contrato del MVP Linux](docs/adr/0001-mvp-linux.md) ·
-[Manifiesto de imágenes](docs/image-manifest.md)
+[Manifiesto de imágenes](docs/image-manifest.md) ·
+[Backup y recuperación](docs/backup-recovery.md)
 
 ## Iniciar en desarrollo
 

@@ -7,11 +7,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from pyfog.audit import record_audit
 from pyfog.database import get_db
+from pyfog.health import operational_snapshot
 from pyfog.image_manifest import parse_image_manifest, validate_relative_path
 from pyfog.models import (
     Host,
@@ -184,10 +186,40 @@ def task_payload(
     return payload
 
 
+@router.get("/health/live", include_in_schema=False)
+def health_live() -> dict[str, str]:
+    """Liveness is intentionally independent of the database and image store."""
+
+    return {"status": "ok", "service": "pyfog"}
+
+
+@router.get("/health/ready", include_in_schema=False)
+def health_ready(request: Request, db: Db) -> JSONResponse:
+    try:
+        snapshot = operational_snapshot(db, request.app.state.artifact_store)
+    except Exception:  # pragma: no cover - exercised by deployment probes
+        db.rollback()
+        return JSONResponse(
+            {"status": "not_ready", "database": "unavailable", "storage": "unavailable"},
+            status_code=503,
+        )
+    return JSONResponse(
+        {
+            "status": "ok",
+            "database": snapshot["database"],
+            "storage": snapshot["storage"]["status"],
+            "coordinator": snapshot["coordinator"]["status"],
+            "active_tasks": snapshot["active_tasks"],
+        },
+        status_code=200,
+    )
+
+
 @router.get("/health", include_in_schema=False)
-def health(db: Db) -> dict[str, str]:
-    db.execute(text("SELECT 1"))
-    return {"status": "ok"}
+def health(request: Request, db: Db) -> JSONResponse:
+    """Backward-compatible readiness probe used by the container healthcheck."""
+
+    return health_ready(request, db)
 
 
 @router.post("/api/v1/tasks/claim")
@@ -208,6 +240,15 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
     if claimed is None:
         return JSONResponse({"protocol_version": 1, "task": None}, status_code=200)
     task, attempt = claimed.task, claimed.attempt
+    record_audit(
+        db,
+        actor_host_id=host.id,
+        action="task.claim",
+        resource_type="task",
+        resource_id=task.id,
+        detail=f"Intento {attempt.attempt_number} asignado al agente.",
+    )
+    db.commit()
     response = task_payload(task, attempt, claimed.token)
     report = db.get(InventoryReport, task.inventory_report_id)
     source_hostname = host.hostname or host.name
@@ -232,7 +273,12 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
     response["chunk_bytes"] = request.app.state.settings.max_chunk_bytes
     if task.operation in {"restore", "clone"}:
         image = db.get(Image, task.image_id)
-        if image is None or image.manifest_json is None or image.status != "ready":
+        if (
+            image is None
+            or image.deleted_at is not None
+            or image.manifest_json is None
+            or image.status != "ready"
+        ):
             raise HTTPException(409, "La imagen ya no está disponible para restaurar.")
         response["manifest"] = image.manifest_json
         response["artifact_base"] = f"/api/v1/tasks/{task.id}/artifacts"
@@ -317,7 +363,12 @@ def download_task_artifact(
         raise HTTPException(409, "Las tareas de captura no tienen artefactos descargables.")
     safe_path = artifact_route_path(artifact_path)
     image = db.get(Image, task.image_id)
-    if image is None or image.status != "ready" or image.manifest_json is None:
+    if (
+        image is None
+        or image.deleted_at is not None
+        or image.status != "ready"
+        or image.manifest_json is None
+    ):
         raise HTTPException(409, "La imagen no está publicada y verificada.")
     try:
         manifest = parse_image_manifest(image.manifest_json)
@@ -418,6 +469,15 @@ def fail_agent_task(
     if image is not None and image.status == "capturing":
         image.status = "failed"
         image.failure_reason = reason[:500]
+    record_audit(
+        db,
+        actor_host_id=task.host_id,
+        action="task.result",
+        resource_type="task",
+        resource_id=task.id,
+        outcome="failure",
+        detail="El agente informó una falla; la tarea quedó fallida.",
+    )
 
 
 @router.post("/api/v1/tasks/{task_id}/result")
@@ -431,6 +491,14 @@ def finish_agent_task(
             acknowledge_task_cancellation(db, task, attempt, reason=reason)
         except TaskError as error:
             raise HTTPException(409, str(error)) from None
+        record_audit(
+            db,
+            actor_host_id=task.host_id,
+            action="task.cancel",
+            resource_type="task",
+            resource_id=task.id,
+            detail="El agente reconoció la cancelación cooperativa.",
+        )
         db.commit()
         if task.operation == "capture":
             # The agent has acknowledged the stop, so it is now safe to remove its
@@ -582,6 +650,14 @@ def finish_agent_task(
         message=task.message,
     )
     attempt.last_sequence += 1
+    record_audit(
+        db,
+        actor_host_id=task.host_id,
+        action="image.publish",
+        resource_type="image",
+        resource_id=image.id,
+        detail="Manifiesto y artefactos verificados y publicados.",
+    )
     db.commit()
     return JSONResponse(
         {"task_id": task.id, "status": task.status, "accepted": True}, status_code=200
@@ -606,7 +682,30 @@ def receive_inventory(
         raise HTTPException(
             401, "Credencial inválida o vencida.", headers={"WWW-Authenticate": "Bearer"}
         )
-    report, created = ingest_inventory(db, host, inventory, "api")
+    try:
+        report, created = ingest_inventory(db, host, inventory, "api")
+    except HTTPException:
+        db.rollback()
+        record_audit(
+            db,
+            actor_host_id=host.id,
+            action="inventory.receive",
+            resource_type="host",
+            resource_id=host.id,
+            outcome="failure",
+            detail="El informe API fue rechazado por las reglas de inventario.",
+        )
+        db.commit()
+        raise
+    record_audit(
+        db,
+        actor_host_id=host.id,
+        action="inventory.receive",
+        resource_type="host",
+        resource_id=host.id,
+        detail="Informe API recibido o repetido de forma idempotente.",
+    )
+    db.commit()
     return JSONResponse(
         {"host_id": host.id, "report_id": report.report_id, "created": created},
         status_code=201 if created else 200,

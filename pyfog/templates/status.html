@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Estado del servicio{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">OPERACIÓN</p><h1>Estado del servicio</h1><p>Salud de la base de datos, almacenamiento y coordinador integrado.</p></div></div>
+{% if snapshot %}
+<section class="stats" aria-label="Resumen operativo">
+  <div class="stat"><span>Base de datos</span><strong>Disponible</strong><small>Consulta de liveness lista</small></div>
+  <div class="stat"><span>Almacenamiento libre</span><strong>{{ snapshot.storage.free_bytes|bytes }}</strong><small>Reserva mínima: {{ request.app.state.settings.min_storage_free_bytes|bytes }}</small></div>
+  <div class="stat"><span>Tareas activas</span><strong>{{ snapshot.active_tasks }}</strong><small>El coordinador integrado administra leases</small></div>
+</section>
+<section class="detail-grid">
+  <section class="panel"><div class="panel-heading"><div><h2>Readiness</h2><p>El proceso responde y sus dependencias operativas están disponibles.</p></div><span class="badge ready">Listo</span></div><dl class="properties"><div><dt>Proceso</dt><dd>Activo</dd></div><div><dt>Base de datos</dt><dd>{{ snapshot.database }}</dd></div><div><dt>Coordinador</dt><dd>{{ snapshot.coordinator.mode|capitalize }} · {{ snapshot.coordinator.status }}</dd></div><div><dt>Publicaciones</dt><dd>{{ snapshot.storage.published_images }}</dd></div></dl></section>
+  <section class="panel"><div class="panel-heading"><div><h2>Temporales</h2><p>Nunca se limpian automáticamente; un operador debe revisar los huérfanos.</p></div></div><dl class="properties"><div><dt>De tareas activas</dt><dd>{{ snapshot.staging.active|length }}</dd></div><div><dt>Huérfanos</dt><dd>{{ snapshot.staging.orphaned|length }}</dd></div><div><dt>Entradas inseguras</dt><dd>{{ snapshot.staging.unsafe|length }}</dd></div></dl>{% if snapshot.staging.orphaned %}<div class="alert warning" role="status">Hay temporales de tareas que ya no están activas. Revisá cada UUID antes de retirarlo.</div>{% endif %}{% if snapshot.staging.unsafe %}<div class="alert error" role="alert">Hay entradas de staging con nombre o tipo inseguro; no se tocaron.</div>{% endif %}</section>
+</section>
+{% else %}<div class="alert error" role="alert"><h2>Servicio no listo</h2><p>No se pudo consultar la base de datos o el almacenamiento. Revisá los logs del servicio; no se expone configuración sensible desde esta pantalla.</p></div>{% endif %}
+<p class="footnote">La pantalla indica disponibilidad del servicio, no conectividad en tiempo real de cada equipo.</p>
+{% endblock %}

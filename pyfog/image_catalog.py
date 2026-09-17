@@ -2,14 +2,15 @@
 
 from pyfog.models import Image
 
-IMAGE_STATUSES = ("draft", "capturing", "ready", "failed")
+IMAGE_STATUSES = ("draft", "capturing", "ready", "failed", "deleted")
 
 
 def image_is_selectable(image: Image) -> bool:
     """Only a ready image with an integrity timestamp and manifest can be deployed."""
 
     return (
-        image.status == "ready"
+        image.deleted_at is None
+        and image.status == "ready"
         and image.integrity_verified_at is not None
         and image.manifest_json is not None
     )

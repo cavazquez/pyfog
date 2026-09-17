@@ -136,8 +136,34 @@ class Image(Base):
     compatibility: Mapped[str] = mapped_column(String(500), default="")
     integrity_verified_at: Mapped[datetime | None]
     failure_reason: Mapped[str] = mapped_column(String(500), default="")
+    deleted_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(default=now, index=True)
     updated_at: Mapped[datetime] = mapped_column(default=now, onupdate=now)
+
+
+class AuditEvent(Base):
+    """Secret-free, append-only operational record with web or host actor context."""
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        CheckConstraint("outcome IN ('success', 'failure')", name="ck_audit_outcome"),
+        Index("ix_audit_events_created", "created_at"),
+        Index("ix_audit_events_resource", "resource_type", "resource_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    actor_host_id: Mapped[str | None] = mapped_column(
+        ForeignKey("hosts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(64))
+    resource_type: Mapped[str] = mapped_column(String(32))
+    resource_id: Mapped[str] = mapped_column(String(100), default="")
+    outcome: Mapped[str] = mapped_column(String(16), default="success")
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(default=now)
 
 
 class Task(Base):
