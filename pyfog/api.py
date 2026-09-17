@@ -1,3 +1,4 @@
+import contextlib
 import json
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -431,6 +432,11 @@ def finish_agent_task(
         except TaskError as error:
             raise HTTPException(409, str(error)) from None
         db.commit()
+        if task.operation == "capture":
+            # The agent has acknowledged the stop, so it is now safe to remove its
+            # unpublished upload without racing a still-running writer.
+            with contextlib.suppress(StorageError):
+                request.app.state.artifact_store.remove_task_staging(task.id)
         return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
     if not payload.success:
         reason = payload.error or f"El agente informó que la {task.operation} falló."

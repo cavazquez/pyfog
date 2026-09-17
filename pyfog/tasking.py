@@ -264,6 +264,8 @@ def acknowledge_task_cancellation(
         return
     if task.cancel_requested_at is None:
         raise TaskError("La tarea no tiene una cancelación solicitada.")
+    if task.operation in {"restore", "clone"} and attempt.started_at is not None:
+        reason = f"{reason[:420]} El destino puede haber quedado incompleto; requiere diagnóstico."
     current = now()
     attempt.finished_at = current
     attempt.phase = "failed"
@@ -273,7 +275,14 @@ def acknowledge_task_cancellation(
     if task.operation == "capture" and image is not None and image.status == "capturing":
         image.status = "failed"
         image.failure_reason = "La captura fue cancelada y no se publicó ningún artefacto."
-    transition_task(db, task, "cancelled", phase="failed", message=reason)
+    transition_task(
+        db,
+        task,
+        "cancelled",
+        phase="failed",
+        message=reason,
+        failure_reason=reason if task.operation in {"restore", "clone"} else None,
+    )
     sequence = attempt.last_sequence + 1
     attempt.last_sequence = sequence
     add_event(
