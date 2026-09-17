@@ -15,6 +15,7 @@ fuera del MVP actual. El modo `imaging` requiere un initramfs específico y una 
 del token del equipo.
 
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
+[estado consolidado](docs/roadmap.md) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
 [Arquitectura](docs/architecture.md) ·
 [Contrato del MVP Linux](docs/adr/0001-mvp-linux.md) ·
