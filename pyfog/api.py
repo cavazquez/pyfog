@@ -5,12 +5,13 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pyfog.database import get_db
+from pyfog.image_manifest import parse_image_manifest, validate_relative_path
 from pyfog.models import (
     Host,
     Image,
@@ -33,6 +34,7 @@ from pyfog.services import ingest_inventory
 from pyfog.storage import StorageError
 from pyfog.tasking import (
     TaskError,
+    acknowledge_task_cancellation,
     add_event,
     claim_task,
     expire_stale_tasks,
@@ -136,10 +138,12 @@ def integer_header(value: str | None, name: str) -> int:
 
 
 def artifact_route_path(value: str) -> str:
-    if not value.startswith("partitions/") or value.count("/") != 1:
-        raise HTTPException(422, "La ruta del artefacto debe pertenecer a partitions/.")
-    if len(value) > 240 or any(character in value for character in ("\\", "\x00")):
+    if len(value) > 240 or not value.startswith("partitions/"):
         raise HTTPException(422, "La ruta del artefacto no es válida.")
+    try:
+        validate_relative_path(value)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
     return value
 
 
@@ -160,6 +164,7 @@ def task_payload(
         "total_bytes": task.total_bytes,
         "message": task.message,
         "failure_reason": task.failure_reason,
+        "cancel_requested": task.cancel_requested_at is not None,
         "created_at": iso_utc(task.created_at),
         "updated_at": iso_utc(task.updated_at),
     }
@@ -224,6 +229,24 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
     response["lease_seconds"] = request.app.state.settings.task_lease_seconds
     response["heartbeat_seconds"] = request.app.state.settings.task_heartbeat_seconds
     response["chunk_bytes"] = request.app.state.settings.max_chunk_bytes
+    if task.operation in {"restore", "clone"}:
+        image = db.get(Image, task.image_id)
+        if image is None or image.manifest_json is None or image.status != "ready":
+            raise HTTPException(409, "La imagen ya no está disponible para restaurar.")
+        response["manifest"] = image.manifest_json
+        response["artifact_base"] = f"/api/v1/tasks/{task.id}/artifacts"
+        source = image.manifest_json.get("source")
+        system = image.manifest_json.get("system")
+        if isinstance(source, dict):
+            response["source"] = source
+        if isinstance(system, dict):
+            response["system"] = system
+        response["target"] = {
+            "disk": task.disk_selector,
+            "hostname": task.disk_selector.get("clone_hostname", "")
+            if task.operation == "clone"
+            else "",
+        }
     return JSONResponse(response, status_code=200)
 
 
@@ -280,6 +303,32 @@ def progress_agent_task(
         },
         status_code=200,
     )
+
+
+@router.get("/api/v1/tasks/{task_id}/artifacts/{artifact_path:path}")
+def download_task_artifact(
+    task_id: UUID, artifact_path: str, request: Request, db: Db
+) -> FileResponse:
+    """Serve only a declared published artifact to the capability that owns the task."""
+
+    task, _attempt = task_attempt_for_token(request, db, task_id)
+    if task.operation == "capture":
+        raise HTTPException(409, "Las tareas de captura no tienen artefactos descargables.")
+    safe_path = artifact_route_path(artifact_path)
+    image = db.get(Image, task.image_id)
+    if image is None or image.status != "ready" or image.manifest_json is None:
+        raise HTTPException(409, "La imagen no está publicada y verificada.")
+    try:
+        manifest = parse_image_manifest(image.manifest_json)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    if safe_path not in {artifact.path for artifact in manifest.artifacts}:
+        raise HTTPException(404, "El artefacto no está declarado por la imagen.")
+    try:
+        path = request.app.state.artifact_store.published_artifact(image.id, safe_path)
+    except StorageError as error:
+        raise HTTPException(404, str(error)) from None
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
 
 
 @router.post("/api/v1/tasks/{task_id}/artifacts/{artifact_path:path}")
@@ -343,6 +392,8 @@ async def upload_task_artifact(
 def fail_agent_task(
     db: Session, task: Task, attempt: TaskAttempt, reason: str, sequence: int
 ) -> None:
+    if task.operation in {"restore", "clone"} and attempt.started_at is not None:
+        reason = f"{reason[:420]} El destino puede haber quedado incompleto; requiere diagnóstico."
     current = now()
     if sequence > attempt.last_sequence:
         attempt.last_sequence = sequence
@@ -373,11 +424,70 @@ def finish_agent_task(
     task_id: UUID, payload: TaskResultInput, request: Request, db: Db
 ) -> JSONResponse:
     task, attempt = task_attempt_for_token(request, db, task_id)
+    if payload.cancelled or task.cancel_requested_at is not None:
+        reason = payload.error or "El agente confirmó la cancelación cooperativa."
+        try:
+            acknowledge_task_cancellation(db, task, attempt, reason=reason)
+        except TaskError as error:
+            raise HTTPException(409, str(error)) from None
+        db.commit()
+        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
     if not payload.success:
-        reason = payload.error or "El agente informó que la captura falló."
+        reason = payload.error or f"El agente informó que la {task.operation} falló."
         fail_agent_task(db, task, attempt, reason, payload.sequence)
         db.commit()
         return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+    if task.operation in {"restore", "clone"}:
+        if payload.manifest is not None:
+            raise HTTPException(422, "Una restauración exitosa no debe enviar un manifiesto.")
+        if payload.sequence <= attempt.last_sequence:
+            return JSONResponse(
+                {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
+            )
+        try:
+            record_progress(
+                db,
+                task,
+                attempt,
+                request.app.state.settings,
+                sequence=payload.sequence,
+                phase="verifying",
+                bytes_processed=attempt.bytes_processed,
+                total_bytes=attempt.total_bytes,
+                message="El agente verificó el destino y el arranque UEFI.",
+            )
+            attempt.finished_at = now()
+            attempt.phase = "completed"
+            transition_task(
+                db,
+                task,
+                "succeeded",
+                phase="completed",
+                message=(
+                    "La clonación terminó con identidad nueva."
+                    if task.operation == "clone"
+                    else "La restauración terminó y el destino fue verificado."
+                ),
+            )
+            add_event(
+                db,
+                task,
+                event_type="completed",
+                attempt=attempt,
+                sequence=attempt.last_sequence + 1,
+                phase="completed",
+                bytes_processed=attempt.bytes_processed,
+                total_bytes=attempt.total_bytes,
+                message=task.message,
+            )
+            attempt.last_sequence += 1
+            db.commit()
+        except TaskError as error:
+            db.rollback()
+            raise HTTPException(409, str(error)) from None
+        return JSONResponse(
+            {"task_id": task.id, "status": task.status, "accepted": True}, status_code=200
+        )
     if payload.manifest is None:
         raise HTTPException(422, "Una captura exitosa debe incluir su manifiesto.")
     if payload.sequence <= attempt.last_sequence:
@@ -385,8 +495,6 @@ def finish_agent_task(
             {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
         )
     try:
-        from pyfog.image_manifest import parse_image_manifest
-
         manifest = parse_image_manifest(payload.manifest)
     except ValueError as error:
         fail_agent_task(db, task, attempt, str(error), payload.sequence)

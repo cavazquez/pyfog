@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ operation_label }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/hosts/{{ host.id }}">← Ficha del equipo</a>
+<div class="page-heading"><div><p class="eyebrow">{{ operation_label|upper }} LINUX</p><h1>{{ operation_label }}</h1><p>{% if operation == 'clone' %}Desplegá una imagen sobre otro equipo y prepará una identidad nueva.{% else %}Recuperá el equipo de origen sin cambiar su identidad.{% endif %}</p></div></div>
+{% if errors.form %}<div class="alert error" role="alert">{{ errors.form }}</div>{% endif %}
+<section class="panel form-panel">
+  <div class="panel-heading"><div><h2>Destino y autorización</h2><p>El agente vuelve a comprobar el disco, el sector lógico y el firmware antes de escribir.</p></div></div>
+  <dl class="properties"><div><dt>Equipo destino</dt><dd>{{ host.name }}</dd></div><div><dt>MAC principal</dt><dd><code>{{ host.mac_address }}</code></dd></div><div><dt>Inventario</dt><dd>{{ report.collected_at|date if report else 'Falta inventario' }}</dd></div></dl>
+  {% if not report %}<div class="alert error" role="alert">Importá un inventario reciente antes de preparar una operación.</div>{% endif %}
+  {% if not images %}<div class="alert warning" role="status">No hay imágenes publicadas y verificadas compatibles con este equipo.</div>{% endif %}
+  <form method="post" action="/hosts/{{ host.id }}/{{ operation }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="idempotency_key" value="{{ values.get('idempotency_key', '') }}">
+    <div class="form-grid">
+      <div class="field full"><label for="image_id">Imagen publicada y verificada</label><select id="image_id" name="image_id" required><option value="">Elegí una imagen</option>{% for image in images %}<option value="{{ image.id }}"{% if values.get('image_id') == image.id %} selected{% endif %}>{{ image.name }} · {{ image.total_size_bytes|bytes }} · {{ image.compatibility or 'Linux UEFI' }}</option>{% endfor %}</select>{% if errors.image_id %}<small class="field-error">{{ errors.image_id }}</small>{% endif %}<small>La imagen se valida otra vez en el servidor y en el agente.</small></div>
+      <div class="field full"><label for="disk_key">Disco destino</label><select id="disk_key" name="disk_key" required><option value="">Elegí un disco</option>{% for disk in disks %}<option value="{{ disk.stable_id }}"{% if values.get('disk_key') == disk.stable_id %} selected{% endif %}>{{ disk.name }} · {{ disk.size_bytes|bytes }}{% if disk.model %} · {{ disk.model }}{% endif %}{% if disk.serial_number %} · serie {{ disk.serial_number }}{% elif disk.wwn %} · WWN {{ disk.wwn }}{% else %} · identidad por ruta{% endif %}</option>{% endfor %}</select>{% if errors.disk_key %}<small class="field-error">{{ errors.disk_key }}</small>{% endif %}<small>No se aceptan discos menores, removibles, montados o con sector incompatible.</small></div>
+      {% if operation == 'clone' %}<div class="field full"><label for="hostname">Hostname nuevo del clon</label><input id="hostname" name="hostname" value="{{ values.get('hostname', '') }}" maxlength="253" pattern="[A-Za-z0-9][A-Za-z0-9.-]*" autocomplete="off" required>{% if errors.hostname %}<small class="field-error">{{ errors.hostname }}</small>{% endif %}<small>El clon regenera machine-id y claves de host SSH; no copia la identidad de la referencia.</small></div>{% endif %}
+    </div>
+    <label class="check-field"><input type="checkbox" name="confirm" value="1"{% if values.get('confirm') == '1' %} checked{% endif %} required> Confirmo que {{ host.name }} es el destino y que se sobrescribirá el disco elegido.</label>{% if errors.confirm %}<small class="field-error">{{ errors.confirm }}</small>{% endif %}
+    <div class="form-actions"><a class="button secondary" href="/hosts/{{ host.id }}">Cancelar</a><button class="button danger" type="submit" data-loading-text="Encolando…">{{ operation_label }} <span aria-hidden="true">→</span></button></div>
+  </form>
+</section>
+<div class="alert warning" role="note"><strong>Importante:</strong> la operación no empieza al enviar este formulario. El equipo queda reservado hasta que el agente PXE confirme el resultado; una interrupción durante la escritura puede dejar el destino incompleto y requerir diagnóstico.</div>
+{% endblock %}

@@ -58,8 +58,9 @@ Opciones de build:
   --source-date-epoch N     Fecha fija de archivos, en segundos UTC
   --version VERSION         Sobrescribir la versión de agent/VERSION
 
-El modo imaging exige busybox, Python, HTTPS, red, sgdisk y Partclone ext4/FAT. El modo
-inventory-only omite las herramientas de escritura para probar un agente sin riesgo.
+El modo imaging exige busybox, Python, HTTPS, red, sgdisk, Partclone ext4/FAT y las herramientas
+de restauración UEFI. El modo inventory-only omite las herramientas de escritura para probar un
+agente sin riesgo.
 EOF
 }
 
@@ -174,7 +175,7 @@ doctor() {
     local missing=0 path kernel
     local -a required=(bash cpio gzip sha256sum find sort ldd readlink python3 busybox curl openssl ip)
     if [ "$MODE" = imaging ]; then
-        required+=(sgdisk)
+        required+=(sgdisk blockdev partprobe mount umount grub-install chroot ssh-keygen zstd mkswap)
     fi
     printf 'PyFog agent %s (%s)\n' "$VERSION" "$MODE"
     for command_name in "${required[@]}"; do
@@ -419,6 +420,7 @@ PY
 
 build() {
     local kernel path partclone_ext4 partclone_fat python_stdlib python_base
+    local -a tools
     local metadata_path final_manifest kernel_output initramfs_output manifest_output sums_output
     [ "$(uname -m)" = "x86_64" ] || error "el builder sólo admite el host x86_64 del MVP"
     local kernel_basename
@@ -509,11 +511,18 @@ build() {
         copy_path "$path" "$path"
     done
 
-    for tool_name in curl openssl gzip ip lsblk blkid; do
+    tools=(curl openssl gzip ip lsblk blkid)
+    if [ "$MODE" = imaging ]; then
+        tools+=(blockdev partprobe mount umount grub-install chroot ssh-keygen mkswap)
+        path=$(resolve_tool zstd)
+        [ -n "$path" ] || error "falta zstd para restaurar artefactos zstd"
+        tools+=(zstd)
+    fi
+    for tool_name in "${tools[@]}"; do
         path=$(resolve_tool "$tool_name")
         [ -n "$path" ] || error "falta $tool_name"
         case "$tool_name" in
-            ip|blkid) stage_binary "$tool_name" "$path" "/usr/sbin/$tool_name" ;;
+            ip|blkid|blockdev|partprobe|mount|umount|grub-install|chroot|mkswap) stage_binary "$tool_name" "$path" "/usr/sbin/$tool_name" ;;
             *) stage_binary "$tool_name" "$path" "/usr/bin/$tool_name" ;;
         esac
     done
@@ -521,7 +530,7 @@ build() {
         stage_binary sgdisk "$(resolve_tool sgdisk)" /usr/sbin/sgdisk
         stage_binary partclone.ext4 "$partclone_ext4" /usr/sbin/partclone.ext4
         stage_binary partclone.fat "$partclone_fat" /usr/sbin/partclone.fat
-        printf '%s\n' gpt partclone.ext4 partclone.fat >>"$CAPABILITIES_FILE"
+        printf '%s\n' gpt partclone.ext4 partclone.fat restore clone identity >>"$CAPABILITIES_FILE"
     fi
     if path=$(resolve_tool modprobe); then
         stage_binary modprobe "$path" /sbin/modprobe

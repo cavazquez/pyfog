@@ -250,6 +250,24 @@ class ArtifactStore:
             raise StorageError("La publicación de la imagen no existe.")
         return self._safe_child(directory, relative)
 
+    def remove_task_staging(self, task_id: str) -> bool:
+        """Remove one task's unpublished staging directory, never a published image."""
+
+        directory = self.task_directory(task_id)
+        staging_root = self.root / "staging"
+        self.ensure_layout()
+        if directory == self.root or directory.parent != staging_root:
+            raise StorageError("La ruta temporal de la tarea no es segura.")
+        if not directory.exists():
+            return False
+        if directory.is_symlink() or not directory.is_dir():
+            raise StorageError("La carpeta temporal de la tarea no es segura.")
+        try:
+            shutil.rmtree(directory)
+        except OSError as error:
+            raise StorageError(f"No se pudo limpiar el staging de la tarea: {error}") from None
+        return True
+
     def status(self) -> dict[str, int | str]:
         self.ensure_layout()
         try:

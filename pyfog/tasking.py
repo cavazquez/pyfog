@@ -36,6 +36,11 @@ TASK_PHASES = frozenset(
         "inspecting",
         "capturing",
         "uploading",
+        "downloading",
+        "restoring",
+        "personalizing",
+        "finalizing",
+        "cancelling",
         "verifying",
         "completed",
         "failed",
@@ -48,9 +53,14 @@ PHASE_ORDER = {
     "inspecting": 3,
     "capturing": 4,
     "uploading": 5,
-    "verifying": 6,
-    "completed": 7,
-    "failed": 8,
+    "downloading": 5,
+    "restoring": 6,
+    "personalizing": 7,
+    "finalizing": 8,
+    "cancelling": 9,
+    "verifying": 10,
+    "completed": 11,
+    "failed": 12,
 }
 TASK_LABELS = {
     "draft": "Borrador",
@@ -70,12 +80,27 @@ ALLOWED_TRANSITIONS = {
     "approved": frozenset({"assigned", "cancelled", "intervention_required"}),
     "assigned": frozenset({"running", "failed", "cancelled", "intervention_required"}),
     "running": frozenset({"verifying", "failed", "cancelled", "intervention_required"}),
-    "verifying": frozenset({"succeeded", "failed", "intervention_required"}),
+    "verifying": frozenset({"succeeded", "failed", "cancelled", "intervention_required"}),
     "succeeded": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),
-    "intervention_required": frozenset(),
+    "intervention_required": frozenset({"approved", "cancelled"}),
 }
+
+REQUIRED_CAPABILITIES = {
+    "capture": frozenset({"gpt", "partclone.ext4", "partclone.fat"}),
+    "restore": frozenset({"gpt", "partclone.ext4", "partclone.fat", "restore"}),
+    "clone": frozenset(
+        {"gpt", "partclone.ext4", "partclone.fat", "restore", "clone", "identity"}
+    ),
+}
+
+
+def required_capabilities(operation: str) -> frozenset[str]:
+    try:
+        return REQUIRED_CAPABILITIES[operation]
+    except KeyError:
+        raise TaskError("La operación de la tarea no es válida.") from None
 
 
 class TaskError(ValueError):
@@ -203,6 +228,100 @@ def expire_stale_tasks(db: Session) -> int:
     return len(stale)
 
 
+def request_task_cancellation(db: Session, task: Task, *, reason: str) -> bool:
+    """Request cooperative cancellation, or cancel a task that has not been claimed yet."""
+
+    if task.status in TERMINAL_TASK_STATES:
+        return False
+    if task.status == "intervention_required":
+        raise TaskError("La tarea requiere reconciliación antes de cancelarse.")
+    current = now()
+    if task.cancel_requested_at is not None:
+        return False
+    task.cancel_requested_at = current
+    task.message = reason[:500]
+    image = db.get(Image, task.image_id)
+    if task.operation == "capture" and image is not None and image.status == "capturing":
+        image.status = "failed"
+        image.failure_reason = "La captura fue cancelada y no se publicó ningún artefacto."
+    if task.status == "approved":
+        transition_task(db, task, "cancelled", phase=task.phase, message=reason)
+        task.cancel_acknowledged_at = current
+        add_event(db, task, event_type="cancelled", phase=task.phase, message=reason)
+        return True
+    transition_task(db, task, task.status, phase="cancelling", message=reason)
+    add_event(db, task, event_type="cancellation_requested", phase="cancelling", message=reason)
+    db.flush()
+    return True
+
+
+def acknowledge_task_cancellation(
+    db: Session, task: Task, attempt: TaskAttempt, *, reason: str
+) -> None:
+    """Commit an agent's cooperative stop and retain the target reservation history."""
+
+    if task.status == "cancelled":
+        return
+    if task.cancel_requested_at is None:
+        raise TaskError("La tarea no tiene una cancelación solicitada.")
+    current = now()
+    attempt.finished_at = current
+    attempt.phase = "failed"
+    attempt.failure_reason = reason[:500]
+    task.cancel_acknowledged_at = current
+    image = db.get(Image, task.image_id)
+    if task.operation == "capture" and image is not None and image.status == "capturing":
+        image.status = "failed"
+        image.failure_reason = "La captura fue cancelada y no se publicó ningún artefacto."
+    transition_task(db, task, "cancelled", phase="failed", message=reason)
+    sequence = attempt.last_sequence + 1
+    attempt.last_sequence = sequence
+    add_event(
+        db,
+        task,
+        event_type="cancelled",
+        attempt=attempt,
+        sequence=sequence,
+        phase="failed",
+        bytes_processed=attempt.bytes_processed,
+        total_bytes=attempt.total_bytes,
+        message=reason,
+    )
+    db.flush()
+
+
+def reconcile_task(db: Session, task: Task) -> None:
+    """Make an intervention-required task explicitly eligible for a new attempt."""
+
+    if task.status != "intervention_required":
+        raise TaskError("Sólo se pueden reconciliar tareas que requieren intervención.")
+    current = now()
+    task.cancel_requested_at = None
+    task.cancel_acknowledged_at = None
+    task.failure_reason = ""
+    task.transfer_slot = None
+    task.assigned_at = None
+    task.started_at = None
+    task.completed_at = None
+    task.bytes_processed = 0
+    transition_task(
+        db,
+        task,
+        "approved",
+        phase="queued",
+        message="Tarea reconciliada; esperando un intento nuevo y explícito.",
+    )
+    add_event(
+        db,
+        task,
+        event_type="reconciled",
+        phase="queued",
+        message="El operador confirmó que el agente anterior está detenido.",
+    )
+    task.updated_at = current
+    db.flush()
+
+
 def claim_task(
     db: Session,
     host_id: str,
@@ -212,14 +331,16 @@ def claim_task(
 ) -> ClaimedTask | None:
     """Atomically assign the oldest compatible task for one host."""
 
-    expire_stale_tasks(db)
+    expired = expire_stale_tasks(db)
+    if expired:
+        # Expiry is a durable safety decision. Do not lose it when the claim finds no work or
+        # another task currently owns the single transfer slot.
+        db.commit()
     existing_session = db.scalar(
         select(TaskAttempt).where(TaskAttempt.agent_session_id == session_id)
     )
     if existing_session is not None:
         raise TaskError("La sesión de arranque ya fue utilizada.")
-    if not CLAIM_CAPABILITIES.issubset(capabilities):
-        raise TaskError("El agente no anuncia todas las capacidades requeridas para capturar.")
     if db.scalar(select(Task.id).where(Task.transfer_slot == 1)) is not None:
         db.rollback()
         return None
@@ -233,6 +354,10 @@ def claim_task(
     if task is None:
         db.rollback()
         return None
+    required = required_capabilities(task.operation)
+    if not required.issubset(capabilities):
+        db.rollback()
+        raise TaskError("El agente no anuncia todas las capacidades requeridas para la operación.")
     attempt_number = (
         db.scalar(
             select(TaskAttempt.attempt_number)
@@ -318,7 +443,13 @@ def touch_attempt(
     attempt.bytes_processed = bytes_processed
     if total_bytes is not None:
         attempt.total_bytes = total_bytes
-    if task.status == "assigned":
+    if task.cancel_requested_at is not None:
+        task.phase = "cancelling"
+        task.message = "Cancelación solicitada; esperando el reconocimiento del agente."
+        task.bytes_processed = bytes_processed
+        task.total_bytes = total_bytes if total_bytes is not None else task.total_bytes
+        task.updated_at = current
+    elif task.status == "assigned":
         transition_task(db, task, "running", phase=phase, message=message)
     else:
         task.phase = phase

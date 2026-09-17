@@ -1,3 +1,4 @@
+import contextlib
 import secrets
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal, TypedDict
@@ -16,6 +17,7 @@ from pyfog.config import PACKAGE_DIR
 from pyfog.content import NAVIGATION, SHELL_COPY
 from pyfog.database import get_db
 from pyfog.image_catalog import IMAGE_STATUSES, image_is_selectable
+from pyfog.image_manifest import ImageManifest, parse_image_manifest
 from pyfog.models import (
     Host,
     Image,
@@ -27,10 +29,19 @@ from pyfog.models import (
     TaskEvent,
     now,
 )
-from pyfog.schemas import HostInput, ImageInput, Inventory
+from pyfog.schemas import CloneInput, HostInput, ImageInput, Inventory
 from pyfog.security import authenticate, csrf_token, digest, require_user, verify_csrf
 from pyfog.services import ingest_inventory
-from pyfog.tasking import TASK_LABELS, TASK_OPERATION_LABELS, add_event, expire_stale_tasks
+from pyfog.storage import StorageError
+from pyfog.tasking import (
+    TASK_LABELS,
+    TASK_OPERATION_LABELS,
+    TaskError,
+    add_event,
+    expire_stale_tasks,
+    reconcile_task,
+    request_task_cancellation,
+)
 
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
@@ -176,8 +187,14 @@ def iso_task_date(value: datetime) -> str:
     return f"{value.isoformat()}Z"
 
 
-def task_disk_selector(disk: dict[str, Any]) -> dict[str, Any]:
-    return {
+def task_disk_selector(
+    disk: dict[str, Any],
+    *,
+    operation: str = "capture",
+    manifest: ImageManifest | None = None,
+    clone_hostname: str = "",
+) -> dict[str, Any]:
+    selector: dict[str, Any] = {
         key: disk[key]
         for key in (
             "stable_id",
@@ -192,6 +209,83 @@ def task_disk_selector(disk: dict[str, Any]) -> dict[str, Any]:
         )
         if key in disk
     }
+    if operation in {"restore", "clone"} and manifest is not None:
+        selector.update(
+            {
+                "operation": operation,
+                "source_size_bytes": manifest.disk.size_bytes,
+                "required_logical_sector_bytes": manifest.disk.logical_sector_bytes,
+            }
+        )
+        if operation == "clone":
+            selector["clone_hostname"] = clone_hostname
+    return selector
+
+
+def selectable_manifest(request: Request, image: Image) -> ImageManifest | None:
+    """Return a parsed, published manifest or None for a stale catalog row."""
+
+    if not image_is_selectable(image) or image.manifest_json is None:
+        return None
+    try:
+        manifest = parse_image_manifest(image.manifest_json)
+        if str(manifest.image_id) != image.id:
+            return None
+        directory = request.app.state.artifact_store.published_directory(image.id)
+        if not directory.is_dir() or directory.is_symlink():
+            return None
+        for artifact in manifest.artifacts:
+            path = request.app.state.artifact_store.published_artifact(image.id, artifact.path)
+            if not path.is_file() or path.is_symlink():
+                return None
+        return manifest
+    except (StorageError, ValueError, OSError):
+        return None
+
+
+def deployment_validation(
+    image: Image,
+    manifest: ImageManifest | None,
+    host: Host,
+    disk: dict[str, Any] | None,
+    *,
+    operation: str,
+    clone_hostname: str = "",
+) -> dict[str, str]:
+    errors: dict[str, str] = {}
+    if manifest is None:
+        errors["image_id"] = "La imagen no está publicada, verificada o disponible."
+        return errors
+    source_host_id = str(manifest.source.host_id)
+    if image.id is not None and str(manifest.image_id) != image.id:
+        errors["image_id"] = "La imagen publicada no coincide con su manifiesto."
+    if image.source_host_id and image.source_host_id != source_host_id:
+        errors["image_id"] = "La imagen publicada no coincide con su equipo de origen."
+    if operation == "restore" and source_host_id != host.id:
+        errors["image_id"] = "La restauración sólo puede volver al equipo de origen."
+    if operation == "clone" and source_host_id == host.id:
+        errors["image_id"] = "La clonación necesita un equipo destino diferente del origen."
+    if disk is None:
+        errors["disk_key"] = "Seleccioná un disco del último inventario."
+    else:
+        size = int(disk.get("size_bytes") or 0)
+        required_size = manifest.disk.size_bytes
+        if size < required_size:
+            errors["disk_key"] = "El disco destino es menor que el de la imagen."
+        sector = disk.get("logical_sector_bytes")
+        if sector != manifest.disk.logical_sector_bytes:
+            errors["disk_key"] = "El sector lógico del destino no es compatible con la imagen."
+        if disk.get("removable"):
+            errors["disk_key"] = "No se puede usar un disco removible como destino."
+    if operation == "clone":
+        try:
+            CloneInput.model_validate({"hostname": clone_hostname})
+        except ValidationError as error:
+            errors["hostname"] = str(error.errors()[0]["msg"])
+        else:
+            if clone_hostname.lower() == manifest.source.hostname.lower():
+                errors["hostname"] = "El hostname del clon debe ser diferente del origen."
+    return errors
 
 
 def validation_message(error: ValidationError) -> str:
@@ -546,6 +640,210 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
     return RedirectResponse(f"/tasks/{task.id}", 303)
 
 
+def deployment_images(db: Session, host: Host, operation: str) -> list[Image]:
+    query = select(Image).where(Image.status == "ready")
+    if operation == "restore":
+        query = query.where(Image.source_host_id == host.id)
+    else:
+        query = query.where(Image.source_host_id != host.id)
+    return list(db.scalars(query.order_by(Image.name.asc())).all())
+
+
+def deployment_page(request: Request, host_id: UUID, db: Session, *, operation: str) -> Response:
+    user = require_user(request, db)
+    host = get_host(db, host_id)
+    report = latest_report(db, host)
+    return render(
+        request,
+        "deployment.html",
+        user=user,
+        host=host,
+        report=report,
+        disks=inventory_disks(report),
+        images=deployment_images(db, host, operation),
+        operation=operation,
+        operation_label=TASK_OPERATION_LABELS[operation],
+        values={"idempotency_key": secrets.token_urlsafe(18)},
+        errors={},
+        section="hosts",
+    )
+
+
+async def deployment_request(
+    request: Request, host_id: UUID, db: Session, *, operation: str
+) -> Response:
+    user = require_user(request, db)
+    host = get_host(db, host_id)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    values = {
+        key: str(form.get(key, "")).strip()
+        for key in ("image_id", "disk_key", "idempotency_key", "hostname")
+    }
+    values["confirm"] = str(form.get("confirm", ""))
+    errors: dict[str, str] = {}
+    report = latest_report(db, host)
+    disks = inventory_disks(report)
+    images = deployment_images(db, host, operation)
+    selected_disk = next(
+        (disk for disk in disks if disk.get("stable_id") == values["disk_key"]), None
+    )
+    if report is None:
+        errors["form"] = "El equipo necesita un inventario actualizado antes de operar."
+    if values["confirm"] != "1":
+        errors["confirm"] = "Confirmá el equipo, el disco y la sobrescritura antes de iniciar."
+    image: Image | None = None
+    manifest: ImageManifest | None = None
+    if values["image_id"]:
+        try:
+            image = get_image(db, UUID(values["image_id"]))
+        except (ValueError, HTTPException):
+            errors["image_id"] = "La imagen seleccionada no es válida."
+        else:
+            manifest = selectable_manifest(request, image)
+            if manifest is None or not any(candidate.id == image.id for candidate in images):
+                errors["image_id"] = "La imagen no está disponible para esta operación."
+    else:
+        errors["image_id"] = "Seleccioná una imagen publicada y verificada."
+    if operation == "clone" and values["hostname"]:
+        with contextlib.suppress(ValidationError):
+            values["hostname"] = CloneInput.model_validate(
+                {"hostname": values["hostname"]}
+            ).hostname
+    errors.update(
+        {
+            key: value
+            for key, value in deployment_validation(
+                image or Image(name="invalid"),
+                manifest,
+                host,
+                selected_disk,
+                operation=operation,
+                clone_hostname=values["hostname"],
+            ).items()
+            if key not in errors
+        }
+    )
+    if not values["idempotency_key"]:
+        values["idempotency_key"] = digest(
+            ":".join(
+                [
+                    str(user.id),
+                    operation,
+                    host.id,
+                    values["image_id"],
+                    values["disk_key"],
+                    values["hostname"],
+                    report.id if report else "",
+                ]
+            )
+        )
+    elif len(values["idempotency_key"]) > 128:
+        errors["form"] = "La solicitud no tiene un identificador válido."
+    existing = db.scalar(select(Task).where(Task.idempotency_key == values["idempotency_key"]))
+    if existing is not None:
+        if existing.requested_by != user.id:
+            errors["form"] = "La solicitud ya está siendo utilizada."
+        else:
+            return RedirectResponse(f"/tasks/{existing.id}", 303)
+    if db.scalar(select(Task.id).where(Task.reservation_key == host.id)) is not None:
+        errors["form"] = "Este equipo ya tiene una tarea activa."
+    if errors or report is None or selected_disk is None or image is None or manifest is None:
+        return render(
+            request,
+            "deployment.html",
+            user=user,
+            host=host,
+            report=report,
+            disks=disks,
+            images=images,
+            operation=operation,
+            operation_label=TASK_OPERATION_LABELS[operation],
+            values=values,
+            errors=errors,
+            status=422,
+            section="hosts",
+        )
+    task = Task(
+        operation=operation,
+        status="approved",
+        requested_by=user.id,
+        host_id=host.id,
+        image_id=image.id,
+        inventory_report_id=report.id,
+        disk_selector=task_disk_selector(
+            selected_disk,
+            operation=operation,
+            manifest=manifest,
+            clone_hostname=values["hostname"],
+        ),
+        idempotency_key=values["idempotency_key"],
+        reservation_key=host.id,
+        phase="queued",
+        bytes_processed=0,
+        total_bytes=sum(artifact.size_bytes for artifact in manifest.artifacts),
+        message=(
+            "En espera de un agente PXE compatible para clonar y personalizar."
+            if operation == "clone"
+            else "En espera de un agente PXE compatible para restaurar el destino."
+        ),
+    )
+    db.add(task)
+    db.flush()
+    add_event(
+        db,
+        task,
+        event_type="created",
+        phase="queued",
+        total_bytes=task.total_bytes,
+        message=task.message,
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return render(
+            request,
+            "deployment.html",
+            user=user,
+            host=host,
+            report=report,
+            disks=disks,
+            images=images,
+            operation=operation,
+            operation_label=TASK_OPERATION_LABELS[operation],
+            values=values,
+            errors={"form": "No se pudo reservar el equipo; probá nuevamente."},
+            status=409,
+            section="hosts",
+        )
+    set_flash(
+        request,
+        f"{TASK_OPERATION_LABELS[operation]} encolada. Arrancá el equipo por PXE para iniciar.",
+    )
+    return RedirectResponse(f"/tasks/{task.id}", 303)
+
+
+@router.get("/hosts/{host_id}/restore", response_class=HTMLResponse)
+def restore_page(request: Request, host_id: UUID, db: Db) -> Response:
+    return deployment_page(request, host_id, db, operation="restore")
+
+
+@router.post("/hosts/{host_id}/restore")
+async def restore_request(request: Request, host_id: UUID, db: Db) -> Response:
+    return await deployment_request(request, host_id, db, operation="restore")
+
+
+@router.get("/hosts/{host_id}/clone", response_class=HTMLResponse)
+def clone_page(request: Request, host_id: UUID, db: Db) -> Response:
+    return deployment_page(request, host_id, db, operation="clone")
+
+
+@router.post("/hosts/{host_id}/clone")
+async def clone_request(request: Request, host_id: UUID, db: Db) -> Response:
+    return await deployment_request(request, host_id, db, operation="clone")
+
+
 @router.get("/tasks", response_class=HTMLResponse)
 def task_list(
     request: Request,
@@ -643,6 +941,66 @@ def task_status(request: Request, task_id: UUID, db: Db) -> JSONResponse:
     if task is None:
         raise HTTPException(404, "No se encontró la tarea.")
     return JSONResponse(task_status_payload(task), status_code=200)
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def task_cancel(request: Request, task_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    if expire_stale_tasks(db):
+        db.commit()
+    task = db.get(Task, str(task_id))
+    if task is None:
+        raise HTTPException(404, "No se encontró la tarea.")
+    try:
+        changed = request_task_cancellation(
+            db, task, reason=f"Cancelación solicitada por {user.username}."
+        )
+    except TaskError as error:
+        raise HTTPException(409, str(error)) from None
+    db.commit()
+    set_flash(
+        request,
+        "Tarea cancelada." if task.status == "cancelled" else "Cancelación solicitada al agente.",
+    )
+    if not changed:
+        set_flash(request, "La tarea ya había terminado.")
+    return RedirectResponse(f"/tasks/{task.id}", 303)
+
+
+@router.post("/tasks/{task_id}/reconcile")
+async def task_reconcile(request: Request, task_id: UUID, db: Db) -> Response:
+    require_user(request, db)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    if form.get("confirm") != "1":
+        raise HTTPException(422, "Confirmá que el agente anterior está detenido.")
+    if expire_stale_tasks(db):
+        db.commit()
+    task = db.get(Task, str(task_id))
+    if task is None:
+        raise HTTPException(404, "No se encontró la tarea.")
+    try:
+        reconcile_task(db, task)
+    except TaskError as error:
+        raise HTTPException(409, str(error)) from None
+    if task.operation == "capture":
+        image = db.get(Image, task.image_id)
+        if image is not None:
+            image.status = "capturing"
+            image.failure_reason = ""
+    try:
+        request.app.state.artifact_store.remove_task_staging(task.id)
+    except StorageError as error:
+        db.rollback()
+        raise HTTPException(409, str(error)) from None
+    db.commit()
+    set_flash(
+        request,
+        "Tarea reconciliada. Se creó una oportunidad explícita para el nuevo intento.",
+    )
+    return RedirectResponse(f"/tasks/{task.id}", 303)
 
 
 @router.get("/pairing", response_class=HTMLResponse)

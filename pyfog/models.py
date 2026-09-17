@@ -184,6 +184,8 @@ class Task(Base):
     assigned_at: Mapped[datetime | None]
     started_at: Mapped[datetime | None]
     completed_at: Mapped[datetime | None]
+    cancel_requested_at: Mapped[datetime | None]
+    cancel_acknowledged_at: Mapped[datetime | None]
 
 
 class TaskAttempt(Base):

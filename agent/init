@@ -1,5 +1,6 @@
 #!/bin/sh
-# PyFog ephemeral Linux agent. This script intentionally never mounts block devices.
+# PyFog ephemeral Linux agent. Inventory mode never mounts block devices; imaging mode mounts only
+# the explicitly selected target after the coordinator has issued a task-scoped capability.
 set -eu
 set -f
 
@@ -123,21 +124,21 @@ run_inventory() {
             unset token
             return 1
         }
-        export PYFOG_INVENTORY_TOKEN="$token"
+        export PYFOG_AGENT_TOKEN="$token" PYFOG_INVENTORY_TOKEN="$token"
         # Values originate from the kernel command line but remain separate shell arguments. The
         # URL and UUID are validated again by collect_inventory.py before any request is sent.
         if [ -r "$CA_FILE" ]; then
             if /usr/libexec/pyfog-agent --server "$SERVER" --host-id "$HOST_ID" --ca-file "$CA_FILE"; then
-                unset PYFOG_INVENTORY_TOKEN token
+                unset PYFOG_AGENT_TOKEN PYFOG_INVENTORY_TOKEN token
                 log "Inventario enviado a PyFog."
                 return 0
             fi
         elif /usr/libexec/pyfog-agent --server "$SERVER" --host-id "$HOST_ID"; then
-            unset PYFOG_INVENTORY_TOKEN token
+            unset PYFOG_AGENT_TOKEN PYFOG_INVENTORY_TOKEN token
             log "Inventario enviado a PyFog."
             return 0
         fi
-        unset PYFOG_INVENTORY_TOKEN token
+        unset PYFOG_AGENT_TOKEN PYFOG_INVENTORY_TOKEN token
         log "No se pudo enviar el inventario; se conserva una copia local."
     fi
     if /usr/libexec/pyfog-agent --output /run/pyfog/inventory.json; then
@@ -163,7 +164,7 @@ run_imaging() {
         unset token
         return 1
     }
-    export PYFOG_INVENTORY_TOKEN="$token"
+    export PYFOG_AGENT_TOKEN="$token" PYFOG_INVENTORY_TOKEN="$token"
     if [ -r "$CA_FILE" ]; then
         if /usr/libexec/pyfog-agent --capture --server "$SERVER" --host-id "$HOST_ID" \
             --ca-file "$CA_FILE"; then
@@ -178,7 +179,7 @@ run_imaging() {
             result=$?
         fi
     fi
-    unset PYFOG_INVENTORY_TOKEN token
+    unset PYFOG_AGENT_TOKEN PYFOG_INVENTORY_TOKEN token
     return "$result"
 }
 
@@ -187,7 +188,11 @@ mount_pseudo sysfs sysfs /sys
 mount_pseudo devtmpfs devtmpfs /dev
 mount_pseudo tmpfs tmpfs /run
 read_cmdline
-log "Versión $VERSION; modo $MODE; sin escrituras de disco."
+if [ "$MODE" = imaging ]; then
+    log "Versión $VERSION; modo imaging; las escrituras requieren una tarea autorizada."
+else
+    log "Versión $VERSION; modo $MODE; sin escrituras de disco."
+fi
 load_modules
 
 case "$MODE" in
@@ -203,13 +208,13 @@ case "$MODE" in
     imaging)
         configure_network
         if run_imaging; then
-            log "Captura terminada y enviada al servidor."
+            log "Operación de imagen terminada y enviada al servidor."
         else
             result=$?
             if [ "$result" -eq 3 ]; then
-                log "No había una captura pendiente para este equipo."
+                log "No había una operación de imagen pendiente para este equipo."
             else
-                log "La captura no se pudo completar; se conserva la tarea para intervención."
+                log "La operación de imagen no se pudo completar; se conserva la tarea para intervención."
             fi
         fi
         stop_after_run

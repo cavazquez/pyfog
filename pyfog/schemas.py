@@ -127,6 +127,26 @@ class ImageInput(Schema):
     description: str = Field(default="", max_length=4000)
 
 
+class CloneInput(Schema):
+    hostname: str = Field(min_length=1, max_length=253)
+
+    @field_validator("hostname")
+    @classmethod
+    def valid_hostname(cls, value: str) -> str:
+        if (
+            len(value) > 253
+            or value.startswith(".")
+            or value.endswith(".")
+            or ".." in value
+            or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", value)
+        ):
+            raise ValueError("Ingresá un hostname Linux válido para el clon.")
+        labels = value.split(".")
+        if any(len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
+            raise ValueError("Cada segmento del hostname debe ser válido.")
+        return value.lower()
+
+
 class TaskClaimInput(Schema):
     """Versioned request used by an authenticated imaging agent to claim work."""
 
@@ -156,5 +176,6 @@ class TaskHeartbeatInput(Schema):
 class TaskResultInput(Schema):
     sequence: Annotated[int, Field(ge=1, le=2**31 - 1, strict=True)]
     success: bool = Field(strict=True)
+    cancelled: bool = Field(default=False, strict=True)
     manifest: dict[str, object] | None = None
     error: str = Field(default="", max_length=500)

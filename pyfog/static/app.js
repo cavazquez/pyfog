@@ -52,6 +52,7 @@
       approved: "En cola",
       assigned: "Agente asignado",
       running: "En curso",
+      cancelling: "Cancelando",
       verifying: "Verificando",
       succeeded: "Completada",
       failed: "Fallida",
