@@ -12,6 +12,5 @@ __pycache__
 *.sqlite
 *.sqlite3
 docs
-scripts
 tests
 pyfog.db

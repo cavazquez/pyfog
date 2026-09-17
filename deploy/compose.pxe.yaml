@@ -1,0 +1,9 @@
+services:
+  pxe:
+    profiles: ["pxe"]
+    image: caddy:2.11.4-alpine
+    command: ["caddy", "file-server", "--root", "/srv/pxe/http", "--listen", ":8080"]
+    volumes:
+      - ${PYFOG_PXE_DIR:-../dist/pxe}:/srv/pxe:ro
+    networks:
+      - backend

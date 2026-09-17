@@ -65,9 +65,7 @@ def prepare_source(tmp_path):
     (store / "partitions").mkdir(parents=True)
     (store / "partitions/01-esp.img").write_bytes(b"esp")
     (store / "partitions/02-root.partclone").write_bytes(b"root")
-    (store / "manifest.json").write_text(
-        json.dumps(manifest, sort_keys=True), encoding="utf-8"
-    )
+    (store / "manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     (image_store / "staging").mkdir()
     engine.dispose()
     return database, image_store

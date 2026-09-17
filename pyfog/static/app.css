@@ -73,6 +73,7 @@
   .button.secondary { background: white; border-color: #ced9d1; color: #344a3d; }
   .button.secondary:hover { background: #edf4ed; }
   .button.danger { color: #a23428; border-color: #e8c5bd; background: #fff9f7; }
+  .button:disabled { cursor: wait; opacity: .65; }
   .button > span { font-size: 17px; }
   .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .full-width { width: 100%; }
@@ -207,6 +208,11 @@
   .task-events li > div span { color: var(--muted); font-size: 11px; }
   .task-events p { margin: 3px 0; font-size: 12px; }
   .task-events small { color: var(--muted); font-size: 10px; }
+  .danger-zone { border-color: #e8c5bd; }
+  .danger-zone form { display: grid; gap: 12px; padding: 0 24px 24px; }
+  .danger-zone label { font-size: 12px; }
+  .audit-table small { display: block; color: var(--muted); margin-top: 3px; }
+  .table-wrap { scrollbar-color: #9db5a3 #f4f7f3; }
 }
 @layer responsive {
   @media (max-width: 1100px) {
@@ -226,7 +232,7 @@
     .sidebar { position: static; height: auto; padding: 15px 16px 12px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
     .brand { font-size: 25px; }
     .brand-mark { width: 29px; height: 29px; font-size: 19px; }
-    .sidebar nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin: 0; width: 100%; }
+    .sidebar nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin: 0; width: 100%; }
     .nav-item { justify-content: center; padding: 8px 4px; font-size: 11px; white-space: nowrap; }
     .nav-item > span, .nav-label, .sidebar-note, .sidebar-footer .avatar, .sidebar-footer > div { display: none; }
     .sidebar-footer { grid-column: 2; grid-row: 1; padding: 0; border: 0; }
@@ -293,6 +299,17 @@
     .check-field { align-items: flex-start; }
     .task-table thead { display: none; }
     .task-table { min-width: 680px; }
+  }
+  @media (max-width: 480px) {
+    .workspace main { padding-left: 16px; padding-right: 16px; }
+    .topbar { padding-left: 16px; padding-right: 16px; }
+    .stats { grid-template-columns: minmax(0, 1fr); }
+    .stat > span { min-height: 0; }
+    .page-heading { gap: 15px; }
+    .panel-heading, .properties { padding-left: 16px; padding-right: 16px; }
+    .form-panel { padding-left: 16px; padding-right: 16px; }
+    .danger-zone form { padding-left: 16px; padding-right: 16px; }
+    .check-field { font-size: 11px; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
 }

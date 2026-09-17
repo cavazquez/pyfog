@@ -1,8 +1,8 @@
 # Arquitectura de PyFog
 
-Estado: registro, inventario, descubrimiento PXE aprobado y captura Linux verificada están
-implementados. Restauración, clonación y coordinación distribuida siguen pendientes. El contrato
-que guía las próximas etapas está en la
+Estado: registro, inventario, descubrimiento PXE aprobado, captura Linux verificada, restauración,
+clonación y operación de un único coordinador están implementados. La coordinación distribuida
+sigue fuera del MVP. El contrato que guía las próximas etapas está en la
 [ADR 0001: MVP Linux](adr/0001-mvp-linux.md).
 
 ## Primera entrega
@@ -82,8 +82,9 @@ predeterminado y agrega las herramientas de imagen sólo al construir `imaging`.
 [`pxe/`](../pxe/README.md) publica el agente por HTTPS, ofrece inventario o retorno al disco local
 con timeout y no toma control del DHCP. Por diseño, un perfil de captura necesita un mecanismo
 controlado para colocar el token del equipo en un archivo `tmpfs`; nunca se incluye en iPXE, DHCP o
-la línea de comandos. Restauración y clonación reutilizarán el manifiesto y las mismas fronteras de
-seguridad en tareas posteriores. La distribución masiva queda analizada y acotada en el
+la línea de comandos. Restauración conserva la identidad del origen y clonación regenera la
+identidad Linux antes del primer arranque; ambas reutilizan el manifiesto y las mismas fronteras de
+seguridad. La distribución masiva queda analizada y acotada en el
 [ADR 0002](adr/0002-distribucion-masiva.md): el primer experimento usará torrent privado con
 `aria2c` y HTTP seed, sin cambiar HTTPS como plano de control ni introducir multicast propio en el
 MVP.

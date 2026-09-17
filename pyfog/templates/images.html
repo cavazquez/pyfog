@@ -10,7 +10,7 @@
     <button class="button secondary" type="submit">Filtrar</button>{% if q or image_status != 'all' %}<a class="text-link" href="/images">Limpiar</a>{% endif %}
   </form>
   {% if images %}
-  <div class="table-wrap"><table class="image-table"><thead><tr><th>Imagen</th><th>Estado</th><th>Origen</th><th>Fecha</th><th>Tamaño</th><th>Compatibilidad</th></tr></thead><tbody>
+  <div class="table-wrap"><table class="image-table"><caption class="sr-only">Catálogo de imágenes y compatibilidad</caption><thead><tr><th>Imagen</th><th>Estado</th><th>Origen</th><th>Fecha</th><th>Tamaño</th><th>Compatibilidad</th></tr></thead><tbody>
   {% for image in images %}<tr><td><div class="device-cell"><span class="device-icon" aria-hidden="true">◈</span><div><a href="/images/{{ image.id }}" class="host-name">{{ image.name }}</a><small>{{ image.description or 'Sin descripción' }}</small></div></div></td><td><span class="badge {{ 'muted' if image.deleted_at else 'ready' if image.status == 'ready' else 'pending' if image.status == 'capturing' else 'muted' }}">{{ 'Eliminada' if image.deleted_at else status_labels.get(image.status, image.status) }}</span></td><td>{{ source_hosts.get(image.source_host_id, image.source_hostname or 'Sin origen') }}</td><td class="date-cell">{{ image.captured_at|date if image.captured_at else 'Sin captura' }}</td><td class="date-cell">{{ image.total_size_bytes|bytes }}</td><td>{{ image.compatibility or 'Se definirá al validar el manifiesto' }}</td></tr>{% endfor %}
   </tbody></table></div>
   {% else %}

@@ -496,9 +496,7 @@ def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("No se pudo leer la geometría GPT del disco.")
     partitions: list[dict[str, Any]] = []
     for line in output.splitlines():
-        match = re.match(
-            r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+.*?\s+([0-9A-Fa-f]{4})\s+(.*)$", line
-        )
+        match = re.match(r"^\s*(\d+)\s+(\d+)\s+(\d+)\s+.*?\s+([0-9A-Fa-f]{4})\s+(.*)$", line)
         if not match:
             continue
         number, start, end, code, name = match.groups()
@@ -602,11 +600,7 @@ def assert_disk_is_quiescent(partitions: list[dict[str, Any]]) -> None:
     swaps = Path("/proc/swaps")
     if swaps.is_file():
         content = swaps.read_text(encoding="utf-8", errors="replace")
-        swap_devices = {
-            line.split()[0]
-            for line in content.splitlines()[1:]
-            if line.split()
-        }
+        swap_devices = {line.split()[0] for line in content.splitlines()[1:] if line.split()}
         if devices & swap_devices:
             raise ValueError("El disco tiene swap activo y no se puede capturar.")
 
@@ -808,18 +802,18 @@ def download_artifact(
     received = 0
     try:
         with opener(ca_file).open(request, timeout=60) as response, temporary.open("xb") as target:
-                while True:
-                    check_cancel()
-                    chunk = response.read(chunk_bytes)
-                    if not chunk:
-                        break
-                    received += len(chunk)
-                    if received > expected_size:
-                        raise ValueError("El artefacto descargado supera su tamaño declarado.")
-                    digest.update(chunk)
-                    target.write(chunk)
-                target.flush()
-                os.fsync(target.fileno())
+            while True:
+                check_cancel()
+                chunk = response.read(chunk_bytes)
+                if not chunk:
+                    break
+                received += len(chunk)
+                if received > expected_size:
+                    raise ValueError("El artefacto descargado supera su tamaño declarado.")
+                digest.update(chunk)
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
         if received != expected_size or digest.hexdigest() != expected_sha256:
             raise ValueError("El checksum o tamaño del artefacto descargado no coincide.")
         temporary.replace(destination)
@@ -1559,9 +1553,7 @@ def main() -> None:
     args = parser.parse_args()
     token = os.environ.get("PYFOG_AGENT_TOKEN") or os.environ.get("PYFOG_INVENTORY_TOKEN", "")
     validate_token(token)
-    if not capture_task(
-        args.server, args.host_id, token, args.ca_file, Path(args.staging_dir)
-    ):
+    if not capture_task(args.server, args.host_id, token, args.ca_file, Path(args.staging_dir)):
         raise SystemExit(NO_TASK_EXIT)
 
 

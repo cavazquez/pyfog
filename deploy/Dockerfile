@@ -11,6 +11,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY pyfog ./pyfog
+COPY scripts ./scripts
 RUN uv sync --frozen --no-dev --no-install-project
 
 FROM python:3.12.13-slim-bookworm

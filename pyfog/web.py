@@ -146,8 +146,10 @@ def get_image(db: Session, image_id: UUID) -> Image:
 
 
 def image_status_label(image: Image) -> str:
-    return "Eliminada" if image.deleted_at is not None else IMAGE_STATUS_LABELS.get(
-        image.status, image.status
+    return (
+        "Eliminada"
+        if image.deleted_at is not None
+        else IMAGE_STATUS_LABELS.get(image.status, image.status)
     )
 
 

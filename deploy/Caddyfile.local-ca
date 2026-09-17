@@ -9,5 +9,10 @@ http://{$PYFOG_PUBLIC_HOST} {
 
 https://{$PYFOG_PUBLIC_HOST} {
 	tls internal
-	reverse_proxy app:8000
+	handle_path /boot/* {
+		reverse_proxy pxe:8080
+	}
+	handle {
+		reverse_proxy app:8000
+	}
 }

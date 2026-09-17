@@ -90,9 +90,7 @@ ALLOWED_TRANSITIONS = {
 REQUIRED_CAPABILITIES = {
     "capture": frozenset({"gpt", "partclone.ext4", "partclone.fat"}),
     "restore": frozenset({"gpt", "partclone.ext4", "partclone.fat", "restore"}),
-    "clone": frozenset(
-        {"gpt", "partclone.ext4", "partclone.fat", "restore", "clone", "identity"}
-    ),
+    "clone": frozenset({"gpt", "partclone.ext4", "partclone.fat", "restore", "clone", "identity"}),
 }
 
 

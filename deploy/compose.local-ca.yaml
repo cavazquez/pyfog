@@ -17,8 +17,9 @@ services:
       PYFOG_ENV: production
       PYFOG_DEBUG: "false"
       PYFOG_DATABASE_URL: sqlite:////var/lib/pyfog/pyfog.db
+      PYFOG_IMAGE_STORE: /var/lib/pyfog/images
       PYFOG_ALLOWED_HOSTS: ${PYFOG_PUBLIC_HOST:?Definí PYFOG_PUBLIC_HOST},127.0.0.1
-      PYFOG_TRUSTED_PROXY_IPS: 172.30.0.0/24,127.0.0.1
+      PYFOG_TRUSTED_PROXY_IPS: ${PYFOG_TRUSTED_PROXY_IPS:-172.30.0.0/24,127.0.0.1}
       PYFOG_SECRET_KEY_FILE: /run/secrets/pyfog_session_key
     secrets:
       - pyfog_session_key
@@ -40,6 +41,28 @@ services:
       retries: 5
       start_period: 10s
 
+  migrate:
+    profiles: ["admin"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["python", "-m", "pyfog", "init-db"]
+    environment:
+      PYFOG_ENV: production
+      PYFOG_DEBUG: "false"
+      PYFOG_DATABASE_URL: sqlite:////var/lib/pyfog/pyfog.db
+      PYFOG_IMAGE_STORE: /var/lib/pyfog/images
+      PYFOG_ALLOWED_HOSTS: ${PYFOG_PUBLIC_HOST:?Definí PYFOG_PUBLIC_HOST},127.0.0.1
+      PYFOG_TRUSTED_PROXY_IPS: ${PYFOG_TRUSTED_PROXY_IPS:-172.30.0.0/24,127.0.0.1}
+      PYFOG_SECRET_KEY_FILE: /run/secrets/pyfog_session_key
+    secrets:
+      - pyfog_session_key
+    volumes:
+      - pyfog_data:/var/lib/pyfog
+    read_only: true
+    tmpfs:
+      - /tmp
+
   caddy:
     image: caddy:2.11.4-alpine
     restart: unless-stopped
@@ -49,8 +72,8 @@ services:
     environment:
       PYFOG_PUBLIC_HOST: ${PYFOG_PUBLIC_HOST:?Definí PYFOG_PUBLIC_HOST}
     ports:
-      - "${PYFOG_HTTP_PORT:-80}:80"
-      - "${PYFOG_HTTPS_PORT:-443}:443"
+      - "${PYFOG_BIND_ADDRESS:-0.0.0.0}:${PYFOG_HTTP_PORT:-80}:80"
+      - "${PYFOG_BIND_ADDRESS:-0.0.0.0}:${PYFOG_HTTPS_PORT:-443}:443"
     volumes:
       - ./Caddyfile.local-ca:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

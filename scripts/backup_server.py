@@ -32,8 +32,7 @@ CONFIG_REFERENCE = {
         "desde el gestor de secretos."
     ),
     "tls": (
-        "No se incluyen certificados ni claves privadas. "
-        "Recuperarlos desde el gestor de secretos."
+        "No se incluyen certificados ni claves privadas. Recuperarlos desde el gestor de secretos."
     ),
     "agent_tokens": "Rotar o volver a emitir tokens de equipos después de una recuperación.",
 }
@@ -122,9 +121,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 def sqlite_revision(database: Path) -> str | None:
     try:
         with sqlite3.connect(database) as connection:
-            row = connection.execute(
-                "SELECT version_num FROM alembic_version LIMIT 1"
-            ).fetchone()
+            row = connection.execute("SELECT version_num FROM alembic_version LIMIT 1").fetchone()
     except sqlite3.OperationalError as error:
         if "no such table: alembic_version" in str(error):
             return None

@@ -1,4 +1,5 @@
-.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate lab-check agent-check pxe-check \
+.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate dev-up dev-migrate dev-admin dev-down dev-clean \
+	lan-migrate lan-admin lab-check agent-check pxe-check \
 	image-manifest-check
 
 setup:
@@ -9,6 +10,27 @@ migrate:
 
 run:
 	uv run uvicorn pyfog.app:app --reload --host 127.0.0.1
+
+dev-up:
+	docker compose -f deploy/compose.dev.yaml up --build -d web
+
+dev-migrate:
+	docker compose -f deploy/compose.dev.yaml --profile admin run --rm migrate
+
+dev-admin:
+	docker compose -f deploy/compose.dev.yaml --profile admin run --rm migrate python -m pyfog create-admin --username "$${PYFOG_ADMIN_USERNAME:-admin}"
+
+dev-down:
+	docker compose -f deploy/compose.dev.yaml down
+
+dev-clean:
+	docker compose -f deploy/compose.dev.yaml down --remove-orphans -v
+
+lan-migrate:
+	docker compose -f deploy/compose.local-ca.yaml --profile admin run --rm migrate
+
+lan-admin:
+	docker compose -f deploy/compose.local-ca.yaml --profile admin run --rm migrate python -m pyfog create-admin --username "$${PYFOG_ADMIN_USERNAME:-admin}"
 
 lint:
 	uv run ruff check .

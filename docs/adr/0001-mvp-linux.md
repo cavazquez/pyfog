@@ -56,10 +56,9 @@ flowchart LR
 ```
 
 La aplicación web nunca abre un dispositivo de bloques ni ejecuta Partclone. FastAPI valida la
-intención del administrador y persiste el estado; un coordinador distinto asigna una tarea a un
-agente efímero arrancado por PXE. DHCP puede seguir siendo un servicio de la red existente: PyFog
-publica los archivos de arranque y documenta la configuración o relay, sin tomar control global
-del DHCP.
+intención del administrador, persiste el estado y coordina un único agente efímero arrancado por
+PXE. DHCP puede seguir siendo un servicio de la red existente: PyFog publica los archivos de
+arranque y documenta la configuración o relay, sin tomar control global del DHCP.
 
 SQLite es suficiente para el registro e inventario local actual. Antes de ejecutar tareas de
 imagen, la instalación de producción usa PostgreSQL 17 y un almacén de artefactos local o compatible

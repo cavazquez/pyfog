@@ -5,21 +5,30 @@ Es la primera entrega de un proyecto de imágenes por red inspirado en FOG.
 
 **Disponible:** alta y edición de equipos, identificación por MAC, descubrimiento PXE con aprobación
 administrativa, recolector Linux, importación JSON, API con tokens por equipo, inventario actual e
-historial, catálogo web de fichas de imágenes y captura Linux con tareas persistentes, leases,
-progreso, almacenamiento por fragmentos y publicación verificada. Acceso mediante administrador local.
+historial, catálogo web de fichas de imágenes, captura, restauración y clonación Linux con tareas
+persistentes, leases, progreso, cancelación cooperativa, reconciliación, auditoría, healthchecks,
+backup y almacenamiento por fragmentos con publicación verificada. Acceso mediante administrador
+local.
 
-**En desarrollo:** la restauración y clonación con Partclone, junto con la operación multi-coordinador,
-siguen en los issues siguientes. El modo `imaging` requiere un initramfs específico y una provisión
-controlada del token del equipo.
+**Alcance restante:** la operación multi-coordinador y la matriz completa de pruebas E2E siguen
+fuera del MVP actual. El modo `imaging` requiere un initramfs específico y una provisión controlada
+del token del equipo.
 
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
 [Arquitectura](docs/architecture.md) ·
 [Contrato del MVP Linux](docs/adr/0001-mvp-linux.md) ·
 [Manifiesto de imágenes](docs/image-manifest.md) ·
-[Backup y recuperación](docs/backup-recovery.md)
+[Backup y recuperación](docs/backup-recovery.md) ·
+[Guía operativa en español](docs/guia-es.md) ·
+[Accesibilidad](docs/accessibility.md) ·
+[Despliegue LAN](deploy/README.md)
 
 ## Iniciar en desarrollo
+
+Para una experiencia reproducible con Docker/Compose, consultá [Despliegues reproducibles](deploy/README.md)
+y ejecutá `make dev-up`, `make dev-migrate` y `make dev-admin`. Los comandos locales de abajo siguen
+siendo útiles para iterar sin contenedores.
 
 Requisitos: Python 3.12 a 3.14 y [uv](https://docs.astral.sh/uv/).
 

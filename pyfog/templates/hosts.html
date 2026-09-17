@@ -15,7 +15,7 @@
     <button class="button secondary" type="submit">Filtrar</button>{% if q or state != 'all' %}<a class="text-link" href="/hosts">Limpiar</a>{% endif %}
   </form>
   {% if hosts %}
-  <div class="table-wrap"><table class="host-table"><thead><tr><th>Equipo</th><th>Dirección MAC</th><th>Sistema</th><th>Último informe recibido</th><th>Inventario</th></tr></thead><tbody>
+  <div class="table-wrap"><table class="host-table"><caption class="sr-only">Equipos registrados y su estado de inventario</caption><thead><tr><th>Equipo</th><th>Dirección MAC</th><th>Sistema</th><th>Último informe recibido</th><th>Inventario</th></tr></thead><tbody>
   {% for host in hosts %}<tr><td><div class="device-cell"><span class="device-icon" aria-hidden="true">▣</span><div><a href="/hosts/{{ host.id }}" class="host-name">{{ host.name }}</a><small>{{ host.hostname or 'Hostname pendiente' }}</small></div></div></td><td><code>{{ host.mac_address }}</code></td><td>{{ host.os_name or 'Sin datos' }}</td><td class="date-cell">{{ host.last_inventory_at|date }}</td><td><span class="badge {{ 'ready' if host.last_inventory_at else 'pending' }}">{{ 'Recibido' if host.last_inventory_at else 'Pendiente' }}</span></td></tr>{% endfor %}
   </tbody></table></div>
   {% else %}

@@ -44,4 +44,3 @@ def downgrade() -> None:
     op.drop_index("ix_audit_events_actor_user_id", table_name="audit_events")
     op.drop_table("audit_events")
     op.drop_column("images", "deleted_at")
-

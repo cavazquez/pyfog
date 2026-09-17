@@ -92,9 +92,11 @@ def test_target_quiescence_checks_whole_disk_and_swap_sources(
     monkeypatch.setattr(
         task_agent.Path,
         "read_text",
-        lambda self, **_kwargs: "36 29 0:32 / / rw - ext4 /dev/vda rw\n"
-        if str(self) == "/proc/self/mountinfo"
-        else "Filename\tType\tSize\tUsed\tPriority\n/dev/vda2 partition 1 0 -2\n",
+        lambda self, **_kwargs: (
+            "36 29 0:32 / / rw - ext4 /dev/vda rw\n"
+            if str(self) == "/proc/self/mountinfo"
+            else "Filename\tType\tSize\tUsed\tPriority\n/dev/vda2 partition 1 0 -2\n"
+        ),
     )
     monkeypatch.setattr(task_agent.Path, "is_file", lambda self: str(self) == "/proc/swaps")
     with pytest.raises(ValueError, match="partición montada"):
@@ -121,7 +123,8 @@ def test_restore_partition_table_moves_secondary_gpt_header_on_larger_target(
     monkeypatch.setattr(task_agent, "run_command", fake_run)
     monkeypatch.setattr(task_agent.shutil, "which", lambda name: "/usr/bin/" + name)
     task_agent.restore_partition_table(
-        "/dev/vda", restore_manifest()["disk"]  # type: ignore[arg-type]
+        "/dev/vda",
+        restore_manifest()["disk"],  # type: ignore[arg-type]
     )
     assert ["sgdisk", "--move-second-header", "/dev/vda"] in calls
     assert ["sgdisk", "--verify", "/dev/vda"] in calls
@@ -222,10 +225,7 @@ def test_clone_identity_removes_source_identity_and_enables_first_boot_dhcp(tmp_
     assert not (root / "etc/systemd/network/20-source.network").exists()
     assert not (root / "etc/NetworkManager/system-connections/source.nmconnection").exists()
     assert not (root / "etc/udev/rules.d/70-persistent-net.rules").exists()
-    assert (
-        (root / "etc/pyfog/clone-identity").read_text(encoding="utf-8")
-        == "pyfog-clone-v1\n"
-    )
+    assert (root / "etc/pyfog/clone-identity").read_text(encoding="utf-8") == "pyfog-clone-v1\n"
     assert (root / "usr/local/sbin/pyfog-first-boot-identity").stat().st_mode & 0o111
     assert (
         root / "etc/systemd/system/multi-user.target.wants/pyfog-first-boot-identity.service"
@@ -252,7 +252,9 @@ def test_uefi_boot_uses_fallback_without_nvram(
     )
     monkeypatch.setattr(task_agent.shutil, "which", lambda name: "/usr/bin/" + name)
     task_agent.ensure_uefi_boot(
-        tmp_path / "mount", "/dev/vda", restore_manifest()["disk"]  # type: ignore[arg-type]
+        tmp_path / "mount",
+        "/dev/vda",
+        restore_manifest()["disk"],  # type: ignore[arg-type]
     )
     grub_call = next(call for call in calls if call[0] == "grub-install")
     assert "--removable" in grub_call
