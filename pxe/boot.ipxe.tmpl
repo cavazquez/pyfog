@@ -10,13 +10,13 @@ set pyfog_timeout __PYFOG_TIMEOUT_MS__
 menu PyFog — arranque seguro
 item --key i inventory Inventariar este equipo (modo de solo lectura)
 item --key l local Arrancar el disco local
-choose --default local --timeout ${pyfog_timeout} pyfog_choice || goto local
+choose --default local --timeout __PYFOG_TIMEOUT_MS__ pyfog_choice || goto local
 iseq ${pyfog_choice} inventory && goto inventory || goto local
 
 :inventory
 dhcp || goto local
-kernel ${pyfog_base}/agent/vmlinuz pyfog.version=${pyfog_version} pyfog.mode=inventory pyfog.net=dhcp pyfog.server=${pyfog_server} pyfog.pair=1 || goto local
-initrd ${pyfog_base}/agent/initramfs.img || goto local
+kernel __PYFOG_BASE_URL__/agent/vmlinuz pyfog.version=${pyfog_version} pyfog.mode=inventory pyfog.net=dhcp pyfog.server=${pyfog_server} pyfog.pair=1 || goto local
+initrd __PYFOG_BASE_URL__/agent/initramfs.img || goto local
 boot || goto local
 
 :local

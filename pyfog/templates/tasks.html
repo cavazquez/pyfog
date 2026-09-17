@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Tareas{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">OPERACIONES</p><h1>Tareas</h1><p>Seguimiento de capturas y de los agentes que las ejecutan.</p></div></div>
+<section class="panel">
+  <div class="panel-heading"><div><h2>Cola de tareas</h2><p>Una operación activa conserva su equipo reservado hasta terminar o requerir intervención.</p></div><span class="count-badge">{{ matching }} tareas</span></div>
+  <form class="filters" action="/tasks" method="get" role="search"><label class="sr-only" for="status">Estado de la tarea</label><select name="status" id="status"><option value="all"{% if task_status == 'all' %} selected{% endif %}>Todos los estados</option>{% for key, label in status_labels.items() if key != 'draft' %}<option value="{{ key }}"{% if task_status == key %} selected{% endif %}>{{ label }}</option>{% endfor %}</select><button class="button secondary" type="submit">Filtrar</button>{% if task_status != 'all' %}<a class="text-link" href="/tasks">Limpiar</a>{% endif %}</form>
+  {% if tasks %}
+  <div class="table-wrap"><table class="task-table"><thead><tr><th>Operación</th><th>Equipo</th><th>Imagen</th><th>Estado</th><th>Progreso</th><th>Actualizada</th></tr></thead><tbody>
+  {% for task in tasks %}<tr><td><a href="/tasks/{{ task.id }}" class="host-name">{{ operation_labels.get(task.operation, task.operation) }}</a><small><code>{{ task.id }}</code></small></td><td>{{ hosts.get(task.host_id, 'Equipo eliminado') }}</td><td>{{ images.get(task.image_id, 'Imagen eliminada') }}</td><td><span class="badge {{ 'ready' if task.status == 'succeeded' else 'pending' if task.status in ['approved', 'assigned', 'running', 'verifying'] else 'muted' }}">{{ status_labels.get(task.status, task.status) }}</span></td><td class="date-cell">{% if task.total_bytes %}{{ task.bytes_processed|bytes }} / {{ task.total_bytes|bytes }}{% else %}Sin datos{% endif %}</td><td class="date-cell">{{ task.updated_at|date }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<div class="empty-state"><span class="empty-icon" aria-hidden="true">◷</span><h3>{{ 'No encontramos tareas' if matching else 'Las tareas aparecerán cuando exista un agente para ejecutarlas.' }}</h3><p>{{ 'Probá con otro estado.' if matching else 'Encolá una captura desde la ficha de un equipo con inventario actualizado.' }}</p><a class="button secondary" href="/hosts">Ver equipos <span aria-hidden="true">→</span></a></div>{% endif %}
+  {% if pages > 1 %}<nav class="pagination" aria-label="Páginas de tareas">{% if page > 1 %}<a class="button secondary" href="{{ request.url.include_query_params(page=page-1) }}">Anterior</a>{% endif %}<span>Página {{ page }} de {{ pages }}</span>{% if page < pages %}<a class="button secondary" href="{{ request.url.include_query_params(page=page+1) }}">Siguiente</a>{% endif %}</nav>{% endif %}
+</section>
+{% endblock %}

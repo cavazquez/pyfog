@@ -1,19 +1,45 @@
+import json
 import secrets
-from datetime import datetime, timedelta
-from typing import Annotated
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pyfog.database import get_db
-from pyfog.models import Host, InventoryReport, PairingRequest, now
-from pyfog.schemas import Inventory, PairingRequestInput
+from pyfog.models import (
+    Host,
+    Image,
+    InventoryReport,
+    PairingRequest,
+    Task,
+    TaskAttempt,
+    now,
+)
+from pyfog.schemas import (
+    Inventory,
+    PairingRequestInput,
+    TaskClaimInput,
+    TaskHeartbeatInput,
+    TaskProgressInput,
+    TaskResultInput,
+)
 from pyfog.security import digest
 from pyfog.services import ingest_inventory
+from pyfog.storage import StorageError
+from pyfog.tasking import (
+    TaskError,
+    add_event,
+    claim_task,
+    expire_stale_tasks,
+    record_progress,
+    touch_attempt,
+    transition_task,
+)
 
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
@@ -49,10 +75,403 @@ def authorize_pairing(request: Request, pairing: PairingRequest) -> str:
     return token
 
 
+def authorize_host_agent(request: Request, db: Session, host_id: str) -> Host:
+    token = bearer_token(request)
+    host = db.get(Host, host_id)
+    expected = host.token_hash if host and host.token_hash else "0" * 64
+    if (
+        not host
+        or not token
+        or not secrets.compare_digest(digest(token), expected)
+        or not host.token_expires_at
+        or host.token_expires_at <= now()
+    ):
+        raise HTTPException(
+            401, "Credencial de agente inválida o vencida.", headers={"WWW-Authenticate": "Bearer"}
+        )
+    return host
+
+
+def get_task(db: Session, task_id: UUID) -> Task:
+    task = db.get(Task, str(task_id))
+    if task is None:
+        raise HTTPException(404, "No se encontró la tarea.")
+    return task
+
+
+def task_attempt_for_token(
+    request: Request, db: Session, task_id: UUID
+) -> tuple[Task, TaskAttempt]:
+    task = get_task(db, task_id)
+    token = bearer_token(request)
+    if not token:
+        raise HTTPException(
+            401, "Falta la capacidad de la tarea.", headers={"WWW-Authenticate": "Bearer"}
+        )
+    attempt = db.scalar(
+        select(TaskAttempt).where(
+            TaskAttempt.task_id == task.id,
+            TaskAttempt.capability_hash == digest(token),
+        )
+    )
+    if attempt is None:
+        raise HTTPException(
+            401, "Capacidad de tarea inválida.", headers={"WWW-Authenticate": "Bearer"}
+        )
+    if task.status in {"succeeded", "failed", "cancelled", "intervention_required"}:
+        raise HTTPException(409, "La tarea ya no admite eventos del agente.")
+    if attempt.lease_expires_at <= now():
+        expire_stale_tasks(db)
+        db.commit()
+        raise HTTPException(410, "La concesión de la tarea venció; requiere intervención.")
+    return task, attempt
+
+
+def integer_header(value: str | None, name: str) -> int:
+    try:
+        number = int(value or "")
+    except ValueError:
+        raise HTTPException(422, f"Falta un encabezado {name} válido.") from None
+    return number
+
+
+def artifact_route_path(value: str) -> str:
+    if not value.startswith("partitions/") or value.count("/") != 1:
+        raise HTTPException(422, "La ruta del artefacto debe pertenecer a partitions/.")
+    if len(value) > 240 or any(character in value for character in ("\\", "\x00")):
+        raise HTTPException(422, "La ruta del artefacto no es válida.")
+    return value
+
+
+def task_payload(
+    task: Task, attempt: TaskAttempt | None = None, token: str | None = None
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "protocol_version": 1,
+        "task_id": task.id,
+        "operation": task.operation,
+        "status": task.status,
+        "phase": task.phase,
+        "host_id": task.host_id,
+        "image_id": task.image_id,
+        "inventory_report_id": task.inventory_report_id,
+        "disk": task.disk_selector,
+        "bytes_processed": task.bytes_processed,
+        "total_bytes": task.total_bytes,
+        "message": task.message,
+        "failure_reason": task.failure_reason,
+        "created_at": iso_utc(task.created_at),
+        "updated_at": iso_utc(task.updated_at),
+    }
+    if attempt is not None:
+        payload.update(
+            {
+                "attempt_id": attempt.id,
+                "attempt_number": attempt.attempt_number,
+                "lease_expires_at": iso_utc(attempt.lease_expires_at),
+                "last_heartbeat_at": iso_utc(attempt.last_heartbeat_at),
+                "last_sequence": attempt.last_sequence,
+            }
+        )
+    if token is not None:
+        payload["task_token"] = token
+    return payload
+
+
 @router.get("/health", include_in_schema=False)
 def health(db: Db) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@router.post("/api/v1/tasks/claim")
+def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONResponse:
+    """Authorize a boot session with the host token, then issue a task-scoped capability."""
+
+    host = authorize_host_agent(request, db, str(payload.host_id))
+    try:
+        claimed = claim_task(
+            db,
+            host.id,
+            str(payload.session_id),
+            set(payload.capabilities),
+            request.app.state.settings,
+        )
+    except TaskError as error:
+        raise HTTPException(409, str(error)) from None
+    if claimed is None:
+        return JSONResponse({"protocol_version": 1, "task": None}, status_code=200)
+    task, attempt = claimed.task, claimed.attempt
+    response = task_payload(task, attempt, claimed.token)
+    report = db.get(InventoryReport, task.inventory_report_id)
+    source_hostname = host.hostname or host.name
+    system_name = host.os_name or "Ubuntu Linux"
+    system_version = ""
+    if report is not None and isinstance(report.data.get("os"), dict):
+        source_hostname = str(report.data.get("hostname") or source_hostname)[:253]
+        operating_system = report.data["os"]
+        system_name = str(operating_system.get("name") or system_name)[:200]
+        system_id = str(operating_system.get("id") or "ubuntu")[:200]
+        system_version = str(operating_system.get("version") or "")[:200]
+    else:
+        system_id = "ubuntu"
+    response["source"] = {
+        "host_id": task.host_id,
+        "inventory_report_id": report.report_id if report else "",
+        "hostname": source_hostname,
+    }
+    response["system"] = {"name": system_name, "id": system_id, "version": system_version}
+    response["lease_seconds"] = request.app.state.settings.task_lease_seconds
+    response["heartbeat_seconds"] = request.app.state.settings.task_heartbeat_seconds
+    response["chunk_bytes"] = request.app.state.settings.max_chunk_bytes
+    return JSONResponse(response, status_code=200)
+
+
+@router.post("/api/v1/tasks/{task_id}/heartbeat")
+def heartbeat_agent_task(
+    task_id: UUID, payload: TaskHeartbeatInput, request: Request, db: Db
+) -> JSONResponse:
+    task, attempt = task_attempt_for_token(request, db, task_id)
+    try:
+        touch_attempt(
+            db,
+            task,
+            attempt,
+            request.app.state.settings,
+            phase=payload.phase or attempt.phase,
+            bytes_processed=max(attempt.bytes_processed, payload.bytes_processed),
+            total_bytes=(
+                payload.total_bytes if payload.total_bytes is not None else attempt.total_bytes
+            ),
+            message=payload.message,
+        )
+    except TaskError as error:
+        raise HTTPException(422, str(error)) from None
+    db.commit()
+    return JSONResponse(task_payload(task, attempt), status_code=200)
+
+
+@router.post("/api/v1/tasks/{task_id}/progress")
+def progress_agent_task(
+    task_id: UUID, payload: TaskProgressInput, request: Request, db: Db
+) -> JSONResponse:
+    task, attempt = task_attempt_for_token(request, db, task_id)
+    try:
+        accepted = record_progress(
+            db,
+            task,
+            attempt,
+            request.app.state.settings,
+            sequence=payload.sequence,
+            phase=payload.phase,
+            bytes_processed=payload.bytes_processed,
+            total_bytes=payload.total_bytes,
+            message=payload.message,
+        )
+    except TaskError as error:
+        raise HTTPException(409, str(error)) from None
+    db.commit()
+    return JSONResponse(
+        {
+            "task_id": task.id,
+            "attempt_id": attempt.id,
+            "accepted": accepted,
+            "sequence": payload.sequence,
+        },
+        status_code=200,
+    )
+
+
+@router.post("/api/v1/tasks/{task_id}/artifacts/{artifact_path:path}")
+async def upload_task_artifact(
+    task_id: UUID,
+    artifact_path: str,
+    request: Request,
+    db: Db,
+    chunk_index: Annotated[str | None, Header(alias="X-PyFog-Chunk-Index")] = None,
+    chunk_offset: Annotated[str | None, Header(alias="X-PyFog-Chunk-Offset")] = None,
+    artifact_size: Annotated[str | None, Header(alias="X-PyFog-Artifact-Size")] = None,
+    chunk_sha256: Annotated[str | None, Header(alias="X-PyFog-Chunk-SHA256")] = None,
+) -> JSONResponse:
+    task, attempt = task_attempt_for_token(request, db, task_id)
+    safe_path = artifact_route_path(artifact_path)
+    index = integer_header(chunk_index, "X-PyFog-Chunk-Index")
+    offset = integer_header(chunk_offset, "X-PyFog-Chunk-Offset")
+    total_size = integer_header(artifact_size, "X-PyFog-Artifact-Size")
+    if not chunk_sha256:
+        raise HTTPException(422, "Falta el encabezado X-PyFog-Chunk-SHA256.")
+    body = await request.body()
+    if len(body) > request.app.state.settings.max_chunk_bytes:
+        raise HTTPException(413, "El fragmento supera el límite configurado.")
+    try:
+        replayed = request.app.state.artifact_store.write_chunk(
+            task.id,
+            safe_path,
+            index=index,
+            offset=offset,
+            total_size=total_size,
+            payload=body,
+            sha256=chunk_sha256.lower(),
+        )
+        touch_attempt(
+            db,
+            task,
+            attempt,
+            request.app.state.settings,
+            phase="uploading",
+            bytes_processed=max(attempt.bytes_processed, offset + len(body)),
+            total_bytes=attempt.total_bytes,
+            message=f"Recibido {safe_path}.",
+        )
+        db.commit()
+    except (StorageError, TaskError) as error:
+        db.rollback()
+        raise HTTPException(409, str(error)) from None
+    return JSONResponse(
+        {
+            "task_id": task.id,
+            "attempt_id": attempt.id,
+            "path": safe_path,
+            "offset": offset,
+            "bytes": len(body),
+            "replayed": replayed,
+        },
+        status_code=200,
+    )
+
+
+def fail_agent_task(
+    db: Session, task: Task, attempt: TaskAttempt, reason: str, sequence: int
+) -> None:
+    current = now()
+    if sequence > attempt.last_sequence:
+        attempt.last_sequence = sequence
+        attempt.last_heartbeat_at = current
+        add_event(
+            db,
+            task,
+            event_type="result",
+            attempt=attempt,
+            sequence=sequence,
+            phase="failed",
+            bytes_processed=attempt.bytes_processed,
+            total_bytes=attempt.total_bytes,
+            message=reason,
+        )
+    attempt.finished_at = current
+    attempt.phase = "failed"
+    attempt.failure_reason = reason[:500]
+    transition_task(db, task, "failed", phase="failed", message=reason, failure_reason=reason)
+    image = db.get(Image, task.image_id)
+    if image is not None and image.status == "capturing":
+        image.status = "failed"
+        image.failure_reason = reason[:500]
+
+
+@router.post("/api/v1/tasks/{task_id}/result")
+def finish_agent_task(
+    task_id: UUID, payload: TaskResultInput, request: Request, db: Db
+) -> JSONResponse:
+    task, attempt = task_attempt_for_token(request, db, task_id)
+    if not payload.success:
+        reason = payload.error or "El agente informó que la captura falló."
+        fail_agent_task(db, task, attempt, reason, payload.sequence)
+        db.commit()
+        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+    if payload.manifest is None:
+        raise HTTPException(422, "Una captura exitosa debe incluir su manifiesto.")
+    if payload.sequence <= attempt.last_sequence:
+        return JSONResponse(
+            {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
+        )
+    try:
+        from pyfog.image_manifest import parse_image_manifest
+
+        manifest = parse_image_manifest(payload.manifest)
+    except ValueError as error:
+        fail_agent_task(db, task, attempt, str(error), payload.sequence)
+        db.commit()
+        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+    report = db.get(InventoryReport, task.inventory_report_id)
+    if (
+        report is None
+        or str(manifest.image_id) != task.image_id
+        or str(manifest.source.host_id) != task.host_id
+        or str(manifest.source.inventory_report_id) != report.report_id
+    ):
+        reason = "El manifiesto no coincide con la tarea, el equipo o el inventario reservado."
+        fail_agent_task(db, task, attempt, reason, payload.sequence)
+        db.commit()
+        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+    try:
+        accepted = record_progress(
+            db,
+            task,
+            attempt,
+            request.app.state.settings,
+            sequence=payload.sequence,
+            phase="verifying",
+            bytes_processed=attempt.bytes_processed,
+            total_bytes=attempt.total_bytes,
+            message="Verificando manifiesto y artefactos antes de publicar.",
+        )
+        db.commit()
+        if not accepted:
+            return JSONResponse(
+                {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
+            )
+        request.app.state.artifact_store.verify_and_publish(task.id, task.image_id, manifest)
+    except (StorageError, TaskError, ValueError) as error:
+        fail_agent_task(db, task, attempt, str(error), payload.sequence + 1)
+        db.commit()
+        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+    image = db.get(Image, task.image_id)
+    if image is None:
+        fail_agent_task(
+            db, task, attempt, "La imagen de la tarea ya no existe.", payload.sequence + 1
+        )
+        db.commit()
+        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+    image.status = "ready"
+    image.manifest_image_id = str(manifest.image_id)
+    image.manifest_json = manifest.model_dump(mode="json")
+    image.manifest_sha256 = digest(
+        json.dumps(image.manifest_json, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+    image.source_host_id = task.host_id
+    image.source_hostname = manifest.source.hostname
+    image.captured_at = manifest.created_at.astimezone(UTC).replace(tzinfo=None)
+    image.total_size_bytes = sum(artifact.size_bytes for artifact in manifest.artifacts)
+    image.compatibility = (
+        f"{manifest.system.name} · {manifest.architecture} · {manifest.firmware.type.upper()}"
+    )
+    image.integrity_verified_at = now()
+    image.failure_reason = ""
+    attempt.finished_at = now()
+    attempt.phase = "completed"
+    transition_task(
+        db,
+        task,
+        "succeeded",
+        phase="completed",
+        message="La imagen fue verificada y publicada.",
+    )
+    add_event(
+        db,
+        task,
+        event_type="completed",
+        attempt=attempt,
+        sequence=attempt.last_sequence + 1,
+        phase="completed",
+        bytes_processed=attempt.bytes_processed,
+        total_bytes=attempt.total_bytes,
+        message=task.message,
+    )
+    attempt.last_sequence += 1
+    db.commit()
+    return JSONResponse(
+        {"task_id": task.id, "status": task.status, "accepted": True}, status_code=200
+    )
 
 
 @router.post("/api/v1/hosts/{host_id}/inventory", status_code=201)

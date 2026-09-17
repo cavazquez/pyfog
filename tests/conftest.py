@@ -26,6 +26,8 @@ def app(tmp_path, password_hash):
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         allowed_hosts=["testserver", "localhost", "127.0.0.1"],
         secret_key="test-only-session-secret-at-least-32-characters",  # pragma: allowlist secret
+        image_store_path=tmp_path / "images",
+        min_storage_free_bytes=0,
     )
     config = Config(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
     config.attributes["database_url"] = settings.database_url

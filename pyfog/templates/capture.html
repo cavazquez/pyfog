@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Nueva captura{% endblock %}
+{% block content %}
+<a class="back-link" href="/hosts/{{ host.id }}">← Ficha del equipo</a>
+<div class="page-heading"><div><p class="eyebrow">CAPTURA LINUX</p><h1>Capturar una imagen</h1><p>Prepará una imagen reutilizable desde el último inventario de {{ host.name }}.</p></div></div>
+{% if errors.form %}<div class="alert error" role="alert">{{ errors.form }}</div>{% endif %}
+<section class="panel form-panel">
+  <div class="panel-heading"><div><h2>Origen y disco</h2><p>El agente volverá a comprobar estos datos antes de leer cualquier bloque.</p></div></div>
+  <dl class="properties"><div><dt>Equipo</dt><dd>{{ host.name }}</dd></div><div><dt>MAC principal</dt><dd><code>{{ host.mac_address }}</code></dd></div><div><dt>Inventario</dt><dd>{{ report.collected_at|date }}</dd></div></dl>
+  <form method="post" action="/hosts/{{ host.id }}/capture">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="idempotency_key" value="{{ values.get('idempotency_key', '') }}">
+    <div class="form-grid">
+      <div class="field full"><label for="disk_key">Disco de origen</label><select id="disk_key" name="disk_key" required><option value="">Elegí un disco</option>{% for disk in disks %}<option value="{{ disk.stable_id }}"{% if values.get('disk_key') == disk.stable_id %} selected{% endif %}>{{ disk.name }} · {{ disk.size_bytes|bytes }}{% if disk.model %} · {{ disk.model }}{% endif %}{% if disk.serial_number %} · serie {{ disk.serial_number }}{% elif disk.wwn %} · WWN {{ disk.wwn }}{% else %} · identidad por ruta{% endif %}</option>{% endfor %}</select>{% if errors.disk_key %}<small class="field-error">{{ errors.disk_key }}</small>{% endif %}</div>
+      <div class="field full"><label for="image_id">Ficha de imagen existente</label><select id="image_id" name="image_id"><option value="">Crear una ficha nueva</option>{% for image in images %}<option value="{{ image.id }}"{% if values.get('image_id') == image.id %} selected{% endif %}>{{ image.name }}</option>{% endfor %}</select>{% if errors.image_id %}<small class="field-error">{{ errors.image_id }}</small>{% endif %}</div>
+      <div class="field"><label for="image_name">Nombre de la ficha nueva</label><input id="image_name" name="image_name" value="{{ values.get('image_name', '') }}" maxlength="100" placeholder="Ubuntu laboratorio 01"><small>Se ignora si elegís un borrador existente.</small>{% if errors.image_name %}<small class="field-error">{{ errors.image_name }}</small>{% endif %}</div>
+      <div class="field"><label for="image_description">Descripción</label><input id="image_description" name="image_description" value="{{ values.get('image_description', '') }}" maxlength="4000" placeholder="Referencia del aula"><small>Ayuda a identificar la versión después.</small></div>
+    </div>
+    <label class="check-field"><input type="checkbox" name="confirm" value="1"{% if values.get('confirm') == '1' %} checked{% endif %}> Confirmo que {{ host.name }} es el origen y que el disco elegido coincide con el equipo.</label>{% if errors.confirm %}<small class="field-error">{{ errors.confirm }}</small>{% endif %}
+    <div class="form-actions"><a class="button secondary" href="/hosts/{{ host.id }}">Cancelar</a><button class="button primary" type="submit" data-loading-text="Encolando…">Encolar captura <span aria-hidden="true">→</span></button></div>
+  </form>
+</section>
+<p class="footnote">La captura es de solo lectura sobre el equipo de origen. El agente debe arrancar por PXE para comenzar.</p>
+{% endblock %}

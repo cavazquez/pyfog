@@ -5,12 +5,12 @@ Es la primera entrega de un proyecto de imágenes por red inspirado en FOG.
 
 **Disponible:** alta y edición de equipos, identificación por MAC, descubrimiento PXE con aprobación
 administrativa, recolector Linux, importación JSON, API con tokens por equipo, inventario actual e
-historial, y catálogo web de fichas de imágenes. Acceso mediante administrador local.
+historial, catálogo web de fichas de imágenes y captura Linux con tareas persistentes, leases,
+progreso, almacenamiento por fragmentos y publicación verificada. Acceso mediante administrador local.
 
-**En desarrollo:** el agente Linux efímero ya puede arrancar un initramfs reproducible, solicitar
-aprobación desde PXE, obtener un inventario de solo lectura y enviarlo por HTTPS. El catálogo ya
-permite preparar fichas de imágenes y reservarles una identidad estable; la captura, restauración y
-clonación con Partclone siguen en los issues siguientes.
+**En desarrollo:** la restauración y clonación con Partclone, junto con la operación multi-coordinador,
+siguen en los issues siguientes. El modo `imaging` requiere un initramfs específico y una provisión
+controlada del token del equipo.
 
 [Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
@@ -119,10 +119,11 @@ antiguo lo añade al historial sin reemplazar el hardware actual.
 En **Imágenes** podés crear y editar la ficha de una versión Linux con un nombre único y una
 descripción. Cada ficha conserva su UUID aunque cambie el nombre. La lista admite búsqueda,
 filtro por estado y paginación, y muestra origen, captura, tamaño y compatibilidad cuando el
-manifiesto los informa. Una ficha nueva queda en `Borrador`; también existen `Capturando`, `Lista`
-y `Fallida` para el ciclo que implementarán las próximas tareas. Sólo una imagen `Lista` con
-manifiesto y verificación de integridad puede seleccionarse para restaurar. Crear una ficha con el
-mismo nombre exacto devuelve un error y no reemplaza una imagen existente.
+manifiesto los informa. Una ficha nueva queda en `Borrador`. Al encolar una captura pasa a
+`Capturando`; el agente la deja en `Lista` sólo después de transferir, validar y publicar
+atómicamente todos sus artefactos. Una falla queda en `Fallida` y requiere una nueva captura. Sólo
+una imagen `Lista` con manifiesto y verificación de integridad puede seleccionarse para restaurar.
+Crear una ficha con el mismo nombre exacto devuelve un error y no reemplaza una imagen existente.
 
 ## Configuración
 
@@ -135,6 +136,7 @@ mismo nombre exacto devuelve un error y no reemplaza una imagen existente.
 | `PYFOG_TRUSTED_PROXY_IPS` | IPs o CIDRs del proxy que puede enviar `X-Forwarded-*`; obligatorio en producción y no admite `*`. |
 | `PYFOG_DEBUG` | `true` o `false`; producción rechaza `true`. |
 | `PYFOG_ENV` | `production` exige clave, hosts y proxy explícitos, cookies seguras y redirección HTTPS. |
+| `PYFOG_IMAGE_STORE` | Directorio de staging y publicaciones de imágenes; por defecto `./pyfog-images`. |
 
 Las variables se leen del entorno; no se carga automáticamente un archivo `.env`. En desarrollo,
 si falta `PYFOG_SECRET_KEY`, se genera una clave efímera y reiniciar el servidor invalida las sesiones.
@@ -162,10 +164,12 @@ uv run mypy
 uv run pytest
 uv run alembic check          # luego de aplicar migraciones
 make audit                    # vulnerabilidades y secretos versionados
+./scripts/check.sh             # check completo del proyecto
 ```
 
-`make check` ejecuta lint, comprobación de formato, tipos y pruebas. Mypy está configurado en modo
-estricto para aplicación y recolector. Ruff incluye reglas de errores, imports, modernización,
+`./scripts/check.sh` ejecuta el lint, la comprobación de formato, tipos, compilación, pruebas,
+validación de scripts shell, manifiestos, migraciones y auditorías. `make check` es un alias para
+ese script. Mypy está configurado en modo estricto para aplicación y recolector. Ruff incluye reglas de errores, imports, modernización,
 bugs, simplificaciones, comprehensions, nombres, seguridad, asincronía, pathlib, fechas, pytest,
 builtins, retornos y uso de `print`; las excepciones están acotadas por archivo o línea.
 
@@ -185,7 +189,7 @@ El [roadmap](https://github.com/cavazquez/pyfog/issues/1) organiza cinco entrega
 
 1. Registro e inventario Linux.
 2. Arranque PXE y registro desde el entorno de arranque.
-3. Captura de imágenes.
+3. Captura de imágenes Linux con validación y publicación verificadas (implementada).
 4. Restauración y clonación.
 5. Operación, documentación y validación completa del MVP.
 
@@ -196,8 +200,8 @@ actual puede describir hardware fuera de esa matriz. No se promete compatibilida
 ## Laboratorio UEFI
 
 El laboratorio reproducible [lab/README.md](lab/README.md) crea dos VMs QEMU/OVMF con discos
-descartables y una red aislada en loopback. Sirve para validar el próximo flujo PXE, captura y
-restauración sin exponer discos físicos ni la red de una LAN.
+descartables y una red aislada en loopback. Sirve para validar el flujo PXE y preparar pruebas de
+captura y restauración sin exponer discos físicos ni la red de una LAN.
 
 ## Construir el agente de arranque
 
@@ -211,7 +215,24 @@ El modo `imaging` añade `sgdisk`, `partclone.ext4` y `partclone.fat` al initram
 no está instalado. Antes de publicar los archivos en PXE hay que revisar `manifest.json` y
 `SHA256SUMS`; el servidor no descarga paquetes durante el arranque.
 
-El perfil [PXE/UEFI](pxe/README.md) genera el menú iPXE con inventario y retorno al disco local.
+Para ejecutar una captura, primero encolala desde **Capturar una imagen** en la ficha de un equipo
+con inventario actualizado. Después arrancá ese equipo con un agente construido en modo `imaging` y
+estos parámetros, ajustando la URL, el UUID y el certificado de tu instalación:
+
+```text
+pyfog.mode=imaging pyfog.net=dhcp pyfog.server=https://pyfog.example
+pyfog.host_id=UUID_DEL_EQUIPO pyfog.token_file=/run/pyfog/token
+pyfog.ca_file=/etc/pyfog/ca.pem
+```
+
+El archivo indicado por `pyfog.token_file` debe ser creado en el entorno de arranque por un
+proceso controlado y contener el token vigente de ese equipo con permisos `0600`. El token no debe
+viajar en la línea de comandos, DHCP, iPXE ni una URL. El detalle de la tarea muestra el lease, el
+progreso y los eventos; si el agente se detiene, la tarea queda para intervención y no se reasigna
+automáticamente.
+
+El perfil [PXE/UEFI](pxe/README.md) genera el menú iPXE con inventario y retorno al disco local;
+el arranque `imaging` se agrega mediante un perfil controlado que pueda provisionar el token.
 Usa el DHCP existente, exige una URL HTTPS sin credenciales y separa la raíz TFTP de la publicación
 HTTPS. Si el servidor o la descarga fallan, el perfil abandona una sola vez hacia el firmware o el
 disco local.

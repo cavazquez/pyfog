@@ -54,6 +54,14 @@ class Settings:
     token_seconds: int = 86400
     pairing_seconds: int = 900
     max_body_bytes: int = 1_048_576
+    image_store_path: Path = field(
+        default_factory=lambda: Path(os.getenv("PYFOG_IMAGE_STORE", "./pyfog-images"))
+    )
+    max_image_bytes: int = 2**50
+    max_chunk_bytes: int = 512 * 1024
+    task_lease_seconds: int = 90
+    task_heartbeat_seconds: int = 20
+    min_storage_free_bytes: int = 64 * 1024 * 1024
 
     def __post_init__(self) -> None:
         allowed_hosts = [host.strip() for host in self.allowed_hosts if host.strip()]
@@ -72,6 +80,16 @@ class Settings:
             raise ValueError("PYFOG_TRUSTED_PROXY_IPS debe configurarse en producción.")
         if self.production and "*" in trusted_proxy_ips:
             raise ValueError("PYFOG_TRUSTED_PROXY_IPS no puede incluir * en producción.")
+        if self.max_body_bytes <= 0:
+            raise ValueError("max_body_bytes debe ser positivo.")
+        if not 0 < self.max_chunk_bytes <= self.max_body_bytes:
+            raise ValueError("max_chunk_bytes debe ser positivo y caber en max_body_bytes.")
+        if self.max_image_bytes <= 0:
+            raise ValueError("max_image_bytes debe ser positivo.")
+        if self.task_lease_seconds <= 0 or self.task_heartbeat_seconds <= 0:
+            raise ValueError("Los tiempos de tareas deben ser positivos.")
+        if self.min_storage_free_bytes < 0:
+            raise ValueError("min_storage_free_bytes no puede ser negativo.")
         if not self.secret_key:
             # A restart invalidates development sessions; no shared default secret.
             object.__setattr__(self, "secret_key", secrets.token_urlsafe(48))

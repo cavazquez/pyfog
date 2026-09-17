@@ -138,3 +138,100 @@ class Image(Base):
     failure_reason: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(default=now, index=True)
     updated_at: Mapped[datetime] = mapped_column(default=now, onupdate=now)
+
+
+class Task(Base):
+    """Durable request for one long-running image operation."""
+
+    __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint("operation IN ('capture', 'restore', 'clone')", name="ck_tasks_operation"),
+        CheckConstraint(
+            "status IN ('draft', 'approved', 'assigned', 'running', 'verifying', "
+            "'succeeded', 'failed', 'cancelled', 'intervention_required')",
+            name="ck_tasks_status",
+        ),
+        CheckConstraint("bytes_processed >= 0", name="ck_tasks_bytes_processed"),
+        CheckConstraint("total_bytes IS NULL OR total_bytes >= 0", name="ck_tasks_total_bytes"),
+        Index("ix_tasks_status_created", "status", "created_at"),
+        Index("ix_tasks_host_status", "host_id", "status"),
+        UniqueConstraint("idempotency_key", name="uq_tasks_idempotency_key"),
+        UniqueConstraint("reservation_key", name="uq_tasks_reservation_key"),
+        UniqueConstraint("transfer_slot", name="uq_tasks_transfer_slot"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    operation: Mapped[str] = mapped_column(String(16), default="capture")
+    status: Mapped[str] = mapped_column(String(32), default="approved", index=True)
+    requested_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id", ondelete="RESTRICT"), index=True)
+    image_id: Mapped[str] = mapped_column(ForeignKey("images.id", ondelete="RESTRICT"), index=True)
+    inventory_report_id: Mapped[str] = mapped_column(
+        ForeignKey("inventory_reports.id", ondelete="RESTRICT")
+    )
+    disk_selector: Mapped[dict[str, Any]] = mapped_column(JSON)
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    # These two columns make the single-host and single-transfer MVP limits enforceable by SQL.
+    reservation_key: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    transfer_slot: Mapped[int | None] = mapped_column(nullable=True)
+    phase: Mapped[str] = mapped_column(String(32), default="queued")
+    bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    message: Mapped[str] = mapped_column(String(500), default="")
+    failure_reason: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(default=now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(default=now, onupdate=now)
+    assigned_at: Mapped[datetime | None]
+    started_at: Mapped[datetime | None]
+    completed_at: Mapped[datetime | None]
+
+
+class TaskAttempt(Base):
+    """One agent lease for a task; attempts are never silently reused."""
+
+    __tablename__ = "task_attempts"
+    __table_args__ = (
+        UniqueConstraint("task_id", "attempt_number", name="uq_task_attempt_number"),
+        UniqueConstraint("agent_session_id", name="uq_task_agent_session"),
+        Index("ix_task_attempt_lease", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    attempt_number: Mapped[int] = mapped_column(default=1)
+    agent_session_id: Mapped[str] = mapped_column(String(36))
+    capability_hash: Mapped[str] = mapped_column(String(64))
+    lease_expires_at: Mapped[datetime]
+    last_heartbeat_at: Mapped[datetime] = mapped_column(default=now)
+    last_sequence: Mapped[int] = mapped_column(default=0)
+    phase: Mapped[str] = mapped_column(String(32), default="assigned")
+    bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(default=now)
+    assigned_at: Mapped[datetime] = mapped_column(default=now)
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    failure_reason: Mapped[str] = mapped_column(String(500), default="")
+
+
+class TaskEvent(Base):
+    """Bounded, secret-free progress history for a task and its attempts."""
+
+    __tablename__ = "task_events"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "sequence", name="uq_task_event_sequence"),
+        Index("ix_task_events_task_created", "task_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("task_attempts.id", ondelete="CASCADE"), nullable=True
+    )
+    sequence: Mapped[int | None]
+    event_type: Mapped[str] = mapped_column(String(32))
+    phase: Mapped[str] = mapped_column(String(32), default="queued")
+    bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    message: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(default=now, index=True)

@@ -1,7 +1,8 @@
 # Arquitectura de PyFog
 
-Estado: registro, inventario y descubrimiento PXE aprobado están implementados; el agente efímero
-de inventario está disponible. El contrato que guía las próximas etapas está en la
+Estado: registro, inventario, descubrimiento PXE aprobado y captura Linux verificada están
+implementados. Restauración, clonación y coordinación distribuida siguen pendientes. El contrato
+que guía las próximas etapas está en la
 [ADR 0001: MVP Linux](adr/0001-mvp-linux.md).
 
 ## Primera entrega
@@ -15,12 +16,14 @@ coordinador de imágenes.
 ```mermaid
 flowchart LR
     Web[Navegador del administrador] -->|Sesión + CSRF| API[FastAPI]
-    Linux[Agente Linux PXE] -->|Desafío + capacidad temporal| API
-    Linux -->|JSON + token efímero| API
+    Linux[Agente Linux PXE] -->|Desafío o token de equipo| API
+    Linux -->|JSON, lease y progreso| API
+    Linux -->|Fragmentos y manifiesto| Store[ArtifactStore]
     Linux -->|Archivo JSON| Web
     API --> Validación[Esquema Pydantic v1]
-    Validación --> Servicio[Servicio de inventario]
-    Servicio --> DB[(SQLite / SQLAlchemy)]
+    Validación --> Servicios[Inventario y tareas]
+    Servicios --> DB[(SQLite / SQLAlchemy)]
+    Store --> Published[Publicación verificada]
 ```
 
 Cada equipo tiene un UUID estable y una MAC principal normalizada y única. La MAC es inmutable en
@@ -54,7 +57,7 @@ el modo `production` exige clave de sesión, hosts y proxy explícitos, cookies 
 apagado. [La guía HTTPS](./https.md) describe el proxy Caddy, la CA local y el material público que
 podrá recibir el agente PXE.
 
-## Catálogo y motor de imágenes previsto
+## Catálogo y motor de imágenes
 
 El catálogo web ya conserva la identidad, descripción, estado y metadatos de publicación de cada
 imagen. Una ficha se crea como `draft`, tiene un UUID estable y no permite que una nueva captura
@@ -62,15 +65,22 @@ reemplace silenciosamente una versión lista: los nombres exactos son únicos y 
 modifica sus datos descriptivos. La selección para restaurar queda habilitada cuando el estado es
 `ready`, existe un manifiesto y se registró su verificación de integridad.
 
-La web programará tareas persistentes y un agente Linux arrancado por PXE ejecutará las operaciones
-fuera del proceso web. Partclone será la herramienta de copia para ext4, junto con herramientas GPT
-y GRUB. La [ADR 0001](adr/0001-mvp-linux.md) define la matriz Linux, el formato versionado, la
-identidad de clones, los límites de confianza, estados de tarea y pruebas de arranque requeridas.
-El agente que se empaqueta en [`agent/`](../agent/README.md) cubre la primera parte de ese contrato:
-initramfs reproducible, red DHCP, cliente HTTPS y recolección de inventario. El manifiesto de imagen
-v1 y su validador están documentados en [`docs/image-manifest.md`](image-manifest.md). Su modo predeterminado
-no monta discos ni realiza escrituras; Partclone y `sgdisk` sólo se incorporan explícitamente al
-construir el modo `imaging`. El perfil iPXE de [`pxe/`](../pxe/README.md) publica ese agente por
-HTTPS, ofrece inventario o retorno al disco local con timeout y no toma control del DHCP. La
-aprobación desde la web ya habilita el inventario inicial; las tareas persistentes y las operaciones
-de captura/restauración todavía no se ejecutan en esta entrega.
+La web crea tareas persistentes de captura a partir de un inventario reciente. Una tarea reserva el
+equipo y el único slot de transferencia, y un agente Linux arrancado por PXE la reclama con las
+capacidades requeridas. Cada intento tiene un token de tarea, lease, heartbeat y eventos con
+secuencia; una lease vencida pasa a `intervention_required` y nunca se reasigna automáticamente.
+
+El agente en modo `imaging` vuelve a leer el inventario, identifica el disco por WWN, serie o ruta
+junto con capacidad y modelo, comprueba GPT, la matriz Ubuntu UEFI/GPT y que ningún sistema de
+archivos o swap esté montado. Partclone lee ESP, `/boot` y raíz ext4 en modo de solo lectura, y
+sube artefactos comprimidos por fragmentos con SHA-256. El servidor valida el manifiesto v1, las
+geometrías, las sumas y los archivos declarados antes de mover el staging a `published` en una
+operación atómica; sólo entonces cambia la imagen a `ready`.
+
+El agente que se empaqueta en [`agent/`](../agent/README.md) conserva inventario como modo
+predeterminado y agrega las herramientas de imagen sólo al construir `imaging`. El perfil iPXE de
+[`pxe/`](../pxe/README.md) publica el agente por HTTPS, ofrece inventario o retorno al disco local
+con timeout y no toma control del DHCP. Por diseño, un perfil de captura necesita un mecanismo
+controlado para colocar el token del equipo en un archivo `tmpfs`; nunca se incluye en iPXE, DHCP o
+la línea de comandos. Restauración y clonación reutilizarán el manifiesto y las mismas fronteras de
+seguridad en tareas posteriores.

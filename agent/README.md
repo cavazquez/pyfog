@@ -1,9 +1,10 @@
 # Agente Linux de PyFog
 
-Este directorio contiene el agente efímero que se arranca por PXE. El agente no monta discos ni
-escribe dispositivos: en su modo predeterminado obtiene un inventario de solo lectura, lo guarda
-en el `tmpfs` del initramfs y puede solicitar la aprobación administrativa del equipo antes de
-enviarlo por HTTPS.
+Este directorio contiene el agente efímero que se arranca por PXE. En su modo predeterminado no
+monta discos ni escribe dispositivos: obtiene un inventario de solo lectura, lo guarda en el
+`tmpfs` del initramfs y puede solicitar la aprobación administrativa del equipo antes de enviarlo
+por HTTPS. El modo `imaging` también evita montar y escribir el disco de origen; lee las particiones
+admitidas con Partclone y envía una captura a una tarea previamente encolada.
 
 ## Construir
 
@@ -51,7 +52,7 @@ El initramfs lee parámetros `pyfog.*` de `/proc/cmdline`:
 
 | Parámetro | Valor | Uso |
 | --- | --- | --- |
-| `pyfog.mode` | `inventory`, `shell` o `halt` | `inventory` es el predeterminado. `shell` queda para diagnóstico. |
+| `pyfog.mode` | `inventory`, `imaging`, `shell` o `halt` | `inventory` es el predeterminado. `imaging` ejecuta una captura; `shell` queda para diagnóstico. |
 | `pyfog.net` | `dhcp` o `none` | DHCP sólo levanta interfaces no-loopback; no monta discos. |
 | `pyfog.server` | URL base | Sólo se usa con HTTPS fuera de loopback. |
 | `pyfog.host_id` | UUID | Equipo al que pertenece el informe. |
@@ -67,7 +68,25 @@ ninguna operación de bloques.
 Con `pyfog.pair=1`, el recolector genera un desafío efímero visible en la consola, crea una
 solicitud en **Descubiertos** y consulta su estado hasta que un administrador la aprueba o rechaza.
 La capacidad de emparejamiento se mantiene sólo en memoria, se consume al enviar el primer
-inventario y no permite iniciar tareas de imagen.
+inventario y no permite iniciar tareas de imagen. Para capturas se usa el token vigente del equipo;
+la API lo cambia por una capacidad limitada al intento reclamado.
+
+## Ejecutar una captura
+
+Encolá primero la captura desde la web. Construí el agente completo con `--mode imaging`, publicá
+sus cuatro artefactos tras revisar el manifiesto y arrancalo con parámetros equivalentes a:
+
+```text
+pyfog.mode=imaging pyfog.net=dhcp pyfog.server=https://pyfog.example
+pyfog.host_id=UUID_DEL_EQUIPO pyfog.token_file=/run/pyfog/token
+pyfog.ca_file=/etc/pyfog/ca.pem
+```
+
+Un mecanismo de provisión controlado debe crear `/run/pyfog/token` en el initramfs con el token del
+equipo y permisos `0600`. El secreto no debe aparecer en la línea de comandos, DHCP, iPXE o una
+URL. El agente reclama como máximo una tarea compatible, valida nuevamente el disco y el layout,
+sube cada artefacto por fragmentos y envía el manifiesto al finalizar. Si una lease vence, el
+servidor conserva la tarea para intervención y el agente no intenta reanudarla automáticamente.
 
 La imagen de arranque no toma paquetes de la red durante la ejecución. La versión, el kernel, las
 herramientas y sus hashes efectivos deben revisarse en `manifest.json` antes de publicar los

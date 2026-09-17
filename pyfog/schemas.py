@@ -59,6 +59,7 @@ class Disk(Schema):
     size_bytes: PositiveInt
     model: ShortText = ""
     serial_number: ShortText = ""
+    wwn: ShortText = ""
     transport: ShortText = ""
     logical_sector_bytes: Annotated[int, Field(gt=0, le=65536, strict=True)] | None = None
     removable: bool = Field(default=False, strict=True)
@@ -124,3 +125,36 @@ class PairingRequestInput(Schema):
 class ImageInput(Schema):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=4000)
+
+
+class TaskClaimInput(Schema):
+    """Versioned request used by an authenticated imaging agent to claim work."""
+
+    protocol_version: Literal[1] = 1
+    host_id: UUID
+    session_id: UUID
+    capabilities: list[
+        Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._+-]+$")]
+    ] = Field(min_length=1, max_length=16)
+
+
+class TaskProgressInput(Schema):
+    sequence: Annotated[int, Field(ge=1, le=2**31 - 1, strict=True)]
+    phase: str = Field(min_length=1, max_length=32)
+    bytes_processed: Annotated[int, Field(ge=0, le=2**63 - 1, strict=True)] = 0
+    total_bytes: Annotated[int, Field(ge=0, le=2**63 - 1, strict=True)] | None = None
+    message: str = Field(default="", max_length=500)
+
+
+class TaskHeartbeatInput(Schema):
+    phase: str | None = Field(default=None, min_length=1, max_length=32)
+    bytes_processed: Annotated[int, Field(ge=0, le=2**63 - 1, strict=True)] = 0
+    total_bytes: Annotated[int, Field(ge=0, le=2**63 - 1, strict=True)] | None = None
+    message: str = Field(default="", max_length=500)
+
+
+class TaskResultInput(Schema):
+    sequence: Annotated[int, Field(ge=1, le=2**31 - 1, strict=True)]
+    success: bool = Field(strict=True)
+    manifest: dict[str, object] | None = None
+    error: str = Field(default="", max_length=500)

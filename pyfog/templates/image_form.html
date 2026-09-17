@@ -2,7 +2,7 @@
 {% block title %}{{ 'Editar imagen' if image else 'Nueva imagen' }}{% endblock %}
 {% block content %}
 <a class="back-link" href="{{ '/images/' ~ image.id if image else '/images' }}">← {{ image.name if image else 'Catálogo de imágenes' }}</a>
-<div class="page-heading"><div><p class="eyebrow">CATÁLOGO DE IMÁGENES</p><h1>{{ 'Editar imagen' if image else 'Nueva imagen' }}</h1><p>{{ 'Actualizá el nombre y la descripción sin cambiar su identidad.' if image else 'Creá la ficha que recibirá el manifiesto de la futura captura.' }}</p></div></div>
+<div class="page-heading"><div><p class="eyebrow">CATÁLOGO DE IMÁGENES</p><h1>{{ 'Editar imagen' if image else 'Nueva imagen' }}</h1><p>{{ 'Actualizá el nombre y la descripción sin cambiar su identidad.' if image else 'Creá la ficha que recibirá el manifiesto de una captura.' }}</p></div></div>
 <div class="form-layout"><section class="panel form-panel"><h2>Identificación de la imagen</h2>
 <form method="post">
   <input type="hidden" name="csrf" value="{{ csrf }}">

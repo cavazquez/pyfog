@@ -4,7 +4,9 @@
 ofrece dos opciones: descubrimiento e inventario de solo lectura o disco local. El valor
 predeterminado es el disco local después de un timeout de cinco segundos. Los errores de DHCP,
 HTTPS, descarga o arranque van a `local` una sola vez; no hay `chain` recursivo ni una ruta que
-escriba dispositivos.
+escriba dispositivos. Las capturas usan el mismo agente en modo `imaging`, pero requieren un
+perfil controlado que pueda provisionar el token del equipo en el initramfs; por eso no se agregan
+al menú público ni se envía el secreto por DHCP o iPXE.
 
 El repositorio no contiene un binario iPXE precompilado. Es intencional: el administrador debe
 obtener o compilar `ipxe.efi` para su política de firmware, revisar su SHA-256 y pasarlo al builder.
@@ -94,6 +96,22 @@ Montá `dist/pxe/http` como `/srv/pyfog/pxe/http:ro` en Caddy y mantené el cert
 que usa `--base-url`. En una CA local, el iPXE debe confiar en esa CA; el agente también puede llevar
 la CA pública dentro de su initramfs (`agent/build-agent --ca-file ...`) y vuelve a verificar el
 certificado con Python antes de enviar el inventario.
+
+## Arranque de una captura
+
+Después de encolar una captura en la web, un flujo de arranque controlado debe seleccionar el agente
+construido en modo `imaging` y agregar parámetros como estos:
+
+```text
+pyfog.mode=imaging pyfog.net=dhcp pyfog.server=https://pyfog.example
+pyfog.host_id=UUID_DEL_EQUIPO pyfog.token_file=/run/pyfog/token
+pyfog.ca_file=/etc/pyfog/ca.pem
+```
+
+El flujo debe crear `/run/pyfog/token` dentro del initramfs con el token vigente del equipo y
+permisos `0600`. El valor nunca debe aparecer en la línea de comandos, DHCP, iPXE ni una URL. El
+menú generado permanece limitado a inventario y disco local para que una publicación PXE general no
+pueda iniciar capturas sin esa provisión explícita.
 
 ## Validación
 

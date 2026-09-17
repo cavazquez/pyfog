@@ -38,7 +38,7 @@ def read_text(path: Path, warnings: list[str], *, optional: bool = False) -> str
 
 
 def disk_inventory(warnings: list[str]) -> list[dict[str, Any]]:
-    columns = "NAME,TYPE,SIZE,MODEL,SERIAL,TRAN,LOG-SEC,RM"
+    columns = "NAME,TYPE,SIZE,MODEL,SERIAL,WWN,TRAN,LOG-SEC,RM"
     try:
         executable = shutil.which("lsblk")
         if not executable:
@@ -61,6 +61,7 @@ def disk_inventory(warnings: list[str]) -> list[dict[str, Any]]:
                     "size_bytes": int(device["size"]),
                     "model": (device.get("model") or "").strip()[:200],
                     "serial_number": (device.get("serial") or "").strip()[:200],
+                    "wwn": (device.get("wwn") or "").strip()[:200],
                     "transport": (device.get("tran") or "")[:200],
                     "logical_sector_bytes": (
                         int(device["log-sec"]) if device.get("log-sec") else None

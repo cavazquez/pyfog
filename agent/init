@@ -148,6 +148,40 @@ run_inventory() {
     return 1
 }
 
+run_imaging() {
+    [ -n "$SERVER" ] && [ -n "$HOST_ID" ] || {
+        log "El modo imaging requiere pyfog.server y pyfog.host_id."
+        return 1
+    }
+    [ -r "$TOKEN_FILE" ] || {
+        log "No se encontró la capacidad de arranque en $TOKEN_FILE."
+        return 1
+    }
+    token=$(cat "$TOKEN_FILE")
+    [ -n "$token" ] || {
+        log "La capacidad de arranque está vacía."
+        unset token
+        return 1
+    }
+    export PYFOG_INVENTORY_TOKEN="$token"
+    if [ -r "$CA_FILE" ]; then
+        if /usr/libexec/pyfog-agent --capture --server "$SERVER" --host-id "$HOST_ID" \
+            --ca-file "$CA_FILE"; then
+            result=0
+        else
+            result=$?
+        fi
+    else
+        if /usr/libexec/pyfog-agent --capture --server "$SERVER" --host-id "$HOST_ID"; then
+            result=0
+        else
+            result=$?
+        fi
+    fi
+    unset PYFOG_INVENTORY_TOKEN token
+    return "$result"
+}
+
 mount_pseudo proc proc /proc
 mount_pseudo sysfs sysfs /sys
 mount_pseudo devtmpfs devtmpfs /dev
@@ -165,6 +199,20 @@ case "$MODE" in
     shell)
         log "Shell de diagnóstico; las operaciones de bloques están deshabilitadas."
         exec sh
+        ;;
+    imaging)
+        configure_network
+        if run_imaging; then
+            log "Captura terminada y enviada al servidor."
+        else
+            result=$?
+            if [ "$result" -eq 3 ]; then
+                log "No había una captura pendiente para este equipo."
+            else
+                log "La captura no se pudo completar; se conserva la tarea para intervención."
+            fi
+        fi
+        stop_after_run
         ;;
     halt)
         stop_after_run

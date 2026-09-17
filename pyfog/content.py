@@ -9,16 +9,6 @@ class NavigationItem:
     icon: str
 
 
-@dataclass(frozen=True)
-class UpcomingSection:
-    key: str
-    label: str
-    eyebrow: str
-    title: str
-    description: str
-    issue_number: int
-
-
 NAVIGATION = (
     NavigationItem(key="hosts", href="/hosts", label="Equipos", icon="▣"),
     NavigationItem(key="pairing", href="/pairing", label="Descubiertos", icon="⌁"),
@@ -36,18 +26,4 @@ SHELL_COPY = {
     "topbar": "Infraestructura Linux",
     "footer": "PyFog · Registro e inventario",
     "footer_tagline": "Tu infraestructura, bajo control.",
-}
-
-UPCOMING_SECTIONS = {
-    "tasks": UpcomingSection(
-        key="tasks",
-        label="Tareas",
-        eyebrow="PRÓXIMA ENTREGA",
-        title="Las tareas aparecerán cuando exista un agente para ejecutarlas.",
-        description=(
-            "PyFog mostrará la cola y el progreso de capturas, restauraciones y clonaciones "
-            "después de implementar la comunicación segura con el agente."
-        ),
-        issue_number=24,
-    ),
 }

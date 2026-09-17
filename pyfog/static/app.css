@@ -193,6 +193,20 @@
   .pairing-reject label { flex: 0 0 auto; margin: 0; font-size: 11px; color: var(--muted); }
   .pairing-reject input { flex: 1; min-width: 0; font-size: 12px; }
   .badge.muted { color: #68726d; background: #f0f2ef; border: 1px solid #dce2dd; }
+  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; }
+  .form-grid .field { margin: 18px 0; }
+  .form-grid .field.full { grid-column: 1 / -1; }
+  .check-field { display: flex; align-items: flex-start; gap: 10px; margin: 24px 0 0; font-size: 12px; font-weight: 500; }
+  .check-field input { width: 20px; min-width: 20px; height: 20px; min-height: 20px; margin-top: 1px; padding: 0; }
+  progress { display: block; width: calc(100% - 48px); height: 18px; margin: 0 24px 13px; accent-color: var(--green); }
+  .task-table td:first-child { min-width: 150px; }
+  .task-table small { display: block; color: var(--muted); margin-top: 3px; }
+  .task-events { list-style: none; padding: 0 24px 12px; }
+  .task-events li { padding: 15px 0; border-top: 1px solid #eff2ec; }
+  .task-events li > div { display: flex; gap: 12px; align-items: baseline; }
+  .task-events li > div span { color: var(--muted); font-size: 11px; }
+  .task-events p { margin: 3px 0; font-size: 12px; }
+  .task-events small { color: var(--muted); font-size: 10px; }
 }
 @layer responsive {
   @media (max-width: 1100px) {
@@ -274,6 +288,11 @@
     .pairing-reject { align-items: stretch; flex-wrap: wrap; }
     .pairing-reject label { flex-basis: 100%; }
     .pairing-reject .button { flex: 0 0 auto; }
+    .form-grid { grid-template-columns: minmax(0, 1fr); }
+    .form-grid .field.full { grid-column: auto; }
+    .check-field { align-items: flex-start; }
+    .task-table thead { display: none; }
+    .task-table { min-width: 680px; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } }
 }

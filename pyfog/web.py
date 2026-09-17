@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal, TypedDict
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy import delete, func, or_, select, update
@@ -13,13 +13,24 @@ from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
 from pyfog.config import PACKAGE_DIR
-from pyfog.content import NAVIGATION, SHELL_COPY, UPCOMING_SECTIONS
+from pyfog.content import NAVIGATION, SHELL_COPY
 from pyfog.database import get_db
 from pyfog.image_catalog import IMAGE_STATUSES, image_is_selectable
-from pyfog.models import Host, Image, InventoryReport, LoginSession, PairingRequest, now
+from pyfog.models import (
+    Host,
+    Image,
+    InventoryReport,
+    LoginSession,
+    PairingRequest,
+    Task,
+    TaskAttempt,
+    TaskEvent,
+    now,
+)
 from pyfog.schemas import HostInput, ImageInput, Inventory
 from pyfog.security import authenticate, csrf_token, digest, require_user, verify_csrf
 from pyfog.services import ingest_inventory
+from pyfog.tasking import TASK_LABELS, TASK_OPERATION_LABELS, add_event, expire_stale_tasks
 
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
@@ -126,6 +137,63 @@ def latest_report(db: Session, host: Host) -> InventoryReport | None:
     )
 
 
+def inventory_disks(report: InventoryReport | None) -> list[dict[str, Any]]:
+    if report is None:
+        return []
+    try:
+        inventory = Inventory.model_validate(report.data)
+    except ValidationError:
+        return []
+    disks: list[dict[str, Any]] = []
+    for disk in inventory.disks:
+        values = disk.model_dump(mode="json")
+        if disk.wwn:
+            stable_id = f"wwn:{disk.wwn}"
+        elif disk.serial_number:
+            stable_id = f"serial:{disk.serial_number}"
+        else:
+            stable_id = f"path:{disk.name}"
+        values["stable_id"] = stable_id
+        disks.append(values)
+    return disks
+
+
+def task_status_payload(task: Task) -> dict[str, Any]:
+    return {
+        "task_id": task.id,
+        "status": task.status,
+        "status_label": TASK_LABELS.get(task.status, task.status),
+        "phase": task.phase,
+        "bytes_processed": task.bytes_processed,
+        "total_bytes": task.total_bytes,
+        "message": task.message,
+        "failure_reason": task.failure_reason,
+        "updated_at": iso_task_date(task.updated_at),
+    }
+
+
+def iso_task_date(value: datetime) -> str:
+    return f"{value.isoformat()}Z"
+
+
+def task_disk_selector(disk: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: disk[key]
+        for key in (
+            "stable_id",
+            "name",
+            "size_bytes",
+            "model",
+            "serial_number",
+            "wwn",
+            "transport",
+            "logical_sector_bytes",
+            "removable",
+        )
+        if key in disk
+    }
+
+
 def validation_message(error: ValidationError) -> str:
     parts = []
     for item in error.errors(include_input=False, include_url=False)[:5]:
@@ -196,9 +264,7 @@ def image_list(
         query = query.where(Image.status == image_status)
     matching = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     page = min(page, max(1, (matching + 19) // 20))
-    images = db.scalars(
-        query.order_by(Image.created_at.desc()).offset((page - 1) * 20).limit(20)
-    ).all()
+    images = db.scalars(query.order_by(Image.name.asc()).offset((page - 1) * 20).limit(20)).all()
     source_ids = {image.source_host_id for image in images if image.source_host_id}
     hosts = (
         {
@@ -321,15 +387,262 @@ async def image_update(request: Request, image_id: UUID, db: Db) -> Response:
     )
 
 
-@router.get("/tasks", response_class=HTMLResponse)
-def tasks_placeholder(request: Request, db: Db) -> Response:
+@router.get("/hosts/{host_id}/capture", response_class=HTMLResponse)
+def capture_page(request: Request, host_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    host = get_host(db, host_id)
+    report = latest_report(db, host)
+    if report is None:
+        raise HTTPException(409, "El equipo necesita un inventario antes de capturar una imagen.")
+    disks = inventory_disks(report)
+    images = db.scalars(
+        select(Image).where(Image.status == "draft").order_by(Image.name.asc())
+    ).all()
     return render(
         request,
-        "coming_soon.html",
-        user=require_user(request, db),
-        section="tasks",
-        upcoming=UPCOMING_SECTIONS["tasks"],
+        "capture.html",
+        user=user,
+        host=host,
+        report=report,
+        disks=disks,
+        images=images,
+        values={"idempotency_key": secrets.token_urlsafe(18)},
+        errors={},
+        section="hosts",
     )
+
+
+@router.post("/hosts/{host_id}/capture")
+async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    host = get_host(db, host_id)
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    values = {
+        key: str(form.get(key, "")).strip()
+        for key in ("image_id", "image_name", "image_description", "disk_key", "idempotency_key")
+    }
+    values["confirm"] = str(form.get("confirm", ""))
+    errors: dict[str, str] = {}
+    report = latest_report(db, host)
+    disks = inventory_disks(report)
+    images = db.scalars(
+        select(Image).where(Image.status == "draft").order_by(Image.name.asc())
+    ).all()
+    if report is None:
+        errors["form"] = "El equipo necesita un inventario antes de capturar una imagen."
+    if values["confirm"] != "1":
+        errors["confirm"] = "Confirmá el equipo, el disco y la imagen antes de iniciar."
+    selected_disk = next(
+        (disk for disk in disks if disk.get("stable_id") == values["disk_key"]), None
+    )
+    if selected_disk is None:
+        errors["disk_key"] = "Seleccioná un disco del último inventario."
+    image: Image | None = None
+    if values["image_id"]:
+        try:
+            image = get_image(db, UUID(values["image_id"]))
+        except (ValueError, HTTPException):
+            errors["image_id"] = "La ficha de imagen seleccionada no es válida."
+        else:
+            if image.status != "draft":
+                errors["image_id"] = "Sólo se puede capturar sobre una ficha en borrador."
+    else:
+        try:
+            image_data = ImageInput.model_validate(
+                {"name": values["image_name"], "description": values["image_description"]}
+            )
+        except ValidationError as error:
+            errors["image_name"] = str(error.errors()[0]["msg"])
+        else:
+            image = Image(**image_data.model_dump())
+    if not values["idempotency_key"]:
+        values["idempotency_key"] = digest(
+            ":".join(
+                [
+                    str(user.id),
+                    host.id,
+                    values["image_id"] or values["image_name"],
+                    values["disk_key"],
+                    report.id if report else "",
+                ]
+            )
+        )
+    elif len(values["idempotency_key"]) > 128:
+        errors["form"] = "La solicitud no tiene un identificador válido."
+    existing = db.scalar(select(Task).where(Task.idempotency_key == values["idempotency_key"]))
+    if existing is not None:
+        if existing.requested_by != user.id:
+            errors["form"] = "La solicitud ya está siendo utilizada."
+        else:
+            return RedirectResponse(f"/tasks/{existing.id}", 303)
+    if db.scalar(select(Task.id).where(Task.reservation_key == host.id)) is not None:
+        errors["form"] = "Este equipo ya tiene una tarea activa."
+    if errors or report is None or selected_disk is None or image is None:
+        return render(
+            request,
+            "capture.html",
+            user=user,
+            host=host,
+            report=report,
+            disks=disks,
+            images=images,
+            values=values,
+            errors=errors,
+            status=422,
+            section="hosts",
+        )
+    if image.id is None:
+        db.add(image)
+        db.flush()
+    image_id = image.id
+    image.status = "capturing"
+    image.source_host_id = host.id
+    image.source_hostname = host.hostname
+    task = Task(
+        operation="capture",
+        status="approved",
+        requested_by=user.id,
+        host_id=host.id,
+        image_id=image_id,
+        inventory_report_id=report.id,
+        disk_selector=task_disk_selector(selected_disk),
+        idempotency_key=values["idempotency_key"],
+        reservation_key=host.id,
+        phase="queued",
+        bytes_processed=0,
+        total_bytes=int(selected_disk["size_bytes"]),
+        message="En espera de un agente PXE compatible.",
+    )
+    db.add(image)
+    db.add(task)
+    db.flush()
+    add_event(
+        db,
+        task,
+        event_type="created",
+        phase="queued",
+        total_bytes=task.total_bytes,
+        message=task.message,
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return render(
+            request,
+            "capture.html",
+            user=user,
+            host=host,
+            report=report,
+            disks=disks,
+            images=images,
+            values=values,
+            errors={"form": "No se pudo reservar el equipo; probá nuevamente."},
+            status=409,
+            section="hosts",
+        )
+    set_flash(request, "Captura encolada. Arrancá el equipo por PXE para iniciar el análisis.")
+    return RedirectResponse(f"/tasks/{task.id}", 303)
+
+
+@router.get("/tasks", response_class=HTMLResponse)
+def task_list(
+    request: Request,
+    db: Db,
+    task_status: Annotated[
+        str,
+        Query(
+            alias="status",
+            pattern="^(all|approved|assigned|running|verifying|succeeded|failed|cancelled|intervention_required)$",
+        ),
+    ] = "all",
+    page: Annotated[int, Query(ge=1, le=100000)] = 1,
+) -> Response:
+    user = require_user(request, db)
+    if expire_stale_tasks(db):
+        db.commit()
+    query = select(Task)
+    if task_status != "all":
+        query = query.where(Task.status == task_status)
+    matching = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    pages = max(1, (matching + 19) // 20)
+    page = min(page, pages)
+    tasks = db.scalars(
+        query.order_by(Task.created_at.desc()).offset((page - 1) * 20).limit(20)
+    ).all()
+    host_ids = {task.host_id for task in tasks}
+    image_ids = {task.image_id for task in tasks}
+    hosts = {
+        host.id: host.name for host in db.scalars(select(Host).where(Host.id.in_(host_ids))).all()
+    }
+    images = {
+        image.id: image.name
+        for image in db.scalars(select(Image).where(Image.id.in_(image_ids))).all()
+    }
+    return render(
+        request,
+        "tasks.html",
+        user=user,
+        tasks=tasks,
+        hosts=hosts,
+        images=images,
+        status_labels=TASK_LABELS,
+        operation_labels=TASK_OPERATION_LABELS,
+        task_status=task_status,
+        matching=matching,
+        page=page,
+        pages=pages,
+        section="tasks",
+    )
+
+
+@router.get("/tasks/{task_id}", response_class=HTMLResponse)
+def task_detail(request: Request, task_id: UUID, db: Db) -> Response:
+    user = require_user(request, db)
+    if expire_stale_tasks(db):
+        db.commit()
+    task = db.get(Task, str(task_id))
+    if task is None:
+        raise HTTPException(404, "No se encontró la tarea.")
+    host = db.get(Host, task.host_id)
+    image = db.get(Image, task.image_id)
+    attempt = db.scalar(
+        select(TaskAttempt)
+        .where(TaskAttempt.task_id == task.id)
+        .order_by(TaskAttempt.attempt_number.desc())
+        .limit(1)
+    )
+    events = db.scalars(
+        select(TaskEvent)
+        .where(TaskEvent.task_id == task.id)
+        .order_by(TaskEvent.created_at.desc())
+        .limit(100)
+    ).all()
+    return render(
+        request,
+        "task_detail.html",
+        user=user,
+        task=task,
+        host=host,
+        image=image,
+        attempt=attempt,
+        events=events,
+        status_label=TASK_LABELS.get(task.status, task.status),
+        operation_label=TASK_OPERATION_LABELS.get(task.operation, task.operation),
+        section="tasks",
+    )
+
+
+@router.get("/tasks/{task_id}/status")
+def task_status(request: Request, task_id: UUID, db: Db) -> JSONResponse:
+    require_user(request, db)
+    if expire_stale_tasks(db):
+        db.commit()
+    task = db.get(Task, str(task_id))
+    if task is None:
+        raise HTTPException(404, "No se encontró la tarea.")
+    return JSONResponse(task_status_payload(task), status_code=200)
 
 
 @router.get("/pairing", response_class=HTMLResponse)

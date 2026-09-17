@@ -121,7 +121,13 @@ def test_pxe_builder_publishes_a_verified_profile_without_ipxe_binary(tmp_path: 
     assert manifest["server_url"] == "https://pyfog.example"
 
 
-@pytest.mark.parametrize("unsafe", ["https://user:pass@example.com/boot", "https://host/boot?x=1"])
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "https://user:pass@example.com/boot",  # pragma: allowlist secret
+        "https://host/boot?x=1",
+    ],
+)
 def test_pxe_builder_rejects_url_credentials_and_query(unsafe: str) -> None:
     result = subprocess.run(  # noqa: S603 - fixed repository-local command
         [str(PXE / "build-pxe"), "build", "--base-url", unsafe, "--profile-only"],

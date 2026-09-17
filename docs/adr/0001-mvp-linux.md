@@ -6,8 +6,9 @@
 
 PyFog empieza con el registro e inventario de equipos y avanza hacia una operación de imagen por
 red pequeña y verificable. Este documento fija el contrato que deben cumplir el coordinador, el
-agente PXE y el formato de imagen antes de habilitar escrituras sobre discos. No habilita todavía
-la captura, restauración ni clonación: esas tareas se implementan en los issues posteriores.
+agente PXE y el formato de imagen antes de habilitar escrituras sobre discos. El alcance inicial no
+habilitaba la captura, restauración ni clonación; la implementación posterior de los issues #23–30
+habilita la captura de solo lectura sobre el origen y la publicación verificada de sus artefactos.
 
 ## Plataforma admitida
 
@@ -67,10 +68,10 @@ de control con los bloques de imagen.
 
 ## Contratos de datos y versiones
 
-La API ya publicada mantiene el prefijo `/api/v1`; el inventario es JSON `schema_version: 1` y los
-informes son inmutables e idempotentes por `report_id`. Las rutas futuras de agente y tareas también
-serán `/api/v1`, con JSON versionado, timestamps UTC ISO-8601 y errores documentados. Un cambio
-incompatible abre una versión nueva; no se reinterpretan manifiestos existentes.
+La API mantiene el prefijo `/api/v1`; el inventario es JSON `schema_version: 1` y los informes son
+inmutables e idempotentes por `report_id`. Las rutas de agente y tareas usan JSON versionado,
+timestamps UTC ISO-8601 y errores documentados. Un cambio incompatible abre una versión nueva; no se
+reinterpretan manifiestos existentes.
 
 Una imagen contiene el manifiesto `pyfog-disk-image` v1, el UUID de imagen, la geometría de disco,
 las particiones admitidas, el algoritmo de checksum y el SHA-256 de cada artefacto. El contrato
@@ -89,7 +90,7 @@ debe crear o reservar otra versión en lugar de reemplazar una versión lista.
 | Servicio web | Python 3.12, FastAPI 0.141.1, Pydantic 2.13.5, SQLAlchemy 2.0.54 y Alembic 1.20.0. Las versiones exactas viven en `pyproject.toml` y `uv.lock`. |
 | Base de tareas en producción | PostgreSQL 17. |
 | Agente de imágenes | Linux de Ubuntu 24.04 LTS, Partclone 0.3.45, `sgdisk` y herramientas GRUB de esa distribución. |
-| Arranque PXE | iPXE y un kernel/initramfs reproducibles. Los issues [#18](https://github.com/cavazquez/pyfog/issues/18), [#19](https://github.com/cavazquez/pyfog/issues/19) y [#20](https://github.com/cavazquez/pyfog/issues/20) publican un agente de inventario seguro, retorno al disco local y aprobación de equipos descubiertos; el modo de imagen queda bloqueado hasta verificar sus herramientas y SHA-256. |
+| Arranque PXE | iPXE y un kernel/initramfs reproducibles. Los issues [#18](https://github.com/cavazquez/pyfog/issues/18), [#19](https://github.com/cavazquez/pyfog/issues/19) y [#20](https://github.com/cavazquez/pyfog/issues/20) publican un agente de inventario seguro, retorno al disco local y aprobación de equipos descubiertos; el modo `imaging` sólo se construye cuando sus herramientas están presentes y sus hashes fueron revisados. |
 
 El manifiesto del agente fija las versiones y checksums efectivos de kernel, initramfs, iPXE y
 paquetes. Ningún agente toma herramientas de un repositorio mutable durante una operación.
@@ -98,10 +99,10 @@ paquetes. Ningún agente toma herramientas de un repositorio mutable durante una
 
 La dirección MAC sirve para reconocer un equipo, nunca para autenticarlo. El agente se registra con
 un desafío de un solo uso visible en la consola y recibe una capacidad efímera ligada a la sesión,
-UUID del equipo, vencimiento y número de uso. La capacidad se consume al aceptar el inventario; las
-tareas de imagen tendrán otra autorización explícita cuando se implementen. La interfaz exige una
-confirmación que nombra equipo, operación y disco destino antes de que el coordinador entregue una
-capacidad de tarea.
+UUID del equipo, vencimiento y número de uso. Para una captura, el token vigente del equipo sólo
+permite reclamar una tarea de ese equipo; el coordinador lo cambia por una capacidad ligada al
+intento, con vencimiento y secuencia propios. La interfaz exige una confirmación que nombra equipo,
+operación y disco origen antes de encolar la tarea.
 
 El canal web y el canal de agente usan HTTPS con certificados de la CA de la instalación; el agente
 no sigue redirecciones ni usa proxies heredados. Los tokens, claves y rutas de almacenamiento no se
@@ -110,12 +111,12 @@ local; la autorización por roles queda para una etapa posterior. El detalle de 
 en la [guía HTTPS](../https.md), implementada en el issue [#7](https://github.com/cavazquez/pyfog/issues/7).
 
 Cada tarea persiste una máquina de estados: `draft`, `approved`, `assigned`, `running`, `verifying`,
-`succeeded`, `failed` o `cancelled`. Sólo el coordinador puede avanzar estados; los eventos del
-agente llevan un número de secuencia para que un reintento no duplique una escritura. Al reiniciar,
-el coordinador deja una tarea activa en `failed` hasta que un administrador cree una nueva: nunca
-reanuda una escritura sin una confirmación nueva.
+`succeeded`, `failed`, `cancelled` o `intervention_required`. Sólo el coordinador puede avanzar
+estados; los eventos del agente llevan un número de secuencia para que un reintento no duplique una
+escritura. Una lease vencida deja la tarea en `intervention_required`, libera el slot de transferencia
+y conserva la reserva del equipo: nunca reanuda una operación sin una confirmación nueva.
 
-## Validación antes de habilitar la función
+## Validación pendiente para completar el MVP
 
 El laboratorio reproducible de los issues [#17](https://github.com/cavazquez/pyfog/issues/17) y
 [#45](https://github.com/cavazquez/pyfog/issues/45) debe automatizar al menos estos casos con QEMU,

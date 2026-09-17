@@ -48,11 +48,4 @@ image-manifest-check:
 	uv run python -m scripts.validate_image_manifest --help >/dev/null
 
 check:
-	uv run ruff check .
-	uv run ruff format --check .
-	uv run mypy
-	uv run pytest
-	$(MAKE) lab-check
-	$(MAKE) agent-check
-	$(MAKE) pxe-check
-	$(MAKE) image-manifest-check
+	./scripts/check.sh

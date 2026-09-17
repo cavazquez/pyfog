@@ -31,7 +31,7 @@ El puerto 80 sólo redirige al mismo host por HTTPS. No se deben enviar tokens d
 de imagen ni contraseñas a una URL `http://`; el recolector ya rechaza HTTP fuera de loopback.
 
 Caddy genera una CA interna para este laboratorio. Copiá únicamente su certificado público a los
-clientes y al futuro initramfs; la clave de la CA y la clave TLS del servidor permanecen en el volumen
+clientes y al initramfs de imagen; la clave de la CA y la clave TLS del servidor permanecen en el volumen
 privado de Caddy y nunca se montan en el contenedor de PyFog:
 
 ```bash
@@ -40,8 +40,8 @@ docker compose -f compose.local-ca.yaml cp \
 openssl x509 -in pyfog-lab-root.crt -noout -subject -issuer -enddate -fingerprint -sha256
 ```
 
-El recolector Linux valida cadena, nombre y vigencia con el verificador estándar de Python. Para la
-CA local, entregá ese archivo público mediante un canal controlado por el administrador:
+El recolector y el agente de imagen validan cadena, nombre y vigencia con el verificador estándar de
+Python. Para la CA local, entregá ese archivo público mediante un canal controlado por el administrador:
 
 ```bash
 python3 collect_inventory.py \

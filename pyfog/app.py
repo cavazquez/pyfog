@@ -11,6 +11,7 @@ from pyfog import api, web
 from pyfog.config import PACKAGE_DIR, Settings
 from pyfog.database import make_engine
 from pyfog.middleware import RequestLimitsMiddleware
+from pyfog.storage import ArtifactStore
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -25,6 +26,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = settings
     application.state.engine = make_engine(settings.database_url)
+    application.state.artifact_store = ArtifactStore(
+        settings.image_store_path,
+        max_image_bytes=settings.max_image_bytes,
+        max_chunk_bytes=settings.max_chunk_bytes,
+        min_free_bytes=settings.min_storage_free_bytes,
+    )
     application.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
     application.include_router(web.router)
     application.include_router(api.router)

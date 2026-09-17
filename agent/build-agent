@@ -509,7 +509,7 @@ build() {
         copy_path "$path" "$path"
     done
 
-    for tool_name in curl openssl ip lsblk blkid; do
+    for tool_name in curl openssl gzip ip lsblk blkid; do
         path=$(resolve_tool "$tool_name")
         [ -n "$path" ] || error "falta $tool_name"
         case "$tool_name" in
@@ -533,6 +533,8 @@ build() {
     install -D -m 0755 "$SCRIPT_DIR/udhcpc.script" "$STAGE/usr/libexec/pyfog-udhcpc"
     install -D -m 0644 "$REPO_ROOT/scripts/collect_inventory.py" \
         "$STAGE/opt/pyfog/collect_inventory.py"
+    install -D -m 0644 "$REPO_ROOT/scripts/run_image_task.py" \
+        "$STAGE/opt/pyfog/run_image_task.py"
     printf '%s\n' 'NAME="PyFog ephemeral agent"' 'ID=pyfog-agent' \
         'PRETTY_NAME="PyFog Linux inventory agent"' >"$STAGE/etc/os-release"
     printf 'root:x:0:0:root:/root:/bin/sh\n' >"$STAGE/etc/passwd"

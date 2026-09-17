@@ -5,9 +5,9 @@ un destino. No es un formato compatible con FOG ni con Clonezilla. El archivo se
 los artefactos de las particiones y se valida antes de entregarlo a un agente.
 
 La pantalla **Imágenes** crea la ficha y su UUID antes de capturar. La ficha empieza en `draft`;
-la captura futura la asociará con este manifiesto y actualizará estado, origen, tamaño y
-compatibilidad. Sólo una ficha `ready` con manifiesto y verificación de integridad puede elegirse
-para restaurar.
+la tarea de captura la asocia con este manifiesto y actualiza estado, origen, tamaño y
+compatibilidad sólo después de verificar la publicación. Sólo una ficha `ready` con manifiesto y
+verificación de integridad puede elegirse para restaurar.
 
 ## Contrato
 
@@ -51,7 +51,7 @@ python3 -m scripts.validate_image_manifest \
   --artifacts-dir /srv/pyfog/images/IMAGE
 ```
 
-La captura futura deberá escribir en un directorio temporal, generar este manifiesto, verificarlo
-con el mismo código y publicarlo sólo después de que todas las comprobaciones pasen. Una
-restauración o clonación debe volver a validar el manifiesto y la capacidad del destino antes de
-abrir cualquier dispositivo de bloques.
+La captura escribe primero en el staging privado de la tarea, genera este manifiesto, verifica el
+contenido con el mismo código y lo publica mediante un renombre atómico sólo después de que todas
+las comprobaciones pasen. Una restauración o clonación debe volver a validar el manifiesto y la
+capacidad del destino antes de abrir cualquier dispositivo de bloques.

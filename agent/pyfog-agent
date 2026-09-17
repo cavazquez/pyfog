@@ -1,4 +1,8 @@
 #!/bin/sh
 # Stable entry point used by the initramfs and by PXE diagnostics.
 set -eu
+if [ "${1:-}" = "--capture" ]; then
+    shift
+    exec /usr/bin/python3 /opt/pyfog/run_image_task.py "$@"
+fi
 exec /usr/bin/python3 /opt/pyfog/collect_inventory.py "$@"

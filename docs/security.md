@@ -2,7 +2,8 @@
 
 PyFog no almacena credenciales reales, claves privadas ni tokens de acceso en el repositorio. Los
 valores de prueba son deliberadamente falsos y se marcan de forma puntual para que el escáner los
-distinga de una credencial accidental.
+distinga de una credencial accidental. El staging de imágenes queda fuera del repositorio y el agente
+recibe el token del equipo mediante un archivo temporal provisionado fuera de iPXE.
 
 ## Controles automáticos
 
