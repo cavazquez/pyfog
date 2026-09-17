@@ -110,10 +110,10 @@ run_inventory() {
             log "No se aprobó el registro PXE; se conserva una copia local."
         fi
     elif [ -n "$SERVER" ] || [ -n "$HOST_ID" ]; then
-        [ -n "$SERVER" ] && [ -n "$HOST_ID" ] || {
+        if [ -z "$SERVER" ] || [ -z "$HOST_ID" ]; then
             log "pyfog.server y pyfog.host_id deben indicarse juntos."
             return 1
-        }
+        fi
         [ -r "$TOKEN_FILE" ] || {
             log "No se encontró la capacidad efímera en $TOKEN_FILE."
             return 1
@@ -150,10 +150,10 @@ run_inventory() {
 }
 
 run_imaging() {
-    [ -n "$SERVER" ] && [ -n "$HOST_ID" ] || {
+    if [ -z "$SERVER" ] || [ -z "$HOST_ID" ]; then
         log "El modo imaging requiere pyfog.server y pyfog.host_id."
         return 1
-    }
+    fi
     [ -r "$TOKEN_FILE" ] || {
         log "No se encontró la capacidad de arranque en $TOKEN_FILE."
         return 1
