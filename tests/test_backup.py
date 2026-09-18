@@ -5,9 +5,20 @@ import uuid
 import pytest
 from sqlalchemy.orm import Session
 
+from pyfog.agent_credentials import issue_credential
+from pyfog.config import Settings
 from pyfog.database import Base, make_engine
 from pyfog.image_manifest import ImageManifest
-from pyfog.models import Host, Image, InventoryReport, LoginSession, Task, TaskAttempt, User, now
+from pyfog.models import (
+    Host,
+    Image,
+    InventoryReport,
+    LoginSession,
+    Task,
+    TaskAttempt,
+    User,
+    now,
+)
 from scripts.backup_server import (
     BackupError,
     canonical_manifest_hash,
@@ -117,6 +128,9 @@ def test_restore_invalidates_sessions_and_requires_reconciliation(tmp_path):
     engine = make_engine(f"sqlite:///{database}")
     with Session(engine) as db:
         user = db.query(User).filter_by(username="operator").one()
+        host = db.get(Host, HOST_ID)
+        assert host is not None
+        _credential, raw_token = issue_credential(db, host, Settings())
         task = Task(
             operation="restore",
             status="running",
@@ -159,11 +173,22 @@ def test_restore_invalidates_sessions_and_requires_reconciliation(tmp_path):
 
     backup = tmp_path / "backup"
     create_backup(database, image_store, backup)
+    assert not any(
+        raw_token.encode() in path.read_bytes() for path in backup.rglob("*") if path.is_file()
+    )
     restored_database = tmp_path / "restored.db"
     restore_backup(backup, restored_database, tmp_path / "restored-images")
 
     with sqlite3.connect(restored_database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM login_sessions").fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM agent_credentials WHERE revoked_at IS NOT NULL"
+        ).fetchone() == (1,)
+        assert (
+            connection.execute("SELECT token_hash FROM agent_credentials").fetchone()[0]
+            != raw_token
+        )
+        assert connection.execute("SELECT token_hash FROM hosts").fetchone()[0] is None
         assert connection.execute("SELECT status FROM tasks").fetchone() == (
             "intervention_required",
         )

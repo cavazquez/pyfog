@@ -31,6 +31,10 @@ de Git, CI, argumentos, logs, imágenes y artefactos; sólo se publican certific
 La autorización humana es deny-by-default y está documentada en la [matriz RBAC](rbac.md). Las
 denegaciones quedan auditadas sin guardar secretos.
 
+La rotación y revocación de credenciales de agentes está documentada en
+[Credenciales de agentes](agent-credentials.md); los backups contienen hashes y la restauración
+revoca las generaciones recuperadas antes de volver a habilitar equipos.
+
 ## Respuesta ante un hallazgo
 
 Si aparece una credencial real, se revoca o rota de inmediato fuera del repositorio. Después se

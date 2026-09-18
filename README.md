@@ -22,6 +22,7 @@ del token del equipo.
 [Manifiesto de imágenes](docs/image-manifest.md) ·
 [Backup y recuperación](docs/backup-recovery.md) ·
 [Roles y permisos](docs/rbac.md) ·
+[Credenciales de agentes](docs/agent-credentials.md) ·
 [Guía operativa en español](docs/guia-es.md) ·
 [Accesibilidad](docs/accessibility.md) ·
 [Despliegue LAN](deploy/README.md) ·
@@ -81,8 +82,10 @@ El informe debe contener la MAC principal del equipo. Una MAC ayuda a identifica
 
 ### Envío directo al servidor
 
-En la ficha, abrí **Envío de inventario con token** y generá una credencial. Vence a las 24 horas,
-se muestra una sola vez y se guarda como hash. Podés rotarla o revocarla desde la misma pantalla.
+En la ficha, abrí **Envío de inventario con credencial** y generá una credencial. Vence a las 24
+horas, se muestra una sola vez y se guarda como hash. Podés rotarla con una gracia breve o revocar
+todas las generaciones desde la misma pantalla. El detalle está en
+[Credenciales de agentes](docs/agent-credentials.md).
 
 En Bash, desde el equipo registrado:
 

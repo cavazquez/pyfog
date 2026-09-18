@@ -52,6 +52,7 @@ class Settings:
     )
     session_seconds: int = 3600
     token_seconds: int = 86400
+    token_rotation_grace_seconds: int = 300
     pairing_seconds: int = 900
     max_body_bytes: int = 1_048_576
     image_store_path: Path = field(
@@ -82,6 +83,10 @@ class Settings:
             raise ValueError("PYFOG_TRUSTED_PROXY_IPS no puede incluir * en producción.")
         if self.max_body_bytes <= 0:
             raise ValueError("max_body_bytes debe ser positivo.")
+        if self.token_seconds <= 0:
+            raise ValueError("token_seconds debe ser positivo.")
+        if self.token_rotation_grace_seconds <= 0:
+            raise ValueError("token_rotation_grace_seconds debe ser positivo.")
         if not 0 < self.max_chunk_bytes <= self.max_body_bytes:
             raise ValueError("max_chunk_bytes debe ser positivo y caber en max_body_bytes.")
         if self.max_image_bytes <= 0:

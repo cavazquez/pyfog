@@ -47,7 +47,8 @@ aleatorio cuyo hash y vencimiento se validan en base de datos. Logout y cambio d
 sesiones. Los formularios usan tokens CSRF y el login limita intentos por dirección remota.
 
 Las credenciales de inventario son independientes: aleatorias, limitadas a un equipo, revocables y
-con 24 horas de vigencia. La API no admite una cookie web como sustituto del Bearer token. Los
+con 24 horas de vigencia. Se pueden rotar con una gracia acotada sin invalidar de golpe a un agente
+desconectado; la revocación invalida también capacidades de tareas ya reclamadas. La API no admite una cookie web como sustituto del Bearer token. Los
 informes se limitan a 1 MiB antes de parsear el cuerpo; el servidor rechaza esquemas desconocidos,
 hardware inválido y MACs que no coinciden con el registro. Jinja2 escapa HTML y la política CSP
 limita recursos al servidor.

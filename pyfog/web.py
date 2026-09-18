@@ -1,6 +1,6 @@
 import contextlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Annotated, Any, Literal, TypedDict
 from uuid import UUID
 
@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
+from pyfog.agent_credentials import issue_credential, revoke_credentials
 from pyfog.audit import record_audit
 from pyfog.config import PACKAGE_DIR
 from pyfog.content import NAVIGATION, SHELL_COPY
@@ -1753,30 +1754,31 @@ async def inventory_token(request: Request, host_id: UUID, db: Db) -> Response:
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     if form.get("action") == "revoke":
-        host.token_hash, host.token_expires_at = None, None
+        revoked = revoke_credentials(db, host)
         record_audit(
             db,
             actor_user_id=user.id,
             action="token.revoke",
             resource_type="host",
             resource_id=host.id,
-            detail="Token de inventario revocado.",
+            detail=f"Credenciales de agente revocadas: {revoked}.",
         )
         db.commit()
-        set_flash(request, "Token de inventario revocado.")
+        set_flash(request, "Credenciales de agente revocadas.")
         return RedirectResponse(f"/hosts/{host.id}", 303)
     if form.get("action") != "generate":
         raise HTTPException(400, "Acción inválida.")
-    token = secrets.token_urlsafe(32)
-    host.token_hash = digest(token)
-    host.token_expires_at = now() + timedelta(seconds=request.app.state.settings.token_seconds)
+    credential, token = issue_credential(db, host, request.app.state.settings)
     record_audit(
         db,
         actor_user_id=user.id,
         action="token.issue",
-        resource_type="host",
-        resource_id=host.id,
-        detail="Token de inventario emitido; el valor no se registra.",
+        resource_type="agent_credential",
+        resource_id=credential.id,
+        detail=(
+            "Credencial de agente emitida; el valor no se registra y la anterior "
+            "conserva gracia acotada."
+        ),
     )
     db.commit()
     return render(request, "token.html", user=user, host=host, token=token)

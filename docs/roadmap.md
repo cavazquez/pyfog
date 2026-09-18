@@ -87,6 +87,7 @@ trabajo están implementados.
 - [x] #74 Matriz declarativa y fixtures QCOW2 deterministas para perfiles soportados y negativos.
 - [x] #63 ADR de cadena de confianza, propietarios, rotación y negativos de Secure Boot.
 - [x] #66 Roles admin/operator/auditor, matriz deny-by-default, gestión web y auditoría de denegaciones.
+- [x] #67 Rotación con gracia, revocación inmediata, binding de tareas y recuperación offline de credenciales de agentes.
 
 ## Evidencia de validación
 
@@ -106,6 +107,9 @@ trabajo están implementados.
   capacidades y rechazo del agente sin usar discos físicos ni credenciales.
 - `uv run pytest tests/test_rbac.py` verifica la matriz de permisos, la migración de cuentas MVP,
   la denegación de acciones y la auditoría con actor, recurso, decisión y motivo.
+- `uv run pytest tests/test_agent_credentials.py` y las pruebas de seguridad/tareas verifican
+  rotaciones encadenadas, gracia acotada, replay, revocación de transferencias y recuperación sin
+  credenciales activas desde backup.
 
 ## Limitaciones conocidas de v0.1.0
 

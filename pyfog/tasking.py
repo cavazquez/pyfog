@@ -335,6 +335,7 @@ def claim_task(
     session_id: str,
     capabilities: set[str],
     settings: Settings,
+    agent_credential_id: str | None = None,
 ) -> ClaimedTask | None:
     """Atomically assign the oldest compatible task for one host."""
 
@@ -380,6 +381,7 @@ def claim_task(
         task_id=task.id,
         attempt_number=attempt_number,
         agent_session_id=session_id,
+        agent_credential_id=agent_credential_id,
         capability_hash=digest(token),
         lease_expires_at=current + timedelta(seconds=settings.task_lease_seconds),
         last_heartbeat_at=current,

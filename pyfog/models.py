@@ -73,6 +73,24 @@ class Host(Base):
     token_expires_at: Mapped[datetime | None]
 
 
+class AgentCredential(Base):
+    """Hashed bearer credential issued to one registered agent host."""
+
+    __tablename__ = "agent_credentials"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_agent_credentials_token_hash"),
+        Index("ix_agent_credentials_host_valid", "host_id", "revoked_at", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
+    host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    issued_at: Mapped[datetime] = mapped_column(default=now)
+    expires_at: Mapped[datetime]
+    grace_until: Mapped[datetime | None]
+    revoked_at: Mapped[datetime | None]
+
+
 class InventoryReport(Base):
     __tablename__ = "inventory_reports"
     __table_args__ = (UniqueConstraint("host_id", "report_id", name="uq_host_report"),)
@@ -239,6 +257,9 @@ class TaskAttempt(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     attempt_number: Mapped[int] = mapped_column(default=1)
     agent_session_id: Mapped[str] = mapped_column(String(36))
+    agent_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_credentials.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     capability_hash: Mapped[str] = mapped_column(String(64))
     lease_expires_at: Mapped[datetime]
     last_heartbeat_at: Mapped[datetime] = mapped_column(default=now)

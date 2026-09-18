@@ -4,6 +4,10 @@ El backup del MVP combina una copia consistente de SQLite, el almacén completo 
 (`published` y `staging`) y un manifiesto con SHA-256. El comando no incluye contraseñas, sesiones,
 tokens de equipos, claves de sesión, certificados TLS ni claves privadas.
 
+La restauración invalida las generaciones de credenciales de agentes copiadas desde el backup. Antes
+de habilitar equipos, emití credenciales nuevas; el procedimiento completo está en
+[Credenciales de agentes](agent-credentials.md).
+
 En una instalación con RBAC, crear un backup requiere `backup.create`, verificarlo requiere
 `backup.read` y recuperar una instalación requiere `backup.restore`. La interfaz de roles está
 documentada en [Roles y permisos](rbac.md); estos comandos de mantenimiento se ejecutan fuera de

@@ -11,6 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from pyfog.agent_credentials import AgentAuthorization, credential_is_usable
 from pyfog.audit import record_audit
 from pyfog.database import get_db
 from pyfog.health import operational_snapshot
@@ -20,6 +21,7 @@ from pyfog.image_manifest import (
     validate_relative_path,
 )
 from pyfog.models import (
+    AgentCredential,
     Host,
     Image,
     InventoryReport,
@@ -84,21 +86,33 @@ def authorize_pairing(request: Request, pairing: PairingRequest) -> str:
     return token
 
 
-def authorize_host_agent(request: Request, db: Session, host_id: str) -> Host:
+def authorize_host_agent(request: Request, db: Session, host_id: str) -> AgentAuthorization:
     token = bearer_token(request)
     host = db.get(Host, host_id)
-    expected = host.token_hash if host and host.token_hash else "0" * 64
-    if (
-        not host
-        or not token
-        or not secrets.compare_digest(digest(token), expected)
-        or not host.token_expires_at
-        or host.token_expires_at <= now()
-    ):
+    token_hash = digest(token)
+    credential = db.scalar(
+        select(AgentCredential).where(
+            AgentCredential.host_id == host_id,
+            AgentCredential.token_hash == token_hash,
+        )
+    )
+    current = now()
+    credential_valid = (
+        credential is not None and host is not None and credential_is_usable(credential, current)
+    )
+    legacy_valid = (
+        host is not None
+        and credential is None
+        and host.token_hash is not None
+        and secrets.compare_digest(token_hash, host.token_hash)
+        and host.token_expires_at is not None
+        and host.token_expires_at > current
+    )
+    if not host or not token or (not credential_valid and not legacy_valid):
         raise HTTPException(
             401, "Credencial de agente inválida o vencida.", headers={"WWW-Authenticate": "Bearer"}
         )
-    return host
+    return AgentAuthorization(host=host, credential=credential)
 
 
 def get_task(db: Session, task_id: UUID) -> Task:
@@ -127,6 +141,14 @@ def task_attempt_for_token(
         raise HTTPException(
             401, "Capacidad de tarea inválida.", headers={"WWW-Authenticate": "Bearer"}
         )
+    if attempt.agent_credential_id:
+        credential = db.get(AgentCredential, attempt.agent_credential_id)
+        if credential is None or not credential_is_usable(credential):
+            raise HTTPException(
+                401,
+                "La credencial del agente fue revocada o venció.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     if task.status in {"succeeded", "failed", "cancelled", "intervention_required"}:
         raise HTTPException(409, "La tarea ya no admite eventos del agente.")
     if attempt.lease_expires_at <= now():
@@ -230,7 +252,8 @@ def health(request: Request, db: Db) -> JSONResponse:
 def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONResponse:
     """Authorize a boot session with the host token, then issue a task-scoped capability."""
 
-    host = authorize_host_agent(request, db, str(payload.host_id))
+    authorization = authorize_host_agent(request, db, str(payload.host_id))
+    host = authorization.host
     try:
         claimed = claim_task(
             db,
@@ -238,6 +261,9 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
             str(payload.session_id),
             set(payload.capabilities),
             request.app.state.settings,
+            agent_credential_id=(
+                authorization.credential.id if authorization.credential is not None else None
+            ),
         )
     except TaskError as error:
         raise HTTPException(409, str(error)) from None
@@ -674,20 +700,7 @@ def finish_agent_task(
 def receive_inventory(
     request: Request, host_id: UUID, inventory: Inventory, db: Db
 ) -> JSONResponse:
-    token = bearer_token(request)
-    host = db.get(Host, str(host_id))
-    expected = host.token_hash if host and host.token_hash else "0" * 64
-    token_matches = secrets.compare_digest(digest(token), expected)
-    if (
-        not token
-        or not token_matches
-        or not host
-        or not host.token_expires_at
-        or host.token_expires_at <= now()
-    ):
-        raise HTTPException(
-            401, "Credencial inválida o vencida.", headers={"WWW-Authenticate": "Bearer"}
-        )
+    host = authorize_host_agent(request, db, str(host_id)).host
     try:
         report, created = ingest_inventory(db, host, inventory, "api")
     except HTTPException:

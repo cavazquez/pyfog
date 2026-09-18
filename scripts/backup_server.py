@@ -320,6 +320,19 @@ def invalidate_after_restore(database: Path) -> None:
         with sqlite3.connect(database) as connection:
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("DELETE FROM login_sessions")
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            if "agent_credentials" in tables:
+                connection.execute(
+                    "UPDATE agent_credentials SET revoked_at = ? WHERE revoked_at IS NULL",
+                    (timestamp,),
+                )
+                connection.execute(
+                    "UPDATE hosts SET token_hash = NULL, token_expires_at = NULL "
+                    "WHERE token_hash IS NOT NULL"
+                )
             connection.execute(
                 """
                 UPDATE task_attempts

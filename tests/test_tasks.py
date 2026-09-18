@@ -260,6 +260,27 @@ def test_task_capabilities_and_expired_lease_require_intervention(admin, app, ho
     assert heartbeat.status_code == 409
 
 
+def test_revoking_host_credential_stops_new_claims_and_existing_transfers(
+    admin, app, host_id, inventory
+):
+    task_id, _image_id, _report_id, host_token = enqueue_capture(admin, app, host_id, inventory)
+    assignment = claim(admin, host_id, host_token).json()
+    task_token = assignment["task_token"]
+    revoked = admin.post(
+        f"/hosts/{host_id}/token",
+        data={"csrf": csrf(admin), "action": "revoke"},
+        follow_redirects=False,
+    )
+    assert revoked.status_code == 303
+    heartbeat = admin.post(
+        f"/api/v1/tasks/{task_id}/heartbeat",
+        json={"message": "credencial revocada"},
+        headers={"Authorization": f"Bearer {task_token}"},
+    )
+    assert heartbeat.status_code == 401
+    assert claim(admin, host_id, host_token).status_code == 401
+
+
 def test_artifact_store_rejects_oversize_and_unsafe_paths(tmp_path):
     store = ArtifactStore(
         tmp_path / "images", max_image_bytes=5, max_chunk_bytes=4, min_free_bytes=0

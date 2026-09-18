@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from pyfog.config import Settings
-from pyfog.models import Host, LoginSession, now
+from pyfog.models import AgentCredential, AuditEvent, Host, LoginSession, now
 from pyfog.security import digest
 from tests.conftest import csrf, issue_token
 
@@ -104,9 +104,25 @@ def test_inventory_token_is_hashed_scoped_rotatable_and_revocable(admin, app, ho
     )
     second = issue_token(admin, host_id)
     assert first != second
+    with Session(app.state.engine) as db:
+        issuance_events = db.scalars(
+            select(AuditEvent).where(AuditEvent.action == "token.issue")
+        ).all()
+        assert len(issuance_events) == 2
+        assert all(
+            first not in event.detail and second not in event.detail for event in issuance_events
+        )
+    assert admin.post(path, json=inventory, headers=headers).status_code == 201
+    with Session(app.state.engine) as db:
+        first_credential = db.scalar(
+            select(AgentCredential).where(AgentCredential.token_hash == digest(first))
+        )
+        assert first_credential is not None
+        first_credential.grace_until = now() - timedelta(seconds=1)
+        db.commit()
     assert admin.post(path, json=inventory, headers=headers).status_code == 401
     headers = {"Authorization": f"Bearer {second}"}
-    assert admin.post(path, json=inventory, headers=headers).status_code == 201
+    assert admin.post(path, json=inventory, headers=headers).status_code == 200
     admin.post(f"/hosts/{host_id}/token", data={"csrf": csrf(admin), "action": "revoke"})
     assert admin.post(path, json=inventory, headers=headers).status_code == 401
 
@@ -117,6 +133,11 @@ def test_expired_token_and_missing_equipment_have_same_auth_response(
     token = issue_token(admin, host_id)
     with Session(app.state.engine) as db:
         db.get(Host, host_id).token_expires_at = now() - timedelta(seconds=1)
+        credential = db.scalar(
+            select(AgentCredential).where(AgentCredential.token_hash == digest(token))
+        )
+        assert credential is not None
+        credential.expires_at = now() - timedelta(seconds=1)
         db.commit()
     headers = {"Authorization": f"Bearer {token}"}
     expired = admin.post(f"/api/v1/hosts/{host_id}/inventory", json=inventory, headers=headers)
