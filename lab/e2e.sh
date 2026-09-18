@@ -132,13 +132,6 @@ wait_for_guest_boot() {
     return 1
 }
 
-reset_serial_logs() {
-    local vm
-    for vm in source target; do
-        : >"$PROJECT_ROOT/.lab/$vm/serial.log"
-    done
-}
-
 archive_serial_logs() {
     local vm source_log report_log
     for vm in source target; do
@@ -159,7 +152,6 @@ stop_lab_on_exit() {
 
 run_qemu() {
     QEMU_STARTED=1
-    reset_serial_logs
     if "$LAB_DRIVER" up >"$RUN_DIR/qemu.log" 2>&1; then
         "$LAB_DRIVER" status >>"$RUN_DIR/qemu.log" 2>&1
         if wait_for_guest_boot; then

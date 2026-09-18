@@ -537,6 +537,8 @@ start_vm() {
             ;;
     esac
 
+    : >"$serial_log"
+
     if [[ "$vm" == "$SOURCE_NAME" ]]; then
         backend="socket,id=labnet,listen=127.0.0.1:$NETWORK_PORT"
     else
