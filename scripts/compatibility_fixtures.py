@@ -186,9 +186,7 @@ def generate_fixture(fixture: dict[str, Any], output_dir: Path) -> Path:
             entry[0] = 0x80
             entry[4] = 0x83
             entry[8:12] = (2_048).to_bytes(4, "little")
-            entry[12:16] = (
-                (fixture["virtual_size_bytes"] // 512 - 2_048).to_bytes(4, "little")
-            )
+            entry[12:16] = (fixture["virtual_size_bytes"] // 512 - 2_048).to_bytes(4, "little")
             raw[446:462] = entry
             raw[510:512] = b"\x55\xaa"
             raw_path.write_bytes(raw)

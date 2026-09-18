@@ -153,9 +153,10 @@ class ImageDisk(Schema):
     gpt_disk_guid: UUID | None = None
     first_usable_sector: NonNegativeInt | None = None
     last_usable_sector: NonNegativeInt | None = None
-    mbr_disk_signature: Annotated[
-        str, Field(min_length=8, max_length=8, pattern=r"^[0-9A-Fa-f]{8}$", strict=True)
-    ] | None = None
+    mbr_disk_signature: (
+        Annotated[str, Field(min_length=8, max_length=8, pattern=r"^[0-9A-Fa-f]{8}$", strict=True)]
+        | None
+    ) = None
     boot_sector: ImageArtifact | None = None
 
     @model_validator(mode="after")
@@ -211,7 +212,7 @@ class ImageDisk(Schema):
         expected_roles = ("esp", "root") if is_gpt else ("root",)
         if not roles.issuperset(expected_roles):
             label = "GPT" if is_gpt else "MBR"
-            raise ValueError(f"El {label} debe incluir una raíz{ ' y una ESP' if is_gpt else ''}.")
+            raise ValueError(f"El {label} debe incluir una raíz{' y una ESP' if is_gpt else ''}.")
         for role in expected_roles:
             if sum(part.role == role for part in self.partitions) != 1:
                 label = "GPT" if is_gpt else "MBR"

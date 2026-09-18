@@ -421,8 +421,10 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
     else:
         first = 2_048
         last = sectors - 1
-        if size != sector * sectors or sector != 512 or not re.fullmatch(
-            r"[0-9A-Fa-f]{8}", str(disk.get("mbr_disk_signature", ""))
+        if (
+            size != sector * sectors
+            or sector != 512
+            or not re.fullmatch(r"[0-9A-Fa-f]{8}", str(disk.get("mbr_disk_signature", "")))
         ):
             raise ValueError("La geometría del disco MBR no es segura.")
         if any(
@@ -575,8 +577,7 @@ def safe_artifact_path(value: str, *, allow_boot_sector: bool = False) -> str:
         or any(part in {"", ".", ".."} for part in value.split("/"))
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value)
         or not (
-            value.startswith("partitions/")
-            or (allow_boot_sector and value == "boot-sector.bin")
+            value.startswith("partitions/") or (allow_boot_sector and value == "boot-sector.bin")
         )
     ):
         raise ValueError("La ruta del artefacto no es segura.")
@@ -1129,9 +1130,7 @@ def restore_partition_table(device: str, disk: dict[str, Any]) -> None:
             start = int(partition["start_sector"])
             count = int(partition["size_sectors"])
             bootable = ", bootable" if role in {"root", "boot"} else ""
-            lines.append(
-                f"start={start}, size={count}, type={role_code(role, 'mbr')}{bootable}"
-            )
+            lines.append(f"start={start}, size={count}, type={role_code(role, 'mbr')}{bootable}")
         run_command(
             ["sfdisk", "--wipe", "always", "--no-reread", device],
             timeout=120,

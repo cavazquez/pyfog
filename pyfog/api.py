@@ -168,9 +168,7 @@ def integer_header(value: str | None, name: str) -> int:
 
 
 def artifact_route_path(value: str) -> str:
-    if len(value) > 240 or not (
-        value.startswith("partitions/") or value == "boot-sector.bin"
-    ):
+    if len(value) > 240 or not (value.startswith("partitions/") or value == "boot-sector.bin"):
         raise HTTPException(422, "La ruta del artefacto no es válida.")
     try:
         validate_relative_path(value)
