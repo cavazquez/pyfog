@@ -5,7 +5,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 LAB_DRIVER="$SCRIPT_DIR/pyfog-lab"
-REPORT_ROOT="${PYFOG_E2E_REPORT_DIR:-$PROJECT_ROOT/.lab/e2e}"
+REPORT_ROOT="${PYFOG_E2E_REPORT_DIR:-$PROJECT_ROOT/.e2e}"
 RUN_DIR=""
 QEMU_STARTED=0
 
@@ -22,7 +22,7 @@ Comandos:
   plan    Imprime los escenarios y herramientas requeridas, sin modificar nada.
   run     Ejecuta el contrato agente/coordinador y el smoke UEFI en .lab/.
 
-El comando run conserva un informe en .lab/e2e/run.*. No acepta tokens en argumentos ni los
+El comando run conserva un informe en .e2e/run.*. No acepta tokens en argumentos ni los
 imprime. Las VMs sólo usan los overlays marcados por lab/pyfog-lab; no se pasan discos del host.
 Después de revisar el informe, limpiá el laboratorio con ./lab/pyfog-lab destroy.
 EOF
@@ -88,7 +88,7 @@ record() {
 
 run_contract() {
     local test_log="$RUN_DIR/contract.log"
-    if UV_CACHE_DIR="${UV_CACHE_DIR:-$PROJECT_ROOT/.lab/uv-cache}" uv run pytest -q \
+    if UV_CACHE_DIR="${UV_CACHE_DIR:-$PROJECT_ROOT/.uv-cache}" uv run pytest -q \
         tests/test_e2e_contract.py tests/test_tasks.py tests/test_restore.py \
         tests/test_tasking_unit.py tests/test_image_manifest.py \
         >"$test_log" 2>&1; then
@@ -100,7 +100,7 @@ run_contract() {
 }
 
 stop_lab_on_exit() {
-    if ((QEMU_STARTED)); then
+    if ((QEMU_STARTED)) && [[ -f "$PROJECT_ROOT/.lab/.pyfog-lab-marker" ]]; then
         "$LAB_DRIVER" stop all || true
     fi
 }

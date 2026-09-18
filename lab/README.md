@@ -92,7 +92,7 @@ El runner [`e2e.sh`](e2e.sh) combina el contrato de tareas/agente con un smoke r
 `run` exige las herramientas de `doctor`, ejecuta las pruebas de captura, restauración, clonación,
 cancelación y reconciliación con una base temporal, y luego arranca `source` y `target` con OVMF
 sobre los overlays del laboratorio. Guarda versión de commit, versiones de herramientas, resultados,
-logs de pytest y consolas en `.lab/e2e/run.*`; no recibe tokens por argumentos ni los escribe en esos
+logs de pytest y consolas en `.e2e/run.*`; no recibe tokens por argumentos ni los escribe en esos
 archivos. Un fallo conserva los recursos para diagnóstico; después de revisar el informe usá
 `./lab/pyfog-lab destroy`.
 

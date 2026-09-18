@@ -226,3 +226,5 @@ inventory*.json
 
 # Disposable QEMU/OVMF laboratory
 .lab/
+.e2e/
+.uv-cache/
