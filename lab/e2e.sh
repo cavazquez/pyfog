@@ -139,6 +139,18 @@ reset_serial_logs() {
     done
 }
 
+archive_serial_logs() {
+    local vm source_log report_log
+    for vm in source target; do
+        source_log="$PROJECT_ROOT/.lab/$vm/serial.log"
+        report_log="$RUN_DIR/$vm.serial.log"
+        if [[ -f "$source_log" ]]; then
+            cp -- "$source_log" "$report_log"
+            chmod 600 "$report_log"
+        fi
+    done
+}
+
 stop_lab_on_exit() {
     if ((QEMU_STARTED)) && [[ -f "$PROJECT_ROOT/.lab/.pyfog-lab-marker" ]]; then
         "$LAB_DRIVER" stop all || true
@@ -151,11 +163,13 @@ run_qemu() {
     if "$LAB_DRIVER" up >"$RUN_DIR/qemu.log" 2>&1; then
         "$LAB_DRIVER" status >>"$RUN_DIR/qemu.log" 2>&1
         if wait_for_guest_boot; then
+            archive_serial_logs
             for vm in source target; do
-                record "uefi-$vm" "PASS" "Linux arrancó por UEFI; ver qemu.log y serial.log"
+                record "uefi-$vm" "PASS" "Linux arrancó por UEFI; ver qemu.log y $vm.serial.log"
             done
             return 0
         fi
+        archive_serial_logs
         "$LAB_DRIVER" status >>"$RUN_DIR/qemu.log" 2>&1 || true
         for vm in source target; do
             if [[ -s "$PROJECT_ROOT/.lab/$vm/serial.log" ]]; then
@@ -166,6 +180,7 @@ run_qemu() {
         done
         return 1
     fi
+    archive_serial_logs
     record "uefi" "FAIL" "ver qemu.log"
     return 1
 }
