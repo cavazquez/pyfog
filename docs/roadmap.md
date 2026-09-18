@@ -81,6 +81,11 @@ trabajo están implementados.
 - [x] #46 Contrato E2E reproducible y runner de laboratorio QEMU/UEFI.
 - [x] #47 Entrega verificable v0.1.0.
 
+## Post-MVP · compatibilidad y fixtures
+
+- [x] #51 Contrato de capacidades de imagen v2, adaptación v1 y rechazo temprano.
+- [x] #74 Matriz declarativa y fixtures QCOW2 deterministas para perfiles soportados y negativos.
+
 ## Evidencia de validación
 
 - 34 pruebas dirigidas pasan, incluidas las de contrato E2E, release, restauración,
@@ -95,6 +100,8 @@ trabajo están implementados.
   contrato de 31 pruebas y arrancó `source` y `target` con Linux por UEFI; ambas
   salidas seriales llegaron a `cloud-init.target` y al prompt de login. El informe
   quedó en `.e2e/run.*` y las VMs se detuvieron limpiamente.
+- `make compatibility-check` genera ocho QCOW2 descartables y verifica su hash, tamaño,
+  capacidades y rechazo del agente sin usar discos físicos ni credenciales.
 
 ## Limitaciones conocidas de v0.1.0
 

@@ -1,6 +1,6 @@
 .PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate dev-up dev-migrate dev-admin dev-down dev-clean \
 	lan-migrate lan-admin lab-check agent-check pxe-check \
-	image-manifest-check release-check release-package e2e-plan e2e
+	image-manifest-check compatibility-check release-check release-package e2e-plan e2e
 
 setup:
 	uv sync --frozen
@@ -68,6 +68,9 @@ pxe-check:
 image-manifest-check:
 	python3 -m py_compile pyfog/image_manifest.py scripts/validate_image_manifest.py
 	uv run python -m scripts.validate_image_manifest --help >/dev/null
+
+compatibility-check:
+	uv run pytest -q tests/test_compatibility_fixtures.py
 
 release-check:
 	uv run python -m scripts.release_check

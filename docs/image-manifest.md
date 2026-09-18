@@ -59,6 +59,9 @@ El validador comprueba la capacidad, el rango GPT, las particiones no superpuest
 referencias, rutas, tamaños, sumas y capacidades. Los campos desconocidos, el JSON inválido, los
 artefactos ausentes o alterados y los perfiles incompatibles se rechazan.
 
+La matriz reproducible de perfiles y sus QCOW2 descartables está en
+[`docs/compatibility-fixtures.md`](compatibility-fixtures.md).
+
 ## Validar una imagen
 
 Con sólo el manifiesto:
