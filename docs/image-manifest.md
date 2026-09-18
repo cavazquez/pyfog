@@ -27,10 +27,12 @@ Una imagen v2 agrega `capabilities`:
 }
 ```
 
-La capacidad declarada debe coincidir con el firmware y los filesystems del layout. Los perfiles
-habilitados son UEFI sin Secure Boot con GPT/FAT32/ext4/swap, o BIOS sin Secure Boot con MBR/ext4
-(swap opcional), siempre con un disco, sin cifrado y con volúmenes por particiones. Secure Boot,
-LVM, RAID, LUKS, otros filesystems y varios discos se rechazan antes de iniciar una escritura.
+La capacidad declarada debe coincidir con el firmware y los filesystems del layout. El perfil base
+conserva UEFI sin Secure Boot con GPT/FAT32/ext4/swap, o BIOS sin Secure Boot con MBR/ext4 (swap
+opcional). La validación extendida v2 agrega XFS y Btrfs, varios discos con identidades estables,
+LVM lineal, RAID1 mdadm y LUKS2; estos perfiles se habilitan sólo cuando el agente anuncia sus
+herramientas y el preflight termina antes de modificar el destino. Secure Boot y combinaciones de
+LUKS2 con LVM/RAID siguen rechazados.
 
 El catálogo comprueba el manifiesto y las capacidades antes de mostrar una imagen como utilizable.
 La validación de creación de tareas vuelve a comprobarlas, y el agente las valida inmediatamente
@@ -41,15 +43,22 @@ produce un error explícito y no se publica ni se restaura.
 
 El manifiesto registra el UUID de imagen, fecha de creación, algoritmo `sha256`, equipo e informe
 de inventario de origen, sistema Ubuntu, arquitectura `x86_64`, firmware, herramienta Partclone,
-capacidades y un disco GPT o MBR. El disco conserva capacidad total, sector lógico, cantidad de
-sectores y, según el perfil, GUID/rango GPT o firma MBR. Cada partición registra número, rol, sector
-inicial, cantidad de sectores, filesystem, UUID, punto de montaje y artefacto; sólo GPT agrega GUID
-de partición:
+capacidades y uno o más discos GPT o MBR. El disco conserva capacidad total, sector lógico,
+cantidad de sectores y, según el perfil, GUID/rango GPT o firma MBR. Cada partición registra número,
+rol, sector inicial, cantidad de sectores, filesystem, UUID, punto de montaje y artefacto; sólo GPT
+agrega GUID de partición:
 
 * `esp`: FAT32, `/boot/efi`, con UUID FAT32 de ocho dígitos y `partclone.fat`;
 * `boot`: ext4, `/boot`, opcional, con `partclone.ext4`;
-* `root`: ext4, `/`, obligatorio, con `partclone.ext4`;
+* `root`: ext4, XFS o Btrfs, `/`, obligatorio, con la herramienta Partclone correspondiente;
 * `swap`: swap, sin punto de montaje ni artefacto de datos, opcional.
+
+LVM lineal agrega `volumes` con PV/VG/LV y captura el filesystem lógico; LUKS2 agrega sólo UUID,
+cipher y sector size, nunca una clave. RAID1 agrega `raid_arrays` con UUID mdadm, metadata, tamaño y
+el orden de `member_ids`; todos los miembros comparten el artefacto raíz verificado y la restauración
+lo escribe una sola vez sobre el array creado. La expansión sólo se permite para el layout por
+particiones con raíz ext4 y destino mayor. Btrfs conserva el subvolumen raíz y sus opciones de
+montaje declaradas.
 
 En el perfil BIOS/MBR el disco agrega `boot_sector`, un artefacto `boot-sector.bin` sin compresión
 de exactamente 446 bytes. La captura conserva el código del sector 0, valida la firma `55aa` y
@@ -60,8 +69,9 @@ UEFI nunca acepta ese artefacto, y un perfil BIOS nunca acepta ESP/GPT.
 
 Los artefactos sólo pueden ser archivos relativos POSIX dentro del directorio de la imagen. Cada
 uno registra tamaño, compresión (`none`, `gzip` o `zstd`) y SHA-256 hexadecimal en minúsculas.
-Todas las rutas se referencian exactamente una vez desde una partición de datos; swap queda
-explícita para conservar su UUID sin copiar sus bloques.
+Todas las rutas se referencian exactamente una vez desde una partición de datos, excepto el artefacto
+raíz compartido por los miembros de RAID1; swap queda explícita para conservar su UUID sin copiar
+sus bloques.
 
 El validador comprueba la capacidad, el rango GPT o el espacio seguro MBR, las particiones no
 superpuestas, las UUID, referencias, rutas, tamaños, sumas y capacidades. Los campos desconocidos,

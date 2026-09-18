@@ -15,7 +15,7 @@ from tests.test_image_manifest import valid_manifest
 CAPABILITIES = ["gpt", "partclone.ext4", "partclone.fat"]
 
 
-def enqueue_capture(admin, app, host_id, inventory):
+def enqueue_capture(admin, app, host_id, inventory, *, consistency="cold"):
     token = issue_token(admin, host_id)
     inventory = copy.deepcopy(inventory)
     inventory["disks"][0].update(
@@ -37,6 +37,7 @@ def enqueue_capture(admin, app, host_id, inventory):
             "image_description": "Imagen de prueba",
             "image_id": "",
             "confirm": "1",
+            "consistency": consistency,
             "idempotency_key": "capture-test-001",
         },
         follow_redirects=False,
@@ -274,6 +275,28 @@ def test_task_capabilities_and_expired_lease_require_intervention(admin, app, ho
         headers=headers,
     )
     assert heartbeat.status_code == 409
+
+
+def test_hot_capture_requires_the_agent_capability(admin, app, host_id, inventory):
+    task_id, _image_id, _report_id, host_token = enqueue_capture(
+        admin, app, host_id, inventory, consistency="hot"
+    )
+
+    with Session(app.state.engine) as db:
+        task = db.get(Task, task_id)
+        assert task is not None
+        assert task.disk_selector["consistency"] == "hot"
+
+    unsupported = claim(admin, host_id, host_token)
+    assert unsupported.status_code == 409
+
+    supported = claim(
+        admin,
+        host_id,
+        host_token,
+        capabilities=[*CAPABILITIES, "capture.hot"],
+    )
+    assert supported.status_code == 200, supported.text
 
 
 def test_revoking_host_credential_stops_new_claims_and_existing_transfers(

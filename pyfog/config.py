@@ -23,6 +23,16 @@ def environment_list(name: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def environment_int(name: str, *, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        raise ValueError(f"{name} debe ser un entero.") from None
+
+
 def session_secret() -> str:
     value = os.getenv("PYFOG_SECRET_KEY", "")
     secret_file = os.getenv("PYFOG_SECRET_KEY_FILE", "")
@@ -63,6 +73,10 @@ class Settings:
     task_lease_seconds: int = 90
     task_heartbeat_seconds: int = 20
     min_storage_free_bytes: int = 64 * 1024 * 1024
+    coordinator_id: str = field(default_factory=lambda: os.getenv("PYFOG_COORDINATOR_ID", ""))
+    coordinator_lease_seconds: int = field(
+        default_factory=lambda: environment_int("PYFOG_COORDINATOR_LEASE_SECONDS", default=15)
+    )
 
     def __post_init__(self) -> None:
         allowed_hosts = [host.strip() for host in self.allowed_hosts if host.strip()]
@@ -95,6 +109,8 @@ class Settings:
             raise ValueError("Los tiempos de tareas deben ser positivos.")
         if self.min_storage_free_bytes < 0:
             raise ValueError("min_storage_free_bytes no puede ser negativo.")
+        if self.coordinator_lease_seconds <= 0 or self.coordinator_lease_seconds > 300:
+            raise ValueError("coordinator_lease_seconds debe estar entre 1 y 300 segundos.")
         if not self.secret_key:
             # A restart invalidates development sessions; no shared default secret.
             object.__setattr__(self, "secret_key", secrets.token_urlsafe(48))

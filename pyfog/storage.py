@@ -12,9 +12,17 @@ from pathlib import Path, PurePosixPath
 
 from pyfog.image_manifest import (
     ImageManifest,
-    ensure_supported_image,
+    ensure_supported_extended_image,
     validate_relative_path,
     verify_image_artifacts,
+)
+from pyfog.transfer import (
+    TransferBlock,
+    TransferManifest,
+    missing_block_indices,
+    verified_block_indices,
+    verify_complete_transfer,
+    write_verified_block,
 )
 
 
@@ -180,6 +188,49 @@ class ArtifactStore:
             raise StorageError(f"No se pudo escribir el artefacto: {error}") from None
         return False
 
+    def verified_blocks(self, task_id: str, relative: str, manifest: TransferManifest) -> set[int]:
+        """Return verified block indexes already present in one task's staging area."""
+
+        path = self.artifact_path(task_id, relative)
+        return verified_block_indices(path, manifest)
+
+    def missing_blocks(self, task_id: str, relative: str, manifest: TransferManifest) -> list[int]:
+        """Return missing/corrupt indexes without trusting staging size alone."""
+
+        path = self.artifact_path(task_id, relative)
+        return missing_block_indices(path, manifest)
+
+    def write_block(
+        self,
+        task_id: str,
+        relative: str,
+        *,
+        manifest: TransferManifest,
+        block: TransferBlock,
+        payload: bytes,
+    ) -> bool:
+        """Persist one verified block and make retries idempotent."""
+
+        if len(payload) > self.max_chunk_bytes:
+            raise StorageError("El bloque supera el límite configurado.")
+        path = self.artifact_path(task_id, relative, create_parent=True)
+        try:
+            if path.exists() and path.stat().st_size > manifest.size_bytes:
+                raise StorageError("El staging supera el tamaño declarado del artefacto.")
+            self.check_capacity(len(payload))
+            return write_verified_block(path, manifest, block, payload)
+        except (OSError, ValueError) as error:
+            raise StorageError(str(error)) from None
+
+    def verify_transfer(self, task_id: str, relative: str, manifest: TransferManifest) -> None:
+        """Require all blocks to be verified before a manifest can publish."""
+
+        path = self.artifact_path(task_id, relative)
+        try:
+            verify_complete_transfer(path, manifest)
+        except (OSError, ValueError) as error:
+            raise StorageError(str(error)) from None
+
     def _write_manifest(self, directory: Path, manifest: ImageManifest) -> None:
         payload = (
             json.dumps(
@@ -217,7 +268,7 @@ class ArtifactStore:
         if not manifest.publishable:
             raise StorageError("El manifiesto no autoriza la publicación.")
         try:
-            ensure_supported_image(manifest)
+            ensure_supported_extended_image(manifest)
         except ValueError as error:
             raise StorageError(str(error)) from None
         total_size = sum(artifact.size_bytes for artifact in manifest.artifacts)

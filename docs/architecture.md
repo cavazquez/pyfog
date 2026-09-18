@@ -1,17 +1,17 @@
 # Arquitectura de PyFog
 
 Estado: registro, inventario, descubrimiento PXE aprobado, captura Linux verificada, restauración,
-clonación y operación de un único coordinador están implementados. La coordinación distribuida
-sigue fuera del MVP. El contrato que guía las próximas etapas está en la
-[ADR 0001: MVP Linux](adr/0001-mvp-linux.md).
+clonación, perfiles extendidos del manifiesto y coordinación activo/pasivo están implementados.
+Windows queda en inventario, macOS en evaluación y la distribución masiva conserva unicast como
+fallback. El contrato base del MVP está en la [ADR 0001: MVP Linux](adr/0001-mvp-linux.md).
 
 ## Primera entrega
 
 Se utiliza FastAPI, plantillas Jinja2 y CSS local. No se incorpora Django ni una aplicación frontend
 separada. La UI opera sin servicios externos ni CDNs. SQLAlchemy separa la persistencia de las rutas;
 Alembic aplica migraciones explícitas. SQLite permite comenzar con un solo proceso y sin instalar
-una base externa. La ADR fija PostgreSQL 17 como persistencia de tareas antes de habilitar el
-coordinador de imágenes.
+una base externa; el modo activo/pasivo requiere una base transaccional compartida y su migración
+ya está declarada. PostgreSQL sigue siendo la opción recomendada para dos coordinadores.
 
 ```mermaid
 flowchart LR
@@ -75,12 +75,12 @@ secuencia, duración, throughput y código de fallo; una lease vencida pasa a
 
 El agente en modo `imaging` vuelve a leer el inventario, identifica el disco por WWN, serie o ruta
 junto con capacidad y modelo, comprueba el perfil Ubuntu UEFI/GPT o BIOS/MBR y que ningún sistema de
-archivos o swap esté montado. Partclone lee ESP cuando el perfil es UEFI, o `/boot` y raíz ext4 en
-modo de solo lectura cuando es BIOS; en este último caso también conserva y valida el boot sector,
-incluido el espacio de embedding requerido por GRUB BIOS, y
-sube artefactos comprimidos por fragmentos con SHA-256. El servidor valida el manifiesto v1/v2,
-sus capacidades, las geometrías, las sumas y los archivos declarados antes de mover el staging a
-`published` en una operación atómica; sólo entonces cambia la imagen a `ready`.
+archivos o swap esté montado. Partclone lee ESP, `/boot` y raíz ext4/XFS/Btrfs; los perfiles LVM,
+RAID1 y LUKS2 preparan su stack sólo después de validar metadata y herramientas. La captura puede
+congelar filesystems admitidos con `fsfreeze`, y multidisco conserva la correspondencia por identidad
+estable. En BIOS también conserva y valida el boot sector, incluido el espacio de embedding de GRUB.
+Los artefactos se suben comprimidos por bloques con SHA-256 y el servidor valida manifiesto v1/v2,
+geometrías, sumas y referencias antes de publicar atómicamente.
 
 El agente que se empaqueta en [`agent/`](../agent/README.md) conserva inventario como modo
 predeterminado y agrega las herramientas de imagen sólo al construir `imaging`. El perfil iPXE de
@@ -89,7 +89,7 @@ con timeout y no toma control del DHCP. Por diseño, un perfil de captura necesi
 controlado para colocar el token del equipo en un archivo `tmpfs`; nunca se incluye en iPXE, DHCP o
 la línea de comandos. Restauración conserva la identidad del origen y clonación regenera la
 identidad Linux antes del primer arranque; ambas reutilizan el manifiesto y las mismas fronteras de
-seguridad. La distribución masiva queda analizada y acotada en el
-[ADR 0002](adr/0002-distribucion-masiva.md): el primer experimento usará torrent privado con
-`aria2c` y HTTP seed, sin cambiar HTTPS como plano de control ni introducir multicast propio en el
-MVP.
+seguridad. La distribución masiva queda acotada en el
+[ADR 0002](adr/0002-distribucion-masiva.md): `pyfog.transfer`, `pyfog.relay` y
+`pyfog.distribution` implementan contratos de bloques, caché, reanudación y reparación, pero no
+abren sockets ni cambian el fallback unicast sin benchmark y evidencia de red.

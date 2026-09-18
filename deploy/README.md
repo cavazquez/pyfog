@@ -2,8 +2,10 @@
 
 PyFog se distribuye como una imagen de aplicación construida desde `deploy/Dockerfile` y un
 Compose de SQLite. La imagen fija Python 3.12.13 y uv; Caddy está fijado en `2.11.4-alpine`.
-El proceso `web` contiene también el coordinador de leases del MVP: no hay un segundo escritor ni
-una base compartida entre contenedores.
+El perfil Compose contiene un coordinador integrado sobre SQLite y está pensado para una sola
+instancia. El modo activo/pasivo requiere desplegar dos instancias contra una base transaccional
+compartida y seguir el contrato de [coordinación HA](../docs/coordinator-ha.md); no se habilita
+agregando un segundo contenedor al Compose de desarrollo.
 
 ## Desarrollo
 

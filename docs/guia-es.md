@@ -1,10 +1,11 @@
 # Guía operativa de PyFog
 
-Esta guía cubre el MVP Linux de punta a punta. El alcance comprobado es Ubuntu x86_64, firmware
-UEFI/GPT o BIOS/MBR sin Secure Boot, un disco por tarea, raíz ext4, ESP FAT32 sólo para UEFI y
-swap opcional.
-El destino debe tener igual o mayor capacidad y sector lógico compatible. PyFog no promete
-compatibilidad de imágenes con FOG ni con otras distribuciones fuera de esa matriz.
+Esta guía cubre el flujo base Linux de punta a punta. El camino de referencia es Ubuntu x86_64,
+firmware UEFI/GPT o BIOS/MBR sin Secure Boot, raíz ext4, ESP FAT32 sólo para UEFI y swap opcional.
+La imagen v2 también tiene perfiles capability-gated para XFS/Btrfs, multidisco, expansión ext4,
+LVM lineal, RAID1, LUKS2 y captura en caliente; sus reglas están en
+[Manifiesto de imagen](image-manifest.md) y [Roadmap](roadmap.md). PyFog no promete compatibilidad
+de imágenes con FOG ni con otras distribuciones fuera de la matriz declarada.
 
 ## 1. Requisitos e instalación
 
@@ -85,10 +86,12 @@ no la conectividad de cada equipo.
 
 ## 4. Preparar y capturar una referencia
 
-La referencia UEFI debe ser Ubuntu x86_64 con GPT, ESP FAT32 y raíz ext4; la referencia BIOS debe
-usar MBR, raíz ext4 y espacio libre desde el sector 2048. En ambos casos no uses LVM ni LUKS. Instalá las
-aplicaciones, actualizaciones y configuración que quieras distribuir; dejá el direccionamiento en
-DHCP. Comprobá el layout con el laboratorio o con el recolector antes de capturar.
+La referencia base UEFI debe ser Ubuntu x86_64 con GPT, ESP FAT32 y raíz ext4; la referencia BIOS
+debe usar MBR, raíz ext4 y espacio libre desde el sector 2048. Para LVM, RAID1 o LUKS2 prepará el
+agente con las herramientas y el proveedor de claves requeridos; el preflight rechazará la tarea
+antes de escribir si falta una capacidad. Instalá las aplicaciones, actualizaciones y configuración
+que quieras distribuir; dejá el direccionamiento en DHCP. Comprobá el layout con el laboratorio o
+con el recolector antes de capturar.
 
 En la ficha de un equipo con inventario:
 
@@ -110,9 +113,10 @@ y un disco compatible del inventario actual. La pantalla muestra equipo, MAC, se
 fecha/origen de la imagen; marcá la confirmación de sobrescritura. El servidor vuelve a validar la
 imagen, permisos, inventario, disco e idempotencia.
 
-El agente descarga cada artefacto a staging efímero, verifica SHA-256, recrea GPT/ESP/ext4/swap,
-  comprueba UUIDs y arranque UEFI fallback o GRUB BIOS, y recién entonces informa éxito. La restauración no
-personaliza hostname, machine-id, claves SSH ni red: conserva la identidad del sistema de origen.
+El agente descarga cada artefacto a staging efímero, verifica SHA-256, recrea GPT/ESP/filesystems y
+stacks LVM/RAID1/LUKS2 cuando corresponda, comprueba UUIDs y arranque UEFI fallback o GRUB BIOS, y
+recién entonces informa éxito. La restauración no personaliza hostname, machine-id, claves SSH ni
+red: conserva la identidad del sistema de origen.
 
 ## 6. Clonar otro equipo
 

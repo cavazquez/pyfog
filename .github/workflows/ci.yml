@@ -42,6 +42,11 @@ jobs:
         run: make release-check
       - name: Tests
         run: uv run pytest -q
+      - name: Coverage
+        run: |
+          uv run pytest --cov=pyfog --cov=scripts --cov-report=term-missing --cov-report=xml
+          uv run coverage report --include='pyfog/*' --fail-under=70
+          uv run coverage report --include='scripts/*' --fail-under=40
       - name: Migration consistency
         env:
           PYFOG_DATABASE_URL: sqlite:////tmp/pyfog-ci.db
@@ -99,3 +104,30 @@ jobs:
         run: uv run pip-audit --local --strict --progress-spinner off
       - name: Tracked-source secrets
         run: git ls-files -z | xargs -0 uv run detect-secrets-hook --no-verify # pragma: allowlist secret
+
+  windows-inventory:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.11.21"
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Windows inventory fixtures
+        run: uv run pytest tests/test_platform_inventory.py tests/test_windows_agent.py -q
+      - name: PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD "agent/windows/pyfog-agent.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }

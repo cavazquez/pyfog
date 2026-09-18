@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from pyfog.coordinator import coordinator_status
 from pyfog.models import Task, TaskEvent, now
 from pyfog.storage import ArtifactStore
 from pyfog.tasking import (
@@ -94,6 +95,16 @@ def operational_snapshot(db: Session, store: ArtifactStore) -> dict[str, Any]:
     )
     storage = store.status()
     staging = store.staging_status(active_task_ids)
+    lease_status = coordinator_status(db)
+    if lease_status["term"]:
+        coordinator = {
+            "status": "available" if lease_status["status"] == "active" else "passive",
+            "mode": "active-passive",
+            "term": lease_status["term"],
+        }
+    else:
+        # Preserve the single-process MVP health contract until an HA lease is provisioned.
+        coordinator = {"status": "available", "mode": "integrated"}
     return {
         "database": "ok",
         "storage": {
@@ -103,8 +114,7 @@ def operational_snapshot(db: Session, store: ArtifactStore) -> dict[str, Any]:
             "published_images": storage["published_images"],
             "staging_images": storage["staging_images"],
         },
-        # Task claiming and leases are deliberately integrated into the web process in this MVP.
-        "coordinator": {"status": "available", "mode": "integrated"},
+        "coordinator": coordinator,
         "active_tasks": len(active_task_ids),
         "staging": {
             "active": staging["active"],

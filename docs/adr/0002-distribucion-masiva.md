@@ -35,12 +35,17 @@ componerse con software existente sin implementar BitTorrent desde cero.
 
 ## Decisión
 
-Elegimos un torrent privado por artefacto, `aria2c` como cliente del agente, tracker fijo dentro de
-la LAN y HTTP seed HTTPS como fallback. El coordinador autoriza la sesión por HTTPS y entrega un
-descriptor autenticado; no se habilitan DHT, NAT traversal ni peers fuera de la red administrada.
-Cada agente mantiene su propio estado de descarga, lease, bitmap y resultado. La caída de un peer no
-interrumpe a otros y una caída del seeder puede cubrirse con el HTTP seed o con peers que ya poseen
-piezas.
+La implementación se divide en un contrato de datos y una decisión de transporte. El coordinador
+autoriza la sesión por HTTPS y entrega un descriptor autenticado; `pyfog.transfer` exige bloques,
+offsets, hashes y staging verificado, mientras `pyfog.relay` y `pyfog.distribution` modelan caché,
+bitmap, NACK y reparación. No se habilitan DHT, NAT traversal, peers externos ni sockets multicast
+por configuración.
+
+El camino operativo sigue siendo unicast HTTPS hasta que el benchmark aporte evidencia suficiente.
+Si el laboratorio valida tracker privado, fallos aislados, reanudación y HTTP seed, la primera
+integración de transporte podrá usar torrent privado con `aria2c`; si valida IGMP snooping y una
+tasa de reparación aceptable, podrá activarse multicast. La decisión se toma con el informe y no
+por una bandera que saltee las pruebas de red.
 
 La primera versión de la integración deberá:
 

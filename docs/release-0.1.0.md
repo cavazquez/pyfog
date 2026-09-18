@@ -67,17 +67,23 @@ de Python/uv están fijadas; `docker compose ... config` debe pasar para desarro
 | Agente | `doctor`, build `imaging`, manifest y checksums | Verde en host Linux equipado |
 | PXE | `doctor`, build, verificación y retorno al disco local | Verde con iPXE revisado |
 | UEFI | Captura → restore, clone B y casos negativos | Informe de `make e2e` |
+| Perfiles extendidos | XFS/Btrfs, multidisco, expansión ext4, LVM, RAID1, LUKS2 y hot capture | Contratos del agente, fixtures y pruebas dirigidas; las herramientas se verifican antes de escribir |
+| Inventario multiplataforma | Fixture Windows + parser PowerShell; evaluación macOS | Job `windows-inventory`; macOS no promete imaging |
+| Coordinación | Lease, fencing y mutaciones fail-closed | Migración y pruebas de coordinador activo/pasivo |
+| Distribución | Bloques, relay, bitmap/NACK y benchmark | Unicast por defecto; multicast/P2P quedan opt-in hasta medir la red |
 | Web | Teclado, 360/768/1280 px, errores y progreso | Checklist de `docs/accessibility.md` |
 | Seguridad | `make audit`, revisión de secretos y procedencia | Verde sin credenciales reales |
 
 ## Alcance conocido
 
-La release sólo admite manifiestos v1/v2 que describan Ubuntu x86_64, UEFI sin Secure Boot, GPT, ESP FAT32, raíz ext4 y swap
-opcional, un disco por tarea y destino igual o mayor con sector lógico compatible. Usa un único
-coordinador y SQLite para la LAN del MVP, unicast y administrador local. No incluye Windows, macOS,
-BIOS/MBR, Secure Boot, LVM/RAID/cifrado, otros filesystems, varios discos, redimensionamiento,
-multicast, plugins, dominio ni coordinación distribuida. El formato de imágenes es propio y no
-promete compatibilidad con FOG o Clonezilla.
+La release admite manifiestos v1/v2 para Ubuntu x86_64 con UEFI/GPT o BIOS/MBR sin Secure Boot.
+Los perfiles v2 extendidos cubren XFS, Btrfs, varios discos, expansión ext4, LVM lineal, RAID1,
+LUKS2 con proveedor externo y captura en caliente; cada agente debe anunciar las herramientas que
+realmente tiene antes de reclamar la tarea. Windows queda en inventario y macOS en evaluación, sin
+imaging. SQLite y un coordinador integrado siguen siendo el camino LAN por defecto. El transporte
+de imágenes es propio y no promete compatibilidad con FOG o Clonezilla; relay, P2P y multicast
+disponen de contratos y simulación verificable, pero unicast HTTPS sigue siendo el fallback hasta
+contar con mediciones del laboratorio.
 
 La procedencia/licencia de dependencias y binarios está en [docs/provenance.md](provenance.md).
 Las limitaciones de recuperación de interrupciones y la rotación de secretos están en

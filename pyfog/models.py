@@ -300,3 +300,16 @@ class TaskEvent(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     message: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(default=now, index=True)
+
+
+class CoordinatorLeaseRecord(Base):
+    """Single-row lease and fencing state shared by active/passive coordinators."""
+
+    __tablename__ = "coordinator_leases"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    holder_id: Mapped[str] = mapped_column(String(128), default="")
+    term: Mapped[int] = mapped_column(BigInteger, default=0)
+    fencing_token: Mapped[int] = mapped_column(BigInteger, default=0)
+    lease_expires_at: Mapped[datetime | None]
+    updated_at: Mapped[datetime] = mapped_column(default=now)

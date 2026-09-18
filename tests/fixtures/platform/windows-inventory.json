@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "report_id": "7c8d3d35-ae9d-4f21-94ad-df03cc5c0a01",
+  "collected_at": "2026-01-15T12:00:00Z",
+  "hostname": "WIN-LAB-01",
+  "firmware": "uefi",
+  "os": {
+    "name": "Microsoft Windows 11 Pro",
+    "id": "windows",
+    "version": "10.0.26100"
+  },
+  "kernel": "10.0.26100",
+  "architecture": "x86_64",
+  "cpu": {
+    "model": "Synthetic Windows CPU",
+    "logical_cores": 4
+  },
+  "memory": {
+    "total_bytes": 8589934592
+  },
+  "system": {
+    "manufacturer": "PyFog Lab",
+    "model": "Synthetic VM",
+    "serial_number": "WIN-DEMO-001"
+  },
+  "disks": [
+    {
+      "name": "PhysicalDrive0",
+      "stable_id": "serial:WIN-DISK-001",
+      "size_bytes": 68719476736,
+      "model": "Synthetic Disk",
+      "serial_number": "WIN-DISK-001",
+      "wwn": "",
+      "transport": "virtio",
+      "logical_sector_bytes": 512,
+      "partition_table": "gpt",
+      "removable": false
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "Ethernet",
+      "mac_address": "52:54:00:12:34:56",
+      "state": "up"
+    }
+  ],
+  "warnings": []
+}

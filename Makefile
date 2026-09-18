@@ -44,6 +44,11 @@ typecheck:
 test:
 	uv run pytest
 
+test-coverage:
+	uv run pytest --cov=pyfog --cov=scripts --cov-report=term-missing --cov-report=xml
+	uv run coverage report --include='pyfog/*' --fail-under=70
+	uv run coverage report --include='scripts/*' --fail-under=40
+
 audit-dependencies:
 	uv run pip-audit --local --strict --progress-spinner off
 

@@ -56,6 +56,11 @@ class System(Schema):
 
 class Disk(Schema):
     name: str = Field(min_length=1, max_length=100, pattern=r"^[\w./:-]+$")
+    stable_id: str = Field(
+        default="",
+        max_length=256,
+        pattern=r"^(?:|wwn:[A-Za-z0-9._:-]+|serial:[A-Za-z0-9._:+-]+|path:/dev/[A-Za-z0-9._+-]+)$",
+    )
     size_bytes: PositiveInt
     model: ShortText = ""
     serial_number: ShortText = ""

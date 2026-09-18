@@ -6,17 +6,18 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pyfog.agent_credentials import AgentAuthorization, credential_is_usable
 from pyfog.audit import record_audit
+from pyfog.coordinator import CoordinatorError, FencingLease, acquire_lease, assert_fenced
 from pyfog.database import get_db
 from pyfog.health import operational_metrics, operational_snapshot
 from pyfog.image_manifest import (
-    ensure_supported_image,
+    ensure_supported_extended_image,
     parse_image_manifest,
     validate_relative_path,
 )
@@ -67,6 +68,28 @@ def bearer_token(request: Request) -> str:
 
 def iso_utc(value: datetime) -> str:
     return f"{value.isoformat()}Z"
+
+
+def coordinator_fence(request: Request, db: Session) -> FencingLease | None:
+    """Require the configured active coordinator before an API mutation."""
+
+    coordinator_id = str(getattr(request.app.state.settings, "coordinator_id", ""))
+    if not coordinator_id:
+        return None
+    try:
+        lease = acquire_lease(
+            db,
+            coordinator_id,
+            lease_seconds=request.app.state.settings.coordinator_lease_seconds,
+        )
+        if lease is None:
+            raise CoordinatorError("El coordinador activo no está disponible.")
+        assert_fenced(db, lease)
+        request.state.coordinator_lease = lease
+        return lease
+    except CoordinatorError as error:
+        db.rollback()
+        raise HTTPException(503, str(error)) from None
 
 
 def get_pairing(db: Session, pairing_id: UUID) -> PairingRequest:
@@ -180,6 +203,14 @@ def artifact_route_path(value: str) -> str:
 def task_payload(
     task: Task, attempt: TaskAttempt | None = None, token: str | None = None
 ) -> dict[str, Any]:
+    selector = task.disk_selector
+    primary_selector = selector
+    disk_selectors: list[dict[str, Any]] | None = None
+    if isinstance(selector, dict) and isinstance(selector.get("disks"), list):
+        disk_selectors = [item for item in selector["disks"] if isinstance(item, dict)]
+        if len(disk_selectors) != len(selector["disks"]):
+            raise HTTPException(500, "La tarea contiene selectores de disco inválidos.")
+        primary_selector = selector.get("primary") or disk_selectors[0]
     payload: dict[str, Any] = {
         "protocol_version": 1,
         "task_id": task.id,
@@ -189,7 +220,7 @@ def task_payload(
         "host_id": task.host_id,
         "image_id": task.image_id,
         "inventory_report_id": task.inventory_report_id,
-        "disk": task.disk_selector,
+        "disk": primary_selector,
         "bytes_processed": task.bytes_processed,
         "total_bytes": task.total_bytes,
         "message": task.message,
@@ -198,6 +229,8 @@ def task_payload(
         "created_at": iso_utc(task.created_at),
         "updated_at": iso_utc(task.updated_at),
     }
+    if disk_selectors is not None:
+        payload["disks"] = disk_selectors
     if attempt is not None:
         payload.update(
             {
@@ -270,6 +303,7 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
 
     authorization = authorize_host_agent(request, db, str(payload.host_id))
     host = authorization.host
+    coordinator_lease = coordinator_fence(request, db)
     try:
         claimed = claim_task(
             db,
@@ -280,6 +314,7 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
             agent_credential_id=(
                 authorization.credential.id if authorization.credential is not None else None
             ),
+            coordinator_lease=coordinator_lease,
         )
     except TaskError as error:
         raise HTTPException(409, str(error)) from None
@@ -335,11 +370,13 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
         if isinstance(system, dict):
             response["system"] = system
         response["target"] = {
-            "disk": task.disk_selector,
-            "hostname": task.disk_selector.get("clone_hostname", "")
+            "disk": response["disk"],
+            "hostname": response["disk"].get("clone_hostname", "")
             if task.operation == "clone"
             else "",
         }
+        if "disks" in response:
+            response["target"]["disks"] = response["disks"]
     return JSONResponse(response, status_code=200)
 
 
@@ -347,6 +384,7 @@ def claim_agent_task(payload: TaskClaimInput, request: Request, db: Db) -> JSONR
 def heartbeat_agent_task(
     task_id: UUID, payload: TaskHeartbeatInput, request: Request, db: Db
 ) -> JSONResponse:
+    coordinator_fence(request, db)
     task, attempt = task_attempt_for_token(request, db, task_id)
     try:
         touch_attempt(
@@ -371,6 +409,7 @@ def heartbeat_agent_task(
 def progress_agent_task(
     task_id: UUID, payload: TaskProgressInput, request: Request, db: Db
 ) -> JSONResponse:
+    coordinator_fence(request, db)
     task, attempt = task_attempt_for_token(request, db, task_id)
     try:
         accepted = record_progress(
@@ -399,9 +438,7 @@ def progress_agent_task(
 
 
 @router.get("/api/v1/tasks/{task_id}/artifacts/{artifact_path:path}")
-def download_task_artifact(
-    task_id: UUID, artifact_path: str, request: Request, db: Db
-) -> FileResponse:
+def download_task_artifact(task_id: UUID, artifact_path: str, request: Request, db: Db) -> Response:
     """Serve only a declared published artifact to the capability that owns the task."""
 
     task, _attempt = task_attempt_for_token(request, db, task_id)
@@ -418,15 +455,47 @@ def download_task_artifact(
         raise HTTPException(409, "La imagen no está publicada y verificada.")
     try:
         manifest = parse_image_manifest(image.manifest_json)
-        ensure_supported_image(manifest)
+        ensure_supported_extended_image(manifest)
     except ValueError as error:
         raise HTTPException(409, str(error)) from None
-    if safe_path not in {artifact.path for artifact in manifest.artifacts}:
+    artifact = next((item for item in manifest.artifacts if item.path == safe_path), None)
+    if artifact is None:
         raise HTTPException(404, "El artefacto no está declarado por la imagen.")
     try:
         path = request.app.state.artifact_store.published_artifact(image.id, safe_path)
     except StorageError as error:
         raise HTTPException(404, str(error)) from None
+    offset_text = request.query_params.get("offset")
+    length_text = request.query_params.get("length")
+    if offset_text is not None or length_text is not None:
+        try:
+            offset = int(offset_text or "")
+            length = int(length_text or "")
+        except ValueError:
+            raise HTTPException(422, "El rango del bloque no es válido.") from None
+        if (
+            offset < 0
+            or length <= 0
+            or length > request.app.state.settings.max_chunk_bytes
+            or offset + length > artifact.size_bytes
+        ):
+            raise HTTPException(416, "El rango del bloque está fuera del artefacto.")
+        try:
+            with path.open("rb") as source:
+                source.seek(offset)
+                payload = source.read(length)
+        except OSError as error:
+            raise HTTPException(404, f"No se pudo leer el bloque: {error}") from None
+        if len(payload) != length:
+            raise HTTPException(409, "El artefacto publicado está incompleto.")
+        return Response(
+            payload,
+            media_type="application/octet-stream",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Range": f"bytes {offset}-{offset + length - 1}/{artifact.size_bytes}",
+            },
+        )
     return FileResponse(path, media_type="application/octet-stream", filename=path.name)
 
 
@@ -441,6 +510,7 @@ async def upload_task_artifact(
     artifact_size: Annotated[str | None, Header(alias="X-PyFog-Artifact-Size")] = None,
     chunk_sha256: Annotated[str | None, Header(alias="X-PyFog-Chunk-SHA256")] = None,
 ) -> JSONResponse:
+    coordinator_fence(request, db)
     task, attempt = task_attempt_for_token(request, db, task_id)
     safe_path = artifact_route_path(artifact_path)
     index = integer_header(chunk_index, "X-PyFog-Chunk-Index")
@@ -532,6 +602,7 @@ def fail_agent_task(
 def finish_agent_task(
     task_id: UUID, payload: TaskResultInput, request: Request, db: Db
 ) -> JSONResponse:
+    coordinator_fence(request, db)
     task, attempt = task_attempt_for_token(request, db, task_id)
     if payload.cancelled or task.cancel_requested_at is not None:
         reason = payload.error or "El agente confirmó la cancelación cooperativa."
@@ -624,7 +695,7 @@ def finish_agent_task(
         )
     try:
         manifest = parse_image_manifest(payload.manifest)
-        ensure_supported_image(manifest)
+        ensure_supported_extended_image(manifest)
     except ValueError as error:
         fail_agent_task(db, task, attempt, str(error), payload.sequence)
         db.commit()
@@ -724,6 +795,7 @@ def receive_inventory(
     request: Request, host_id: UUID, inventory: Inventory, db: Db
 ) -> JSONResponse:
     host = authorize_host_agent(request, db, str(host_id)).host
+    coordinator_fence(request, db)
     try:
         report, created = ingest_inventory(db, host, inventory, "api")
     except HTTPException:
@@ -758,6 +830,7 @@ def receive_inventory(
 def create_pairing_request(payload: PairingRequestInput, request: Request, db: Db) -> JSONResponse:
     """Create a short-lived discovery request without granting host permissions."""
 
+    coordinator_fence(request, db)
     current = now()
     db.execute(
         update(PairingRequest)
@@ -850,6 +923,7 @@ def receive_pairing_inventory(
 ) -> JSONResponse:
     pairing = get_pairing(db, pairing_id)
     authorize_pairing(request, pairing)
+    coordinator_fence(request, db)
     current = now()
     if pairing.status == "pending" and pairing.expires_at <= current:
         pairing.status, pairing.challenge = "expired", None
