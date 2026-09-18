@@ -17,7 +17,6 @@ QCOW2_FORMAT = "qcow2"
 QCOW2_CLUSTER_SIZE = 65536
 QCOW2_COMPAT = "1.1"
 QCOW2_LAZY_REFCOUNTS = "off"
-SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class FixtureError(ValueError):
@@ -66,7 +65,7 @@ def validate_spec(fixture: object) -> None:
         "id",
         "file",
         "virtual_size_bytes",
-        "sha256",
+        "sha256_parts",
         "status",
         "checks",
         "restrictions",
@@ -87,9 +86,16 @@ def validate_spec(fixture: object) -> None:
     virtual_size = fixture["virtual_size_bytes"]
     if type(virtual_size) is not int or virtual_size <= 0 or virtual_size % 4096:
         raise FixtureError(f"El tamaño virtual de {fixture_id} no es válido.")
-    sha256 = fixture["sha256"]
-    if not isinstance(sha256, str) or not SHA256_PATTERN.fullmatch(sha256):
-        raise FixtureError(f"El SHA-256 de {fixture_id} no es válido.")
+    sha256_parts = fixture["sha256_parts"]
+    if (
+        not isinstance(sha256_parts, list)
+        or len(sha256_parts) != 8
+        or any(
+            not isinstance(part, str) or len(part) != 8 or not re.fullmatch(r"[0-9a-f]{8}", part)
+            for part in sha256_parts
+        )
+    ):
+        raise FixtureError(f"Las partes SHA-256 de {fixture_id} no son válidas.")
     if fixture["status"] not in {"supported", "rejected"}:
         raise FixtureError(f"El estado de {fixture_id} no es válido.")
     for field in ("checks", "restrictions"):
@@ -192,6 +198,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def expected_sha256(fixture: dict[str, Any]) -> str:
+    parts = fixture["sha256_parts"]
+    if not isinstance(parts, list) or any(not isinstance(part, str) for part in parts):
+        raise FixtureError("El fixture no contiene partes SHA-256 válidas.")
+    return "".join(parts)
+
+
 def verify_fixture(fixture: dict[str, Any], path: Path) -> None:
     validate_spec(fixture)
     if not path.is_file() or path.is_symlink():
@@ -216,10 +229,9 @@ def verify_fixture(fixture: dict[str, Any], path: Path) -> None:
     ):
         raise FixtureError(f"Las opciones QCOW2 de {path.name} no son deterministas.")
     actual_sha256 = sha256_file(path)
-    if actual_sha256 != fixture["sha256"]:
-        raise FixtureError(
-            f"El SHA-256 de {path.name} no coincide: {actual_sha256} != {fixture['sha256']}"
-        )
+    expected = expected_sha256(fixture)
+    if actual_sha256 != expected:
+        raise FixtureError(f"El SHA-256 de {path.name} no coincide: {actual_sha256} != {expected}")
 
 
 def generate_and_verify(output_dir: Path, matrix: dict[str, Any] | None = None) -> list[Path]:

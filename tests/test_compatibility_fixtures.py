@@ -1,4 +1,5 @@
 import copy
+import shutil
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,8 @@ def test_matrix_profiles_are_rejected_or_supported_before_restore_target(
 
 
 def test_qcow2_fixtures_are_reproducible_and_verified(tmp_path: Path) -> None:
+    if shutil.which("qemu-img") is None:
+        pytest.skip("qemu-img no está instalado; el job de fixtures instala qemu-utils")
     matrix = compatibility_fixtures.load_matrix()
     first = compatibility_fixtures.generate_and_verify(tmp_path / "first", matrix)
     second = compatibility_fixtures.generate_and_verify(tmp_path / "second", matrix)
