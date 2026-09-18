@@ -1,6 +1,6 @@
 .PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate dev-up dev-migrate dev-admin dev-down dev-clean \
 	lan-migrate lan-admin lab-check agent-check pxe-check \
-	image-manifest-check compatibility-check release-check release-package e2e-plan e2e
+	image-manifest-check compatibility-check secure-boot-policy-check release-check release-package e2e-plan e2e
 
 setup:
 	uv sync --frozen
@@ -71,6 +71,9 @@ image-manifest-check:
 
 compatibility-check:
 	uv run pytest -q tests/test_compatibility_fixtures.py
+
+secure-boot-policy-check:
+	uv run python -m scripts.secure_boot_policy
 
 release-check:
 	uv run python -m scripts.release_check

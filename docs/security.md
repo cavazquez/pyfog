@@ -24,6 +24,10 @@ valor determinista de prueba o un identificador generado que el escáner confund
 revisión que la introduce documenta la justificación en el pull request. No se permiten excepciones
 para material de producción.
 
+La cadena de confianza de Secure Boot y la custodia de sus claves están fijadas en la
+[ADR 0003](adr/0003-secure-boot-trust-chain.md). Las claves privadas de release permanecen fuera
+de Git, CI, argumentos, logs, imágenes y artefactos; sólo se publican certificados y fingerprints.
+
 ## Respuesta ante un hallazgo
 
 Si aparece una credencial real, se revoca o rota de inmediato fuera del repositorio. Después se

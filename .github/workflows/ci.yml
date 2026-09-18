@@ -36,6 +36,8 @@ jobs:
         run: make pxe-check
       - name: Image manifest checks
         run: make image-manifest-check
+      - name: Secure Boot policy checks
+        run: make secure-boot-policy-check
       - name: Release metadata
         run: make release-check
       - name: Tests

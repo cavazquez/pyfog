@@ -85,6 +85,7 @@ trabajo están implementados.
 
 - [x] #51 Contrato de capacidades de imagen v2, adaptación v1 y rechazo temprano.
 - [x] #74 Matriz declarativa y fixtures QCOW2 deterministas para perfiles soportados y negativos.
+- [x] #63 ADR de cadena de confianza, propietarios, rotación y negativos de Secure Boot.
 
 ## Evidencia de validación
 
