@@ -91,9 +91,10 @@ trabajo están implementados.
 - El paquete fuente reproducible se genera en `dist/release/` con `manifest.json` y
   `SHA256SUMS`, asociado al commit `c1eb3f8c58eb4f91080f91c7ed68173541438ac4`.
 - `lab/e2e.sh run` registra un informe y no inicia una prueba incompleta si faltan
-  dependencias del host. En este entorno la preflight quedó bloqueada por ausencia
-  de QEMU, OVMF, `cloud-localds` y `socat`; por eso la release documenta esta
-  limitación y no afirma una corrida física de dos VMs aquí.
+  dependencias del host. En un host Ubuntu 26.04 equipado, el 18/09/2026 pasó el
+  contrato de 31 pruebas y arrancó `source` y `target` con Linux por UEFI; ambas
+  salidas seriales llegaron a `cloud-init.target` y al prompt de login. El informe
+  quedó en `.e2e/run.*` y las VMs se detuvieron limpiamente.
 
 ## Limitaciones conocidas de v0.1.0
 

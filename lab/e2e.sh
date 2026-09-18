@@ -43,6 +43,8 @@ El contrato se ejecuta con tests/test_e2e_contract.py y las pruebas unitarias de
 El smoke UEFI se ejecuta con lab/pyfog-lab; los logs se guardan sin credenciales.
 
 Herramientas: uv, QEMU/qemu-img, OVMF, cloud-localds, gdisk/sgdisk, file, socat y curl.
+El smoke espera hasta 120 segundos por el prompt Linux en la salida serial; se puede ajustar con
+PYFOG_E2E_UEFI_TIMEOUT_SECONDS.
 EOF
 }
 
@@ -99,6 +101,44 @@ run_contract() {
     fi
 }
 
+guest_booted() {
+    local vm="$1"
+    grep -Fq "pyfog-$vm ttyS0" "$PROJECT_ROOT/.lab/$vm/serial.log"
+}
+
+wait_for_guest_boot() {
+    local timeout_seconds="${PYFOG_E2E_UEFI_TIMEOUT_SECONDS:-120}"
+    local elapsed=0
+    local source_ready=0
+    local target_ready=0
+
+    if ! [[ "$timeout_seconds" =~ ^[0-9]+$ ]] || ((timeout_seconds < 1)); then
+        die "PYFOG_E2E_UEFI_TIMEOUT_SECONDS debe ser un entero positivo."
+    fi
+
+    while ((elapsed < timeout_seconds)); do
+        if guest_booted source; then
+            source_ready=1
+        fi
+        if guest_booted target; then
+            target_ready=1
+        fi
+        if ((source_ready == 1 && target_ready == 1)); then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+reset_serial_logs() {
+    local vm
+    for vm in source target; do
+        : >"$PROJECT_ROOT/.lab/$vm/serial.log"
+    done
+}
+
 stop_lab_on_exit() {
     if ((QEMU_STARTED)) && [[ -f "$PROJECT_ROOT/.lab/.pyfog-lab-marker" ]]; then
         "$LAB_DRIVER" stop all || true
@@ -107,16 +147,24 @@ stop_lab_on_exit() {
 
 run_qemu() {
     QEMU_STARTED=1
+    reset_serial_logs
     if "$LAB_DRIVER" up >"$RUN_DIR/qemu.log" 2>&1; then
         "$LAB_DRIVER" status >>"$RUN_DIR/qemu.log" 2>&1
+        if wait_for_guest_boot; then
+            for vm in source target; do
+                record "uefi-$vm" "PASS" "Linux arrancó por UEFI; ver qemu.log y serial.log"
+            done
+            return 0
+        fi
+        "$LAB_DRIVER" status >>"$RUN_DIR/qemu.log" 2>&1 || true
         for vm in source target; do
-            [[ -s "$PROJECT_ROOT/.lab/$vm/serial.log" ]] || {
-                record "uefi-$vm" "FAIL" "serial.log vacío"
-                return 1
-            }
-            record "uefi-$vm" "PASS" "OVMF/QEMU activo; ver qemu.log y serial.log"
+            if [[ -s "$PROJECT_ROOT/.lab/$vm/serial.log" ]]; then
+                record "uefi-$vm" "FAIL" "salida serial sin prompt Linux antes del timeout"
+            else
+                record "uefi-$vm" "FAIL" "sin salida serial dentro del timeout"
+            fi
         done
-        return 0
+        return 1
     fi
     record "uefi" "FAIL" "ver qemu.log"
     return 1

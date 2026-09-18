@@ -96,6 +96,9 @@ logs de pytest y consolas en `.e2e/run.*`; no recibe tokens por argumentos ni lo
 archivos. Un fallo conserva los recursos para diagnóstico; después de revisar el informe usá
 `./lab/pyfog-lab destroy`.
 
+El smoke espera hasta 120 segundos por el prompt Linux de ambas VMs en la salida serial. Se puede ajustar para
+hosts lentos con `PYFOG_E2E_UEFI_TIMEOUT_SECONDS=240 ./lab/e2e.sh run`.
+
 La prueba de disco usa solamente los recursos marcados por el laboratorio. El runner no acepta ni
 monta una ruta de bloque del host y el perfil PXE no agrega DHCP. En un host sin QEMU/OVMF se puede
 usar `plan` para revisar la matriz, pero `run` debe ejecutarse en una VM Linux equipada antes de
