@@ -86,6 +86,7 @@ trabajo están implementados.
 - [x] #51 Contrato de capacidades de imagen v2, adaptación v1 y rechazo temprano.
 - [x] #74 Matriz declarativa y fixtures QCOW2 deterministas para perfiles soportados y negativos.
 - [x] #63 ADR de cadena de confianza, propietarios, rotación y negativos de Secure Boot.
+- [x] #64 Firma Authenticode reproducible, verificación de firmas y smoke OVMF Secure Boot.
 - [x] #66 Roles admin/operator/auditor, matriz deny-by-default, gestión web y auditoría de denegaciones.
 - [x] #67 Rotación con gracia, revocación inmediata, binding de tareas y recuperación offline de credenciales de agentes.
 - [x] #68 Métricas agregadas, eventos estructurados de tareas, correlación autenticada y health exporter sin secretos.
@@ -104,6 +105,9 @@ trabajo están implementados.
   contrato de 31 pruebas y arrancó `source` y `target` con Linux por UEFI; ambas
   salidas seriales llegaron a `cloud-init.target` y al prompt de login. El informe
   quedó en `.e2e/run.*` y las VMs se detuvieron limpiamente.
+- `./lab/e2e.sh run --secure-boot` pasó el contrato y arrancó `source` y `target` con
+  `OVMF_CODE_4M.secboot.fd` y `OVMF_VARS_4M.ms.fd`; el informe registró
+  `secure_boot=enabled` y `signature_status=verified-by-ovmf`.
 - `make compatibility-check` genera ocho QCOW2 descartables y verifica su hash, tamaño,
   capacidades y rechazo del agente sin usar discos físicos ni credenciales.
 - `uv run pytest tests/test_rbac.py` verifica la matriz de permisos, la migración de cuentas MVP,
@@ -116,7 +120,7 @@ trabajo están implementados.
 
 ## Limitaciones conocidas de v0.1.0
 
-Windows, macOS, BIOS/MBR, Secure Boot, LVM/RAID/cifrado, otros sistemas de archivos,
+Windows, macOS, BIOS/MBR, perfiles de imagen Secure Boot para cualquier distribución, LVM/RAID/cifrado, otros sistemas de archivos,
 reducción automática de disco, captura en caliente, varios discos por tarea,
 multicast, plugins y administración de software/dominio quedan fuera del MVP.
 También queda fuera la publicación automática de un tag o release externo.

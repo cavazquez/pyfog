@@ -12,6 +12,8 @@ LAB_ROOT="$PROJECT_ROOT/.lab"
 readonly LAB_ROOT
 MARKER_FILE="$LAB_ROOT/.pyfog-lab-marker"
 readonly MARKER_FILE
+FIRMWARE_MODE_FILE="$LAB_ROOT/firmware-mode"
+readonly FIRMWARE_MODE_FILE
 MARKER_VALUE="pyfog-lab-v1"
 readonly MARKER_VALUE
 MANIFEST_FILE="$SCRIPT_DIR/reference-image.env"
@@ -30,6 +32,7 @@ TARGET_IP="192.0.2.2"
 readonly TARGET_IP
 NETWORK_PORT="45170"
 readonly NETWORK_PORT
+SECURE_BOOT="${PYFOG_LAB_SECURE_BOOT:-0}"
 
 die() {
     printf 'Error: %s\n' "$*" >&2
@@ -42,7 +45,7 @@ info() {
 
 usage() {
     cat <<'EOF'
-Uso: ./lab/pyfog-lab COMANDO [VM]
+Uso: ./lab/pyfog-lab [--secure-boot] COMANDO [VM]
 
 Comandos:
   doctor                 Comprueba las herramientas del host.
@@ -55,9 +58,12 @@ Comandos:
   monitor source|target  Abre el monitor QMP de una VM.
   inspect source|target  Muestra MAC, IP, disco y metadatos QCOW2.
   validate-layout        Verifica GPT, ESP FAT32, raíz ext4 y ausencia de LVM/cifrado.
+  firmware-info          Muestra firmware OVMF, variables y estado Secure Boot.
   destroy                Detiene las VMs y borra únicamente recursos del laboratorio.
 
 Los recursos se crean siempre en .lab/ dentro de este repositorio.
+Secure Boot también puede activarse con PYFOG_LAB_SECURE_BOOT=1. La NVRAM usada es una copia
+descartable bajo .lab/; nunca se modifica la NVRAM del sistema.
 EOF
 }
 
@@ -109,6 +115,7 @@ initialize_lab() {
     fi
 
     verify_lab_marker
+    ensure_lab_firmware_mode
     mkdir -p "$LAB_ROOT/cache" "$LAB_ROOT/$SOURCE_NAME" "$LAB_ROOT/$TARGET_NAME"
     chmod 700 "$LAB_ROOT" "$LAB_ROOT/cache" "$LAB_ROOT/$SOURCE_NAME" "$LAB_ROOT/$TARGET_NAME"
 }
@@ -227,12 +234,51 @@ firmware_paths() {
     return 1
 }
 
+secure_firmware_paths() {
+    local code variables
+
+    for code in \
+        /usr/share/OVMF/OVMF_CODE_4M.secboot.fd \
+        /usr/share/OVMF/OVMF_CODE.secboot.fd \
+        /usr/share/edk2-ovmf/x64/OVMF_CODE_4M.secboot.fd \
+        /usr/share/edk2-ovmf/x64/OVMF_CODE.secboot.fd; do
+        variables="$(dirname "$code")/$(basename "$code" | sed -e 's/CODE/VARS/' -e 's/\.secboot\.fd/.ms.fd/')"
+        if [[ -r "$code" && -r "$variables" ]]; then
+            printf '%s\n%s\n' "$code" "$variables"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+active_firmware_paths() {
+    if ((SECURE_BOOT)); then
+        secure_firmware_paths
+    else
+        firmware_paths
+    fi
+}
+
 firmware_code() {
-    firmware_paths | sed -n '1p'
+    active_firmware_paths | sed -n '1p'
 }
 
 firmware_variables() {
-    firmware_paths | sed -n '2p'
+    active_firmware_paths | sed -n '2p'
+}
+
+firmware_info() {
+    local secure_state code variables
+    if ((SECURE_BOOT)); then
+        secure_state="enabled"
+    else
+        secure_state="disabled"
+    fi
+    code="$(active_firmware_paths | sed -n '1p')" || die "No se encontró firmware OVMF compatible."
+    variables="$(active_firmware_paths | sed -n '2p')" || die "No se encontró NVRAM OVMF compatible."
+    printf 'firmware=OVMF\nsecure_boot=%s\ncode=%s\nvariables=%s\n' \
+        "$secure_state" "$code" "$variables"
 }
 
 doctor() {
@@ -248,10 +294,22 @@ doctor() {
         fi
     done
 
-    if firmware_paths >/dev/null; then
-        printf 'OK       OVMF sin Secure Boot\n'
+    if active_firmware_paths >/dev/null; then
+        if ((SECURE_BOOT)); then
+            printf 'OK       OVMF con Secure Boot\n'
+            printf '         código:    %s\n' "$(firmware_code)"
+            printf '         variables: %s\n' "$(firmware_variables)"
+        else
+            printf 'OK       OVMF sin Secure Boot\n'
+            printf '         código:    %s\n' "$(firmware_code)"
+            printf '         variables: %s\n' "$(firmware_variables)"
+        fi
     else
-        printf 'FALTA    firmware OVMF sin Secure Boot\n' >&2
+        if ((SECURE_BOOT)); then
+            printf 'FALTA    firmware OVMF con Secure Boot\n' >&2
+        else
+            printf 'FALTA    firmware OVMF sin Secure Boot\n' >&2
+        fi
         missing=1
     fi
 
@@ -259,6 +317,31 @@ doctor() {
         printf '%s\n' \
             'En Ubuntu: sudo apt-get install qemu-system-x86 qemu-utils ovmf cloud-image-utils file gdisk socat' >&2
         return 1
+    fi
+}
+
+ensure_lab_firmware_mode() {
+    local expected actual foreign_entry
+    if ((SECURE_BOOT)); then
+        expected="secure-boot"
+    else
+        expected="uefi"
+    fi
+    if [[ -f "$FIRMWARE_MODE_FILE" ]]; then
+        actual="$(<"$FIRMWARE_MODE_FILE")"
+        [[ "$actual" == "$expected" ]] || die \
+            "El laboratorio fue creado con firmware '$actual'; destruí .lab y recrealo para '$expected'."
+    elif [[ "$expected" == "secure-boot" ]]; then
+        foreign_entry="$(find "$LAB_ROOT" -mindepth 1 -maxdepth 1 \
+            ! -name "$(basename "$MARKER_FILE")" -print -quit)"
+        if [[ -n "$foreign_entry" ]]; then
+            die "El laboratorio existente no tiene modo Secure Boot; destruí .lab y recrealo con --secure-boot."
+        fi
+        printf '%s\n' "$expected" >"$FIRMWARE_MODE_FILE"
+        chmod 600 "$FIRMWARE_MODE_FILE"
+    else
+        printf '%s\n' "$expected" >"$FIRMWARE_MODE_FILE"
+        chmod 600 "$FIRMWARE_MODE_FILE"
     fi
 }
 
@@ -509,8 +592,11 @@ create_lab() {
 
 start_vm() {
     local vm state disk seed variables serial serial_log monitor backend firmware
+    local machine
+    local -a secure_qemu_args=()
     vm="$1"
     verify_lab_marker
+    ensure_lab_firmware_mode
     ensure_host_tools
 
     disk="$(disk_path "$vm")"
@@ -539,6 +625,12 @@ start_vm() {
 
     : >"$serial_log"
 
+    machine="q35,accel=kvm:tcg"
+    if ((SECURE_BOOT)); then
+        machine="q35,smm=on,accel=kvm:tcg"
+        secure_qemu_args=(-global driver=cfi.pflash01,property=secure,value=on)
+    fi
+
     if [[ "$vm" == "$SOURCE_NAME" ]]; then
         backend="socket,id=labnet,listen=127.0.0.1:$NETWORK_PORT"
     else
@@ -551,7 +643,8 @@ start_vm() {
     info "Arrancando $vm con su disco descartable y red aislada."
     qemu-system-x86_64 \
         -name "pyfog-lab-$vm" \
-        -machine q35,accel=kvm:tcg \
+        -machine "$machine" \
+        "${secure_qemu_args[@]}" \
         -cpu max \
         -m 2048 \
         -smp 2 \
@@ -688,7 +781,7 @@ destroy_lab() {
     verify_lab_marker
     stop_all
 
-    for entry in cache "$SOURCE_NAME" "$TARGET_NAME" credentials.env .pyfog-lab-marker; do
+    for entry in cache "$SOURCE_NAME" "$TARGET_NAME" credentials.env firmware-mode .pyfog-lab-marker; do
         rm -rf -- "${LAB_ROOT:?}/$entry"
     done
 
@@ -699,6 +792,30 @@ destroy_lab() {
         info "Se conservaron entradas ajenas en $LAB_ROOT; no se eliminó el directorio."
     fi
 }
+
+while (( $# > 0 )); do
+    case "$1" in
+        --secure-boot)
+            SECURE_BOOT=1
+            shift
+            ;;
+        --no-secure-boot)
+            SECURE_BOOT=0
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+case "$SECURE_BOOT" in
+    0 | 1)
+        ;;
+    *)
+        die "PYFOG_LAB_SECURE_BOOT debe ser 0 o 1."
+        ;;
+esac
 
 if (( $# == 0 )); then
     usage
@@ -741,6 +858,10 @@ case "$command_name" in
     status)
         (($# == 0)) || die "status no recibe argumentos."
         show_status
+        ;;
+    firmware-info)
+        (($# == 0)) || die "firmware-info no recibe argumentos."
+        firmware_info
         ;;
     console)
         (($# == 1)) || die "Uso: ./lab/pyfog-lab console source|target"

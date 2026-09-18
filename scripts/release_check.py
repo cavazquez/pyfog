@@ -11,6 +11,12 @@ import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from scripts.secure_boot_artifacts import (
+    SECURE_MANIFEST_NAME,
+    SecureBootArtifactError,
+    verify_artifacts,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_PATTERN = re.compile(r'version="([^"]+)"')
 CHECKSUM_PATTERN = re.compile(r"^([0-9a-f]{64})  (.+)$")
@@ -64,6 +70,8 @@ def check_source(expected: str | None) -> str:
         "agent/build-agent",
         "pxe/build-pxe",
         "scripts/package_release.py",
+        "scripts/secure_boot_artifacts.py",
+        "docs/secure-boot.md",
     )
     missing = [path for path in required if not (ROOT / path).is_file()]
     if missing:
@@ -127,7 +135,48 @@ def check_agent(directory: Path, version: str) -> None:
             raise ReleaseCheckError(f"Falta {relative} en el bundle del agente.")
 
 
-def check_pxe(directory: Path, version: str) -> None:
+def check_secure_boot_manifest(directory: Path) -> None:
+    manifest_path = directory / SECURE_MANIFEST_NAME
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise ReleaseCheckError(f"Falta el manifiesto Secure Boot: {manifest_path}.")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ReleaseCheckError(
+            f"El manifiesto Secure Boot no es JSON válido: {manifest_path}."
+        ) from error
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != 1
+        or manifest.get("format") != "pyfog-secure-boot-artifacts"
+        or not isinstance(manifest.get("certificate_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", manifest["certificate_sha256"])
+    ):
+        raise ReleaseCheckError("El manifiesto Secure Boot es incompatible.")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise ReleaseCheckError("El manifiesto Secure Boot no declara artefactos.")
+    for item in artifacts:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise ReleaseCheckError("El manifiesto Secure Boot contiene una entrada inválida.")
+        relative = PurePosixPath(item["path"])
+        if (
+            relative.is_absolute()
+            or not str(relative).isascii()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+            or relative.suffix.lower() != ".efi"
+            or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256", "")))
+            or item.get("signature") != "embedded-pe-coff-authenticode"
+        ):
+            raise ReleaseCheckError("El manifiesto Secure Boot contiene una ruta o firma inválida.")
+        artifact = directory / relative
+        if artifact.is_symlink() or not artifact.is_file():
+            raise ReleaseCheckError(f"Falta el artefacto EFI firmado: {artifact}.")
+        if hashlib.sha256(artifact.read_bytes()).hexdigest() != item["sha256"]:
+            raise ReleaseCheckError(f"Checksum de firma inválido: {artifact}.")
+
+
+def check_pxe(directory: Path, version: str, secure_boot_cert: Path | None = None) -> None:
     manifest = verify_checksum_bundle(directory)
     if manifest.get("schema_version") != 1 or manifest.get("format") != "pyfog-pxe-profile":
         raise ReleaseCheckError("El bundle PXE tiene un formato incompatible.")
@@ -137,6 +186,18 @@ def check_pxe(directory: Path, version: str) -> None:
         "https://"
     ):
         raise ReleaseCheckError("El perfil PXE no tiene una URL HTTPS válida.")
+    secure_manifest = directory / SECURE_MANIFEST_NAME
+    if secure_manifest.exists():
+        check_secure_boot_manifest(directory)
+        if secure_boot_cert is not None:
+            try:
+                verify_artifacts(directory, secure_boot_cert)
+            except (OSError, SecureBootArtifactError) as error:
+                raise ReleaseCheckError(f"Firmas Secure Boot inválidas: {error}") from error
+    elif secure_boot_cert is not None:
+        raise ReleaseCheckError(
+            "Se indicó un certificado Secure Boot pero el bundle no está firmado."
+        )
 
 
 def main() -> int:
@@ -149,23 +210,37 @@ def main() -> int:
         action="store_true",
         help="Exigir y verificar los bundles del agente y PXE.",
     )
+    parser.add_argument(
+        "--require-secure-boot",
+        action="store_true",
+        help="Exigir el manifiesto y las firmas Secure Boot del bundle PXE.",
+    )
+    parser.add_argument(
+        "--secure-boot-cert",
+        type=Path,
+        help="Certificado público para verificar el bundle PXE firmado.",
+    )
     args = parser.parse_args()
     try:
         version = check_source(args.version)
         agent_exists = args.agent_dir.is_dir()
         pxe_exists = args.pxe_dir.is_dir()
-        if args.require_artifacts or agent_exists or pxe_exists:
+        if args.require_artifacts or args.require_secure_boot or agent_exists or pxe_exists:
             if not agent_exists or not pxe_exists:
                 raise ReleaseCheckError(
                     "Se deben proporcionar ambos bundles: --agent-dir y --pxe-dir."
                 )
             check_agent(args.agent_dir, version)
-            check_pxe(args.pxe_dir, version)
+            check_pxe(args.pxe_dir, version, args.secure_boot_cert)
+            if args.require_secure_boot and not (args.pxe_dir / SECURE_MANIFEST_NAME).is_file():
+                raise ReleaseCheckError("El bundle PXE no contiene firmas Secure Boot requeridas.")
+        elif args.secure_boot_cert is not None:
+            raise ReleaseCheckError("--secure-boot-cert requiere bundles de release.")
     except (OSError, ReleaseCheckError) as error:
         sys.stderr.write(f"release-check: error: {error}\n")
         return 1
     sys.stdout.write(f"Release {version}: metadatos y documentación válidos.\n")
-    if args.require_artifacts or agent_exists or pxe_exists:
+    if args.require_artifacts or args.require_secure_boot or agent_exists or pxe_exists:
         sys.stdout.write("Bundles agent/PXE: checksums y manifiestos válidos.\n")
     else:
         sys.stdout.write(

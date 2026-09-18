@@ -35,6 +35,22 @@ pxe/build-pxe build \
 pxe/build-pxe verify --output-dir dist/pxe
 ```
 
+Para una publicación que vaya a arrancar con Secure Boot, agregá el firmador externo. La privada
+no debe estar en el checkout ni en el directorio de salida:
+
+```bash
+pxe/build-pxe build \
+  --agent-dir dist/agent \
+  --base-url https://pyfog.example/boot \
+  --ipxe-efi /ruta/controlada/ipxe.efi \
+  --output-dir dist/pxe \
+  --secure-boot \
+  --signing-key /ruta/externa/release.key.pem \
+  --signing-cert /ruta/externa/release.cert.pem
+pxe/build-pxe verify --output-dir dist/pxe \
+  --secure-boot-cert /ruta/externa/release.cert.pem
+```
+
 Por defecto, el perfil deriva la URL de la API (`pyfog.server`) del origen de `--base-url`. Si la
 API está en otro origen HTTPS, indicá `--server-url https://pyfog-api.example`. El equipo arranca
 el agente con `pyfog.pair=1`: muestra un desafío en consola, aparece en **Descubiertos**, y sólo
@@ -46,6 +62,7 @@ La salida tiene esta forma:
 dist/pxe/
 ├── manifest.json       # hashes del perfil, iPXE, kernel e initramfs
 ├── SHA256SUMS
+├── secure-boot-manifest.json  # sólo en una publicación --secure-boot
 ├── tftp/
 │   ├── boot.ipxe
 │   └── ipxe.efi
@@ -59,6 +76,8 @@ dist/pxe/
 `http/` es la raíz del servidor HTTPS y `tftp/` la raíz TFTP. Sólo se copian los cuatro archivos
 publicables del agente; nunca se incluyen tokens, contraseñas, claves privadas ni el directorio de
 trabajo del builder.
+En modo Secure Boot se firman los EFI con Authenticode PE/COFF, se fija `SOURCE_DATE_EPOCH` y el
+manifiesto registra sólo el certificado público y los hashes.
 
 ## DHCP existente y TFTP
 

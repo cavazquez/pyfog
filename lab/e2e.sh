@@ -8,6 +8,8 @@ LAB_DRIVER="$SCRIPT_DIR/pyfog-lab"
 REPORT_ROOT="${PYFOG_E2E_REPORT_DIR:-$PROJECT_ROOT/.e2e}"
 RUN_DIR=""
 QEMU_STARTED=0
+SECURE_BOOT=0
+LAB_MODE_ARGS=()
 
 die() {
     printf 'e2e: error: %s\n' "$*" >&2
@@ -16,7 +18,7 @@ die() {
 
 usage() {
     cat <<'EOF'
-Uso: ./lab/e2e.sh COMANDO
+Uso: ./lab/e2e.sh COMANDO [--secure-boot]
 
 Comandos:
   plan    Imprime los escenarios y herramientas requeridas, sin modificar nada.
@@ -37,12 +39,14 @@ PyFog E2E reproducible
 3. target B: clone desde la misma imagen y comprueba hostname, machine-id, SSH y DHCP independientes.
 4. negativos: manifiesto/artefacto corrupto, disco menor, doble reserva, lease/cancelación,
    corte de red y reinicio del coordinador sin segundo escritor.
-5. UEFI: arranca source y target con OVMF sin Secure Boot sobre overlays QCOW2 descartables.
+5. UEFI: arranca source y target con OVMF sobre overlays QCOW2 descartables.
+   Por defecto es sin Secure Boot; agregá --secure-boot para usar OVMF secboot y NVRAM MS.
 
 El contrato se ejecuta con tests/test_e2e_contract.py y las pruebas unitarias de restauración/tareas.
 El smoke UEFI se ejecuta con lab/pyfog-lab; los logs se guardan sin credenciales.
 
 Herramientas: uv, QEMU/qemu-img, OVMF, cloud-localds, gdisk/sgdisk, file, socat y curl.
+El flujo Secure Boot también exige sbsigntool para firmar/verificar artefactos EFI.
 El smoke espera hasta 120 segundos por el prompt Linux en la salida serial; se puede ajustar con
 PYFOG_E2E_UEFI_TIMEOUT_SECONDS.
 EOF
@@ -77,9 +81,27 @@ prepare_report() {
         else
             printf 'unavailable\n'
         fi
+        printf 'firmware=OVMF\n'
+        if ((SECURE_BOOT)); then
+            printf 'secure_boot=enabled\n'
+            printf 'signature_status=pending\n'
+        else
+            printf 'secure_boot=disabled\n'
+            printf 'signature_status=not-evaluated\n'
+        fi
     } >"$RUN_DIR/metadata.env"
     printf 'status=running\n' >"$RUN_DIR/result.env"
     printf 'Informe: %s\n' "$RUN_DIR"
+}
+
+set_signature_status() {
+    local status="$1" temporary
+    temporary="$(mktemp "$RUN_DIR/.metadata.XXXXXX")"
+    awk -F= -v replacement="signature_status=$status" \
+        '$1 == "signature_status" { print replacement; found = 1; next } { print } END { if (!found) print replacement }' \
+        "$RUN_DIR/metadata.env" >"$temporary"
+    mv -- "$temporary" "$RUN_DIR/metadata.env"
+    chmod 600 "$RUN_DIR/metadata.env"
 }
 
 record() {
@@ -152,17 +174,29 @@ stop_lab_on_exit() {
 
 run_qemu() {
     QEMU_STARTED=1
-    if "$LAB_DRIVER" up >"$RUN_DIR/qemu.log" 2>&1; then
-        "$LAB_DRIVER" status >>"$RUN_DIR/qemu.log" 2>&1
+    if "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" up >"$RUN_DIR/qemu.log" 2>&1; then
+        "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" status >>"$RUN_DIR/qemu.log" 2>&1
         if wait_for_guest_boot; then
             archive_serial_logs
+            if ((SECURE_BOOT)); then
+                set_signature_status "verified-by-ovmf"
+            fi
             for vm in source target; do
-                record "uefi-$vm" "PASS" "Linux arrancó por UEFI; ver qemu.log y $vm.serial.log"
+                if ((SECURE_BOOT)); then
+                    record "uefi-$vm" "PASS" \
+                        "Linux arrancó con Secure Boot; ver qemu.log y $vm.serial.log"
+                else
+                    record "uefi-$vm" "PASS" \
+                        "Linux arrancó por UEFI; ver qemu.log y $vm.serial.log"
+                fi
             done
             return 0
         fi
         archive_serial_logs
-        "$LAB_DRIVER" status >>"$RUN_DIR/qemu.log" 2>&1 || true
+        "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" status >>"$RUN_DIR/qemu.log" 2>&1 || true
+        if ((SECURE_BOOT)); then
+            set_signature_status "rejected-or-not-booted"
+        fi
         for vm in source target; do
             if [[ -s "$PROJECT_ROOT/.lab/$vm/serial.log" ]]; then
                 record "uefi-$vm" "FAIL" "salida serial sin prompt Linux antes del timeout"
@@ -173,6 +207,9 @@ run_qemu() {
         return 1
     fi
     archive_serial_logs
+    if ((SECURE_BOOT)); then
+        set_signature_status "rejected-or-not-booted"
+    fi
     record "uefi" "FAIL" "ver qemu.log"
     return 1
 }
@@ -180,16 +217,28 @@ run_qemu() {
 run_all() {
     trap stop_lab_on_exit EXIT
     prepare_report
+    if ((SECURE_BOOT)); then
+        LAB_MODE_ARGS=(--secure-boot)
+    fi
     if ! command -v uv >/dev/null 2>&1; then
         record "preflight" "FAIL" "falta uv"
         return 1
     fi
-    if ! "$LAB_DRIVER" doctor >"$RUN_DIR/doctor.log" 2>&1; then
+    if ! "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" doctor >"$RUN_DIR/doctor.log" 2>&1; then
         record "preflight" "FAIL" "ver doctor.log"
         printf 'status=blocked\n' >"$RUN_DIR/result.env"
         return 1
     fi
-    record "preflight" "PASS" "herramientas QEMU/OVMF disponibles"
+    if ! "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" firmware-info >"$RUN_DIR/firmware.log" 2>&1; then
+        record "preflight" "FAIL" "ver firmware.log"
+        printf 'status=blocked\n' >"$RUN_DIR/result.env"
+        return 1
+    fi
+    if ((SECURE_BOOT)); then
+        record "preflight" "PASS" "herramientas QEMU/OVMF y firmware Secure Boot disponibles"
+    else
+        record "preflight" "PASS" "herramientas QEMU/OVMF disponibles"
+    fi
     if ! run_contract; then
         printf 'status=failed\n' >"$RUN_DIR/result.env"
         return 1
@@ -205,11 +254,19 @@ run_all() {
 command_name="${1:-}"
 case "$command_name" in
     plan)
-        (($# == 1)) || die "plan no recibe argumentos."
+        if [[ $# -eq 2 && ${2:-} == "--secure-boot" ]]; then
+            SECURE_BOOT=1
+        else
+            (($# == 1)) || die "plan sólo acepta --secure-boot como argumento opcional."
+        fi
         plan
         ;;
     run)
-        (($# == 1)) || die "run no recibe argumentos."
+        if [[ $# -eq 2 && ${2:-} == "--secure-boot" ]]; then
+            SECURE_BOOT=1
+        else
+            (($# == 1)) || die "run sólo acepta --secure-boot como argumento opcional."
+        fi
         run_all
         ;;
     help | --help | -h)

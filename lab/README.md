@@ -17,11 +17,18 @@ imagen de referencia. Nunca se pasa un dispositivo físico a QEMU.
 
 En Ubuntu:
 
-    sudo apt-get install qemu-system-x86 qemu-utils ovmf cloud-image-utils file gdisk socat
+    sudo apt-get install qemu-system-x86 qemu-utils ovmf cloud-image-utils file gdisk socat sbsigntool shim-signed
     ./lab/pyfog-lab doctor
 
-OVMF se usa sin Secure Boot. QEMU usa KVM si el host lo permite y emulación TCG en caso contrario;
-TCG es más lento, pero conserva el comportamiento aislado.
+Por defecto OVMF se usa sin Secure Boot. Para probar la cadena de confianza se seleccionan el
+firmware `OVMF_CODE_4M.secboot.fd` y la NVRAM pública de prueba `OVMF_VARS_4M.ms.fd`:
+
+    ./lab/pyfog-lab --secure-boot doctor
+    ./lab/pyfog-lab --secure-boot up
+
+QEMU usa KVM si el host lo permite y emulación TCG en caso contrario; TCG es más lento, pero
+conserva el comportamiento aislado. La NVRAM se copia por VM bajo `.lab/` y se descarta junto con
+los overlays; no se toca ninguna NVRAM real del host.
 
 ## Crear, arrancar e inspeccionar
 
@@ -107,6 +114,15 @@ afirmar una validación UEFI completa.
 
 La referencia y los overlays quedan fuera de Git mediante <code>.gitignore</code>.
 
+El smoke Secure Boot se ejecuta explícitamente con:
+
+    ./lab/e2e.sh plan --secure-boot
+    ./lab/e2e.sh run --secure-boot
+
+El informe incluye `firmware.log`, `secure_boot=enabled` y el estado de las firmas. Un arranque
+exitoso con la variante secboot se registra como `signature_status=verified-by-ovmf`; una falla
+queda como `rejected-or-not-booted` para facilitar el diagnóstico.
+
 ## Detener y limpiar
 
     ./lab/pyfog-lab stop all
@@ -114,6 +130,6 @@ La referencia y los overlays quedan fuera de Git mediante <code>.gitignore</code
 
 <code>destroy</code> primero verifica el marcador <code>.lab/.pyfog-lab-marker</code>, solo envía
 señales a procesos cuyo PID y línea de comandos identifican el QEMU de este laboratorio, y borra
-únicamente <code>cache</code>, <code>source</code>, <code>target</code>, la credencial efímera y el
-marcador bajo <code>.lab/</code>. Si encuentra una entrada desconocida en <code>.lab/</code>, la
+únicamente <code>cache</code>, <code>source</code>, <code>target</code>, la credencial efímera, el modo
+de firmware y el marcador bajo <code>.lab/</code>. Si encuentra una entrada desconocida en <code>.lab/</code>, la
 conserva y no elimina el directorio contenedor.

@@ -16,6 +16,10 @@ BASE_URL=""
 SERVER_URL=""
 IPXE_EFI=""
 PROFILE_ONLY=0
+SECURE_BOOT=0
+SIGNING_KEY=""
+SIGNING_CERT=""
+SECURE_BOOT_CERT=""
 TIMEOUT_MS=5000
 VERSION=""
 SOURCE_DATE_EPOCH_VALUE="${SOURCE_DATE_EPOCH:-1704067200}"
@@ -39,9 +43,15 @@ Opciones de build:
   --server-url URL      API HTTPS de PyFog; por defecto, el origen de --base-url
   --ipxe-efi PATH       Binario UEFI iPXE para la raíz TFTP
   --profile-only        Generar el script sin exigir --ipxe-efi
+  --secure-boot         Firmar los artefactos EFI con --signing-key/--signing-cert
+  --signing-key PATH    Clave privada externa del firmador (sólo con --secure-boot)
+  --signing-cert PATH   Certificado público del firmador (sólo con --secure-boot)
   --timeout-ms N        Timeout del menú; por defecto 5000, entre 1000 y 60000
   --version VERSION     Versión del agente; por defecto, la del manifiesto
   --source-date-epoch N Fecha fija de archivos, en segundos UTC
+
+Opciones de verify:
+  --secure-boot-cert PATH  Certificado público para validar firmas Authenticode
 EOF
 }
 
@@ -77,6 +87,25 @@ parse_options() {
                 PROFILE_ONLY=1
                 shift
                 ;;
+            --secure-boot)
+                SECURE_BOOT=1
+                shift
+                ;;
+            --signing-key)
+                (($# >= 2)) || error "--signing-key requiere un valor"
+                SIGNING_KEY=$2
+                shift 2
+                ;;
+            --signing-cert)
+                (($# >= 2)) || error "--signing-cert requiere un valor"
+                SIGNING_CERT=$2
+                shift 2
+                ;;
+            --secure-boot-cert)
+                (($# >= 2)) || error "--secure-boot-cert requiere un valor"
+                SECURE_BOOT_CERT=$2
+                shift 2
+                ;;
             --timeout-ms)
                 (($# >= 2)) || error "--timeout-ms requiere un valor"
                 TIMEOUT_MS=$2
@@ -105,6 +134,13 @@ parse_options() {
         || error "--timeout-ms debe ser un entero entre 1000 y 60000"
     [[ "$SOURCE_DATE_EPOCH_VALUE" =~ ^[0-9]+$ ]] \
         || error "--source-date-epoch debe ser un entero no negativo"
+    if [ "$SECURE_BOOT" -eq 1 ]; then
+        [ -n "$SIGNING_KEY" ] || error "--secure-boot requiere --signing-key"
+        [ -n "$SIGNING_CERT" ] || error "--secure-boot requiere --signing-cert"
+        [ "$PROFILE_ONLY" -eq 0 ] || error "--secure-boot requiere un binario --ipxe-efi"
+    elif [ -n "$SIGNING_KEY" ] || [ -n "$SIGNING_CERT" ]; then
+        error "--signing-key/--signing-cert sólo se usan junto con --secure-boot"
+    fi
 }
 
 doctor() {
@@ -115,6 +151,13 @@ doctor() {
         else
             printf 'FALTA    %s\n' "$command_name" >&2
             missing=1
+        fi
+    done
+    for command_name in sbsign sbverify; do
+        if command -v "$command_name" >/dev/null 2>&1; then
+            printf 'OK       %s (Secure Boot)\n' "$command_name"
+        else
+            printf 'AVISO    %s (necesario sólo con --secure-boot)\n' "$command_name"
         fi
     done
     [[ -x "$AGENT_BUILDER" ]] || {
@@ -267,6 +310,22 @@ if "__PYFOG_" in content:
     raise SystemExit("quedó un placeholder sin reemplazar en boot.ipxe")
 output_path.write_text(content, encoding="utf-8")
 PY
+    if [ "$SECURE_BOOT" -eq 1 ]; then
+        local signed_work
+        signed_work=$(mktemp -d "${TMPDIR:-/tmp}/pyfog-pxe-signed.XXXXXX")
+        python3 "$PROJECT_ROOT/scripts/secure_boot_artifacts.py" sign \
+            --input-dir "$work" \
+            --output-dir "$signed_work" \
+            --key "$SIGNING_KEY" \
+            --cert "$SIGNING_CERT" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH_VALUE" \
+            || error "no se pudo firmar la publicación EFI"
+        rm -rf -- "$work"
+        work="$signed_work"
+        source_dir="$work/http/agent"
+        http_dir="$work/http"
+        tftp_dir="$work/tftp"
+    fi
     manifest_path="$work/manifest.json"
     sums_path="$work/SHA256SUMS"
     python3 - "$manifest_path" "$http_dir" "$tftp_dir" "$BASE_URL" "$SERVER_URL" "$VERSION" "$TIMEOUT_MS" \
@@ -295,6 +354,15 @@ for root, prefix in ((http_dir, "http"), (tftp_dir, "tftp")):
                     "size": path.stat().st_size,
                 }
             )
+secure_manifest = manifest_path.parent / "secure-boot-manifest.json"
+if secure_manifest.is_file():
+    files.append(
+        {
+            "path": secure_manifest.name,
+            "sha256": digest(secure_manifest),
+            "size": secure_manifest.stat().st_size,
+        }
+    )
 metadata = {
     "schema_version": 1,
     "format": "pyfog-pxe-profile",
@@ -330,6 +398,10 @@ PY
     cp -a --no-preserve=ownership "$work/tftp/." "$OUTPUT_DIR/tftp/"
     install -m 0644 "$manifest_path" "$OUTPUT_DIR/manifest.json"
     install -m 0644 "$sums_path" "$OUTPUT_DIR/SHA256SUMS"
+    if [ -f "$work/secure-boot-manifest.json" ]; then
+        install -m 0644 "$work/secure-boot-manifest.json" "$OUTPUT_DIR/secure-boot-manifest.json"
+        touch -d "@$SOURCE_DATE_EPOCH_VALUE" "$OUTPUT_DIR/secure-boot-manifest.json"
+    fi
     touch -d "@$SOURCE_DATE_EPOCH_VALUE" "$OUTPUT_DIR/manifest.json" "$OUTPUT_DIR/SHA256SUMS"
     trap - EXIT
     rm -rf -- "$work"
@@ -358,6 +430,12 @@ for item in manifest.get("files", []):
 print("Manifiesto PXE y hashes válidos.")
 PY
     (cd "$directory" && sha256sum --check --strict SHA256SUMS)
+    if [ -f "$directory/secure-boot-manifest.json" ]; then
+        [ -n "$SECURE_BOOT_CERT" ] || error \
+            "el bundle incluye firmas Secure Boot; indique --secure-boot-cert para verificarlas"
+        python3 "$PROJECT_ROOT/scripts/secure_boot_artifacts.py" verify \
+            --input-dir "$directory" --cert "$SECURE_BOOT_CERT"
+    fi
 }
 
 command_name=${1:-}

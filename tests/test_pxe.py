@@ -121,6 +121,117 @@ def test_pxe_builder_publishes_a_verified_profile_without_ipxe_binary(tmp_path: 
     assert manifest["server_url"] == "https://pyfog.example"
 
 
+def test_pxe_builder_signs_and_verifies_secure_boot_profile(tmp_path: Path) -> None:
+    required = ("openssl", "sbsign", "sbverify")
+    fixture = Path("/usr/lib/shim/shimx64.efi.signed.latest")
+    if any(shutil.which(command) is None for command in required) or not fixture.is_file():
+        pytest.skip("faltan herramientas o fixture EFI para Secure Boot")
+
+    agent_dir = tmp_path / "agent"
+    output_dir = tmp_path / "pxe"
+    agent_dir.mkdir()
+    kernel = agent_dir / "vmlinuz"
+    initramfs = agent_dir / "initramfs.img"
+    kernel.write_bytes(b"kernel-fixture")
+    initramfs.write_bytes(b"initramfs-fixture")
+    manifest = {
+        "schema_version": 1,
+        "format": "pyfog-agent-initramfs",
+        "agent_version": "fixture",
+        "capabilities": ["inventory"],
+        "artifacts": {
+            "kernel": {
+                "file": "vmlinuz",
+                "sha256": hashlib.sha256(kernel.read_bytes()).hexdigest(),
+            },
+            "initramfs": {
+                "file": "initramfs.img",
+                "sha256": hashlib.sha256(initramfs.read_bytes()).hexdigest(),
+            },
+        },
+        "rootfs": {"files": []},
+    }
+    (agent_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (agent_dir / "SHA256SUMS").write_text(
+        "\n".join(
+            [
+                f"{hashlib.sha256(kernel.read_bytes()).hexdigest()}  vmlinuz",
+                f"{hashlib.sha256(initramfs.read_bytes()).hexdigest()}  initramfs.img",
+                f"{hashlib.sha256((agent_dir / 'manifest.json').read_bytes()).hexdigest()}  "
+                "manifest.json",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    key = tmp_path / "release.key.pem"
+    certificate = tmp_path / "release.cert.pem"
+    openssl = shutil.which("openssl")
+    assert openssl is not None
+    subprocess.run(  # noqa: S603 - openssl is resolved from PATH above and paths are pytest-owned.
+        [
+            openssl,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(key),
+            "-out",
+            str(certificate),
+            "-sha256",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=PyFog test release",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    key.chmod(0o600)
+    result = subprocess.run(  # noqa: S603 - fixed repository-local command and pytest-owned paths.
+        [
+            str(PXE / "build-pxe"),
+            "build",
+            "--agent-dir",
+            str(agent_dir),
+            "--output-dir",
+            str(output_dir),
+            "--base-url",
+            "https://pyfog.example/boot",
+            "--ipxe-efi",
+            str(fixture),
+            "--secure-boot",
+            "--signing-key",
+            str(key),
+            "--signing-cert",
+            str(certificate),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (output_dir / "secure-boot-manifest.json").is_file()
+    verify = subprocess.run(  # noqa: S603 - fixed repository-local command and pytest-owned paths.
+        [
+            str(PXE / "build-pxe"),
+            "verify",
+            "--output-dir",
+            str(output_dir),
+            "--secure-boot-cert",
+            str(certificate),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert verify.returncode == 0, verify.stderr
+
+
 @pytest.mark.parametrize(
     "unsafe",
     [

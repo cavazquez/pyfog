@@ -228,6 +228,9 @@ Las imágenes tendrán una matriz inicial acotada a Linux x86_64, UEFI sin Secur
 ESP FAT32 y swap opcional; un disco por tarea y destino de igual o mayor capacidad. El inventario
 actual puede describir hardware fuera de esa matriz. No se promete compatibilidad de formato con FOG.
 
+La publicación EFI post-MVP puede firmarse con `pxe/build-pxe --secure-boot` usando una clave
+externa al checkout; el laboratorio ofrece el smoke reproducible con `./lab/e2e.sh run --secure-boot`.
+
 ## Laboratorio y E2E UEFI
 
 El laboratorio reproducible [lab/README.md](lab/README.md) crea dos VMs QEMU/OVMF con discos

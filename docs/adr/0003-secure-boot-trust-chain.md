@@ -58,24 +58,27 @@ embebiendo una clave privada en la imagen.
 - Desarrollo usa claves efímeras generadas en un directorio temporal ignorado y fixtures públicos.
   Nunca se reutilizan para una flota ni se suben sus privadas.
 - CI verifica certificados y firmas públicas, ejecuta una firma inválida y una firma con una clave
-  no confiable, y conserva sólo diagnóstico sin claves. Un job de firma futuro recibirá una
-  identidad OIDC y firmará dentro del HSM; ningún secret se pasa como argumento de shell.
+  no confiable, y conserva sólo diagnóstico sin claves. El firmador de release recibe una ruta
+  externa a la privada; ningún material secreto se copia a la publicación ni se escribe en logs.
+  Un job de firma futuro podrá recibir una identidad OIDC y firmar dentro del HSM.
 - Release exige un manifiesto de procedencia, checksums, revisión de dos personas y firma de
-  `BOOTX64.EFI`, shim, GRUB y los demás EFI que se publiquen. El paquete no se marca compatible
-  con Secure Boot si falta una firma o una revocación vigente.
+  `BOOTX64.EFI`, shim, GRUB y los demás EFI que se publiquen. `pxe/build-pxe --secure-boot`
+  genera el manifiesto de firmas y el bundle falla cerrado si falta una firma o una revocación
+  vigente.
 - Logs, argumentos, DHCP, iPXE, manifiestos de imagen y artefactos de staging no contienen
   privadas, PINes, tokens del firmador ni material de recuperación. Los certificados públicos y
   fingerprints sí pueden registrarse.
 
 ## Verificación de esta ADR
 
-`scripts/secure_boot_policy.py` realiza una prueba criptográfica aislada con claves temporales:
-una firma válida verifica, una firma alterada falla y una firma válida verificada contra otra clave
-falla. Es una prueba de política, no un smoke de firmware ni una implementación Authenticode;
-ambos quedan explícitamente para #64.
+`scripts/secure_boot_policy.py` mantiene la prueba criptográfica aislada con claves temporales.
+`scripts/secure_boot_artifacts.py` agrega firma Authenticode reproducible de EFI, verificación del
+manifiesto, alteración, artefacto sin firma y clave no confiable. `lab/e2e.sh run --secure-boot`
+comprueba el arranque de source y target con OVMF secboot y NVRAM de prueba.
 
 ## Consecuencias
 
-Secure Boot no se habilita por esta ADR sola. El MVP continúa rechazando `secure_boot: true`; #64
-debe implementar el firmador, el paquete EFI, OVMF con db/dbx controlados y el informe E2E antes de
-cambiar esa política.
+Secure Boot no se habilita automáticamente para cualquier imagen capturada: la compatibilidad de
+imágenes sigue requiriendo una política explícita de distribución, SBAT, db y dbx. El camino de
+publicación EFI, el smoke OVMF y el informe E2E quedan implementados por #64 sin convertir a PyFog
+en custodio de las claves del operador.
