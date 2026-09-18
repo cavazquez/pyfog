@@ -1,4 +1,4 @@
-"""Versioned image manifest and artifact validation for the Linux MVP."""
+"""Versioned image manifest, capabilities, and artifact validation."""
 
 import hashlib
 import json
@@ -13,7 +13,9 @@ from pydantic import Field, field_validator, model_validator
 from pyfog.schemas import OperatingSystem, Schema
 
 IMAGE_FORMAT = "pyfog-disk-image"
-IMAGE_FORMAT_VERSION = 1
+LEGACY_IMAGE_FORMAT_VERSION = 1
+IMAGE_FORMAT_VERSION = 2
+SUPPORTED_IMAGE_FORMAT_VERSIONS = (LEGACY_IMAGE_FORMAT_VERSION, IMAGE_FORMAT_VERSION)
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ARTIFACT_BYTES = 2**63 - 1
 
@@ -22,6 +24,9 @@ SectorSize = Literal[512, 4096]
 Sha256 = Annotated[str, Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$", strict=True)]
 FilesystemUuid = Annotated[
     str, Field(min_length=4, max_length=64, pattern=r"^[0-9A-Fa-f-]+$", strict=True)
+]
+CapabilityName = Annotated[
+    str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._+-]+$", strict=True)
 ]
 
 
@@ -71,8 +76,26 @@ class ImageSource(Schema):
 
 
 class ImageFirmware(Schema):
-    type: Literal["uefi"]
-    secure_boot: Literal[False]
+    type: CapabilityName
+    secure_boot: bool = Field(strict=True)
+
+
+class ImageCapabilities(Schema):
+    """Explicit compatibility claims made by a v2 image."""
+
+    firmware: ImageFirmware
+    partition_table: CapabilityName
+    disks: Annotated[int, Field(ge=1, le=128, strict=True)]
+    filesystems: list[CapabilityName] = Field(min_length=1, max_length=16)
+    encryption: CapabilityName
+    volumes: CapabilityName
+
+    @field_validator("filesystems")
+    @classmethod
+    def unique_filesystems(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("Las capacidades no pueden repetir sistemas de archivos.")
+        return sorted(value)
 
 
 class ImageTool(Schema):
@@ -168,7 +191,7 @@ class ImageDisk(Schema):
 
 class ImageManifest(Schema):
     format: Literal["pyfog-disk-image"]
-    format_version: Literal[1]
+    format_version: Literal[1, 2]
     image_id: UUID
     created_at: datetime
     checksum_algorithm: Literal["sha256"]
@@ -179,13 +202,14 @@ class ImageManifest(Schema):
     disk: ImageDisk
     tool: ImageTool
     artifacts: list[ImageArtifact] = Field(min_length=2, max_length=4)
+    capabilities: ImageCapabilities | None = None
     publishable: bool = Field(default=False, strict=True)
 
     @field_validator("format_version", mode="before")
     @classmethod
     def version_is_integer(cls, value: object) -> object:
-        if type(value) is not int or value != IMAGE_FORMAT_VERSION:
-            raise ValueError("format_version debe ser el entero 1.")
+        if type(value) is not int or value not in SUPPORTED_IMAGE_FORMAT_VERSIONS:
+            raise ValueError("format_version debe ser el entero 1 o 2.")
         return value
 
     @field_validator("created_at")
@@ -224,6 +248,81 @@ class ImageManifest(Schema):
             raise ValueError("El manifiesto v1 sólo admite una imagen Ubuntu Linux.")
         return self
 
+    @model_validator(mode="after")
+    def validate_capability_declaration(self) -> "ImageManifest":
+        if self.format_version == LEGACY_IMAGE_FORMAT_VERSION:
+            if self.capabilities is not None:
+                raise ValueError("El manifiesto v1 no puede declarar capacidades v2.")
+            if self.firmware.type != "uefi" or self.firmware.secure_boot is not False:
+                raise ValueError("El manifiesto v1 sólo admite firmware UEFI sin Secure Boot.")
+            return self
+        if self.capabilities is None:
+            raise ValueError("El manifiesto v2 debe declarar capacidades explícitas.")
+        if self.capabilities.firmware != self.firmware:
+            raise ValueError("Las capacidades de firmware no coinciden con el campo firmware.")
+        return self
+
+
+def capabilities_from_legacy(manifest: ImageManifest) -> ImageCapabilities:
+    """Derive the explicit v2 profile represented by a legacy v1 manifest."""
+
+    filesystems: list[str] = sorted(
+        {partition.filesystem for partition in manifest.disk.partitions}
+    )
+    return ImageCapabilities(
+        firmware=manifest.firmware,
+        partition_table="gpt",
+        disks=1,
+        filesystems=filesystems,
+        encryption="none",
+        volumes="partitions",
+    )
+
+
+def manifest_capabilities(manifest: ImageManifest) -> ImageCapabilities:
+    """Return explicit capabilities, adapting a v1 manifest without mutating it."""
+
+    return manifest.capabilities or capabilities_from_legacy(manifest)
+
+
+def image_compatibility_errors(manifest: ImageManifest) -> list[str]:
+    """List reasons why an image cannot be used by the current MVP implementation."""
+
+    capabilities = manifest_capabilities(manifest)
+    errors: list[str] = []
+    if capabilities.firmware.type != "uefi":
+        errors.append("requiere firmware UEFI")
+    if capabilities.firmware.secure_boot is not False:
+        errors.append("Secure Boot todavía no está soportado")
+    if capabilities.partition_table != "gpt":
+        errors.append("requiere tabla de particiones GPT")
+    if capabilities.disks != 1:
+        errors.append("requiere exactamente un disco")
+    actual_filesystems = {partition.filesystem for partition in manifest.disk.partitions}
+    declared_filesystems = set(capabilities.filesystems)
+    unsupported_filesystems = declared_filesystems - {"fat32", "ext4", "swap"}
+    if unsupported_filesystems:
+        errors.append(
+            "contiene sistemas de archivos no soportados: "
+            + ", ".join(sorted(unsupported_filesystems))
+        )
+    if actual_filesystems != declared_filesystems:
+        errors.append("los sistemas de archivos declarados no coinciden con el layout")
+    if capabilities.encryption != "none":
+        errors.append("el cifrado declarado todavía no está soportado")
+    if capabilities.volumes != "partitions":
+        errors.append("la gestión de volúmenes declarada todavía no está soportada")
+    return errors
+
+
+def ensure_supported_image(manifest: ImageManifest) -> ImageManifest:
+    """Reject a validly-shaped but unsupported image before deployment or publication."""
+
+    errors = image_compatibility_errors(manifest)
+    if errors:
+        raise ValueError("La imagen no es compatible con el perfil actual: " + "; ".join(errors))
+    return manifest
+
 
 def parse_image_manifest(value: bytes | str | dict[str, object]) -> ImageManifest:
     """Parse and validate a manifest from JSON bytes, text, or an already decoded object."""
@@ -245,6 +344,18 @@ def parse_image_manifest(value: bytes | str | dict[str, object]) -> ImageManifes
         return ImageManifest.model_validate(decoded)
     except ValueError as error:
         raise ValueError(f"Manifiesto inválido: {error}") from None
+
+
+def upgrade_manifest(value: bytes | str | dict[str, object]) -> ImageManifest:
+    """Adapt a v1 manifest to the explicit v2 representation without changing its image data."""
+
+    manifest = parse_image_manifest(value)
+    if manifest.format_version == IMAGE_FORMAT_VERSION:
+        return manifest
+    payload = manifest.model_dump(mode="json", exclude_none=True)
+    payload["format_version"] = IMAGE_FORMAT_VERSION
+    payload["capabilities"] = capabilities_from_legacy(manifest).model_dump(mode="json")
+    return ImageManifest.model_validate(payload)
 
 
 def load_image_manifest(path: Path) -> ImageManifest:
@@ -289,6 +400,7 @@ def verify_image_artifacts(manifest: ImageManifest, root: Path) -> None:
 
 def validate_image_manifest(path: Path, artifacts_dir: Path | None = None) -> ImageManifest:
     manifest = load_image_manifest(path)
+    ensure_supported_image(manifest)
     if artifacts_dir is not None:
         verify_image_artifacts(manifest, artifacts_dir)
     return manifest

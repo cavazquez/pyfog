@@ -8,7 +8,10 @@ import pytest
 
 from pyfog.image_manifest import (
     ImageManifest,
+    ensure_supported_image,
+    image_compatibility_errors,
     parse_image_manifest,
+    upgrade_manifest,
     validate_image_manifest,
     verify_image_artifacts,
 )
@@ -84,6 +87,20 @@ def valid_manifest() -> dict[str, object]:
     }
 
 
+def valid_manifest_v2() -> dict[str, object]:
+    payload = valid_manifest()
+    payload["format_version"] = 2
+    payload["capabilities"] = {
+        "firmware": {"type": "uefi", "secure_boot": False},
+        "partition_table": "gpt",
+        "disks": 1,
+        "filesystems": ["fat32", "ext4"],
+        "encryption": "none",
+        "volumes": "partitions",
+    }
+    return payload
+
+
 def test_valid_manifest_preserves_boot_layout_and_artifact_metadata():
     manifest = ImageManifest.model_validate(valid_manifest())
     assert manifest.disk.logical_sector_bytes == 512
@@ -104,12 +121,44 @@ def test_manifest_rejects_unsafe_artifact_paths(path):
         ImageManifest.model_validate(payload)
 
 
-@pytest.mark.parametrize("version", [2, "1", True])
+@pytest.mark.parametrize("version", [3, "1", True])
 def test_manifest_rejects_unknown_format_versions(version):
     payload = valid_manifest()
     payload["format_version"] = version
     with pytest.raises(ValueError, match="format_version"):
         ImageManifest.model_validate(payload)
+
+
+def test_v2_declares_capabilities_and_v1_has_a_lossless_adapter():
+    manifest = ImageManifest.model_validate(valid_manifest_v2())
+    assert manifest.capabilities is not None
+    assert manifest.capabilities.partition_table == "gpt"
+    ensure_supported_image(manifest)
+
+    upgraded = upgrade_manifest(valid_manifest())
+    assert upgraded.format_version == 2
+    assert upgraded.capabilities is not None
+    assert upgraded.capabilities.model_dump(mode="json") == manifest.capabilities.model_dump(
+        mode="json"
+    )
+
+
+def test_v2_requires_capabilities_and_catalog_rejects_unsupported_profile():
+    missing = valid_manifest()
+    missing["format_version"] = 2
+    with pytest.raises(ValueError, match="capacidades explícitas"):
+        ImageManifest.model_validate(missing)
+
+    unsupported = valid_manifest_v2()
+    unsupported["capabilities"] = {
+        **unsupported["capabilities"],  # type: ignore[index]
+        "encryption": "luks2",
+    }
+    manifest = ImageManifest.model_validate(unsupported)
+    errors = image_compatibility_errors(manifest)
+    assert any("cifrado" in error for error in errors)
+    with pytest.raises(ValueError, match="cifrado"):
+        ensure_supported_image(manifest)
 
 
 def test_manifest_rejects_geometry_and_overlapping_partitions():

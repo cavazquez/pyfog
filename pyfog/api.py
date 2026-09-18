@@ -14,7 +14,11 @@ from sqlalchemy.orm import Session
 from pyfog.audit import record_audit
 from pyfog.database import get_db
 from pyfog.health import operational_snapshot
-from pyfog.image_manifest import parse_image_manifest, validate_relative_path
+from pyfog.image_manifest import (
+    ensure_supported_image,
+    parse_image_manifest,
+    validate_relative_path,
+)
 from pyfog.models import (
     Host,
     Image,
@@ -372,6 +376,7 @@ def download_task_artifact(
         raise HTTPException(409, "La imagen no está publicada y verificada.")
     try:
         manifest = parse_image_manifest(image.manifest_json)
+        ensure_supported_image(manifest)
     except ValueError as error:
         raise HTTPException(409, str(error)) from None
     if safe_path not in {artifact.path for artifact in manifest.artifacts}:
@@ -570,6 +575,7 @@ def finish_agent_task(
         )
     try:
         manifest = parse_image_manifest(payload.manifest)
+        ensure_supported_image(manifest)
     except ValueError as error:
         fail_agent_task(db, task, attempt, str(error), payload.sequence)
         db.commit()
@@ -616,7 +622,7 @@ def finish_agent_task(
         return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
     image.status = "ready"
     image.manifest_image_id = str(manifest.image_id)
-    image.manifest_json = manifest.model_dump(mode="json")
+    image.manifest_json = manifest.model_dump(mode="json", exclude_none=True)
     image.manifest_sha256 = digest(
         json.dumps(image.manifest_json, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )

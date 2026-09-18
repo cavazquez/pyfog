@@ -3,8 +3,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pyfog.image_catalog import image_is_selectable
+from pyfog.image_manifest import ImageManifest
 from pyfog.models import Image, now
+from pyfog.web import deployment_validation
 from tests.conftest import csrf
+from tests.test_image_manifest import valid_manifest_v2
 
 
 def test_image_catalog_starts_empty_and_creates_a_stable_draft(admin, app):
@@ -113,10 +116,11 @@ def test_image_list_filters_status_and_paginates(admin, app, host_id):
 
 
 def test_ready_selection_requires_manifest_and_integrity():
+    manifest = valid_manifest_v2()
     ready = Image(
         name="Lista",
         status="ready",
-        manifest_json={"format": "pyfog-disk-image"},
+        manifest_json=manifest,
         integrity_verified_at=now(),
     )
     assert ready.integrity_verified_at is not None
@@ -128,8 +132,36 @@ def test_ready_selection_requires_manifest_and_integrity():
     ready.manifest_json = None
     assert not image_is_selectable(ready)
     ready.status = "draft"
-    ready.manifest_json = {"format": "pyfog-disk-image"}
+    ready.manifest_json = manifest
     assert not image_is_selectable(ready)
+
+
+def test_catalog_and_deployment_reject_unsupported_capabilities():
+    manifest_value = valid_manifest_v2()
+    manifest_value["capabilities"] = {
+        **manifest_value["capabilities"],  # type: ignore[index]
+        "encryption": "luks2",
+    }
+    manifest = ImageManifest.model_validate(manifest_value)
+    image = Image(
+        id=str(manifest.image_id),
+        name="Cifrada no soportada",
+        status="ready",
+        source_host_id=str(manifest.source.host_id),
+        manifest_json=manifest_value,
+        integrity_verified_at=now(),
+    )
+    assert not image_is_selectable(image)
+
+    errors = deployment_validation(
+        image,
+        manifest,
+        type("HostStub", (), {"id": str(manifest.source.host_id)})(),
+        {"size_bytes": manifest.disk.size_bytes, "logical_sector_bytes": 512, "removable": False},
+        operation="restore",
+    )
+    assert "image_id" in errors
+    assert "cifrado" in errors["image_id"]
 
 
 def test_image_status_and_size_constraints_are_enforced(app):

@@ -275,10 +275,74 @@ def manifest_uuid(value: Any, label: str) -> str:
         raise ValueError(f"{label} no es un UUID válido.") from None
 
 
-def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[str, Any]:
-    """Validate the complete safety-critical v1 manifest inside the initramfs."""
+def validate_manifest_capabilities(manifest: dict[str, Any]) -> None:
+    """Validate the explicit v2 profile before any target block is written."""
 
-    if manifest.get("format") != "pyfog-disk-image" or manifest.get("format_version") != 1:
+    version = manifest.get("format_version")
+    firmware = manifest.get("firmware")
+    if not isinstance(firmware, dict):
+        raise ValueError("El manifiesto no contiene firmware válido.")
+    capabilities: dict[str, Any]
+    if version == 1:
+        if "capabilities" in manifest and manifest["capabilities"] is not None:
+            raise ValueError("El manifiesto v1 no puede declarar capacidades v2.")
+        capabilities = {
+            "firmware": firmware,
+            "partition_table": "gpt",
+            "disks": 1,
+            "filesystems": sorted(
+                {str(partition.get("filesystem")) for partition in manifest["disk"]["partitions"]}
+            ),
+            "encryption": "none",
+            "volumes": "partitions",
+        }
+    elif version == 2:
+        raw_capabilities = manifest.get("capabilities")
+        if not isinstance(raw_capabilities, dict):
+            raise ValueError("El manifiesto v2 debe declarar capacidades explícitas.")
+        capabilities = raw_capabilities
+        capability_firmware = capabilities.get("firmware")
+        if capability_firmware != firmware:
+            raise ValueError("Las capacidades de firmware no coinciden con el campo firmware.")
+    else:
+        raise ValueError("El manifiesto de restauración no es compatible con el agente.")
+
+    if capabilities.get("partition_table") != "gpt":
+        raise ValueError("La tabla de particiones declarada no es compatible con el agente.")
+    if type(capabilities.get("disks")) is not int or capabilities["disks"] != 1:
+        raise ValueError("La imagen requiere exactamente un disco.")
+    filesystems = capabilities.get("filesystems")
+    if (
+        not isinstance(filesystems, list)
+        or not filesystems
+        or any(not isinstance(filesystem, str) for filesystem in filesystems)
+        or len(set(filesystems)) != len(filesystems)
+    ):
+        raise ValueError("La lista de sistemas de archivos declarada no es válida.")
+    unsupported = set(filesystems) - {"fat32", "ext4", "swap"}
+    if unsupported:
+        raise ValueError(
+            "La imagen contiene sistemas de archivos no soportados: "
+            + ", ".join(sorted(unsupported))
+        )
+    actual = {str(partition.get("filesystem")) for partition in manifest["disk"]["partitions"]}
+    if set(filesystems) != actual:
+        raise ValueError("Los sistemas de archivos declarados no coinciden con el layout.")
+    if capabilities.get("encryption") != "none":
+        raise ValueError("El cifrado declarado todavía no está soportado por el agente.")
+    if capabilities.get("volumes") != "partitions":
+        raise ValueError("La gestión de volúmenes declarada todavía no está soportada.")
+
+
+def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[str, Any]:
+    """Validate the complete safety-critical v1/v2 manifest inside the initramfs."""
+
+    format_version = manifest.get("format_version")
+    if (
+        manifest.get("format") != "pyfog-disk-image"
+        or type(format_version) is not int
+        or format_version not in {1, 2}
+    ):
         raise ValueError("El manifiesto de restauración no es compatible con el agente.")
     if manifest.get("checksum_algorithm") != "sha256" or manifest.get("publishable") is not True:
         raise ValueError("El manifiesto no autoriza una restauración verificable.")
@@ -308,7 +372,7 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
         raise ValueError("La imagen requiere firmware UEFI sin Secure Boot.")
     system = manifest.get("system")
     if not isinstance(system, dict) or str(system.get("id", "")).lower() != "ubuntu":
-        raise ValueError("El agente sólo puede restaurar imágenes Ubuntu v1.")
+        raise ValueError("El agente sólo puede restaurar imágenes Ubuntu compatibles.")
     tool = manifest.get("tool")
     if not isinstance(tool, dict) or tool.get("name") != "partclone":
         raise ValueError("El manifiesto no identifica Partclone.")
@@ -431,6 +495,7 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
         raise ValueError("El GPT no tiene una combinación de roles válida.")
     if referenced != artifact_paths or set(artifact_metadata) != artifact_paths:
         raise ValueError("El manifiesto no tiene referencias de artefactos consistentes.")
+    validate_manifest_capabilities(manifest)
     return manifest
 
 
@@ -1483,7 +1548,7 @@ def capture_task(
         system = claim.get("system")
         manifest = {
             "format": "pyfog-disk-image",
-            "format_version": 1,
+            "format_version": 2,
             "image_id": claim["image_id"],
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "checksum_algorithm": "sha256",
@@ -1491,6 +1556,14 @@ def capture_task(
             "system": system,
             "architecture": "x86_64",
             "firmware": {"type": "uefi", "secure_boot": False},
+            "capabilities": {
+                "firmware": {"type": "uefi", "secure_boot": False},
+                "partition_table": "gpt",
+                "disks": 1,
+                "filesystems": sorted({part["filesystem"] for part in partition_payload}),
+                "encryption": "none",
+                "volumes": "partitions",
+            },
             "disk": {
                 **{key: geometry[key] for key in geometry if key != "partitions"},
                 "partitions": partition_payload,

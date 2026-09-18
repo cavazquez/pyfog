@@ -10,7 +10,12 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from pyfog.image_manifest import ImageManifest, validate_relative_path, verify_image_artifacts
+from pyfog.image_manifest import (
+    ImageManifest,
+    ensure_supported_image,
+    validate_relative_path,
+    verify_image_artifacts,
+)
 
 
 class StorageError(ValueError):
@@ -178,7 +183,7 @@ class ArtifactStore:
     def _write_manifest(self, directory: Path, manifest: ImageManifest) -> None:
         payload = (
             json.dumps(
-                manifest.model_dump(mode="json"),
+                manifest.model_dump(mode="json", exclude_none=True),
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -211,6 +216,10 @@ class ArtifactStore:
             raise StorageError("El manifiesto pertenece a otra imagen.")
         if not manifest.publishable:
             raise StorageError("El manifiesto no autoriza la publicación.")
+        try:
+            ensure_supported_image(manifest)
+        except ValueError as error:
+            raise StorageError(str(error)) from None
         total_size = sum(artifact.size_bytes for artifact in manifest.artifacts)
         if total_size > self.max_image_bytes:
             raise StorageError("Los artefactos superan el límite de tamaño de imagen.")

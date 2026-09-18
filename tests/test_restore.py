@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from scripts import run_image_task as task_agent
-from tests.test_image_manifest import valid_manifest
+from tests.test_image_manifest import valid_manifest, valid_manifest_v2
 
 
 def restore_manifest() -> dict[str, object]:
@@ -57,6 +57,27 @@ def test_agent_restore_manifest_rechecks_geometry_and_references() -> None:
     unpublishable["publishable"] = False
     with pytest.raises(ValueError, match="autoriza"):
         task_agent.validate_restore_manifest(unpublishable, image_id)
+
+
+def test_agent_restore_accepts_v2_and_rejects_unsupported_capabilities() -> None:
+    manifest = valid_manifest_v2()
+    image_id = str(manifest["image_id"])
+    assert task_agent.validate_restore_manifest(manifest, image_id) is manifest
+
+    unsupported = copy.deepcopy(manifest)
+    unsupported["capabilities"]["volumes"] = "lvm"  # type: ignore[index]
+    with pytest.raises(ValueError, match="volúmenes"):
+        task_agent.validate_restore_manifest(unsupported, image_id)
+
+    missing = copy.deepcopy(manifest)
+    del missing["capabilities"]
+    with pytest.raises(ValueError, match="capacidades explícitas"):
+        task_agent.validate_restore_manifest(missing, image_id)
+
+    boolean_version = copy.deepcopy(manifest)
+    boolean_version["format_version"] = True
+    with pytest.raises(ValueError, match="compatible con el agente"):
+        task_agent.validate_restore_manifest(boolean_version, image_id)
 
 
 def test_agent_restore_target_accepts_larger_disk_but_rejects_changed_or_busy_target(

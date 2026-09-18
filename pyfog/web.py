@@ -19,7 +19,11 @@ from pyfog.content import NAVIGATION, SHELL_COPY
 from pyfog.database import get_db
 from pyfog.health import operational_snapshot
 from pyfog.image_catalog import IMAGE_STATUSES, image_is_selectable
-from pyfog.image_manifest import ImageManifest, parse_image_manifest
+from pyfog.image_manifest import (
+    ImageManifest,
+    image_compatibility_errors,
+    parse_image_manifest,
+)
 from pyfog.models import (
     AuditEvent,
     Host,
@@ -245,6 +249,8 @@ def selectable_manifest(request: Request, image: Image) -> ImageManifest | None:
         manifest = parse_image_manifest(image.manifest_json)
         if str(manifest.image_id) != image.id:
             return None
+        if image_compatibility_errors(manifest):
+            return None
         directory = request.app.state.artifact_store.published_directory(image.id)
         if not directory.is_dir() or directory.is_symlink():
             return None
@@ -275,6 +281,11 @@ def deployment_validation(
         errors["image_id"] = "La imagen publicada no coincide con su manifiesto."
     if image.source_host_id and image.source_host_id != source_host_id:
         errors["image_id"] = "La imagen publicada no coincide con su equipo de origen."
+    compatibility_errors = image_compatibility_errors(manifest)
+    if compatibility_errors:
+        errors["image_id"] = "La imagen no es compatible con el perfil actual: " + "; ".join(
+            compatibility_errors
+        )
     if operation == "restore" and source_host_id != host.id:
         errors["image_id"] = "La restauración sólo puede volver al equipo de origen."
     if operation == "clone" and source_host_id == host.id:

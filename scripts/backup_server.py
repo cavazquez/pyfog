@@ -230,7 +230,7 @@ def verify_file_records(backup: Path, manifest: dict[str, Any]) -> None:
 
 def canonical_manifest_hash(manifest: ImageManifest) -> str:
     payload = json.dumps(
-        manifest.model_dump(mode="json"),
+        manifest.model_dump(mode="json", exclude_none=True),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),

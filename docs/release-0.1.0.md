@@ -72,7 +72,7 @@ de Python/uv están fijadas; `docker compose ... config` debe pasar para desarro
 
 ## Alcance conocido
 
-La release sólo admite Ubuntu x86_64, UEFI sin Secure Boot, GPT, ESP FAT32, raíz ext4 y swap
+La release sólo admite manifiestos v1/v2 que describan Ubuntu x86_64, UEFI sin Secure Boot, GPT, ESP FAT32, raíz ext4 y swap
 opcional, un disco por tarea y destino igual o mayor con sector lógico compatible. Usa un único
 coordinador y SQLite para la LAN del MVP, unicast y administrador local. No incluye Windows, macOS,
 BIOS/MBR, Secure Boot, LVM/RAID/cifrado, otros filesystems, varios discos, redimensionamiento,
