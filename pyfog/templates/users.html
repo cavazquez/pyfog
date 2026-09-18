@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Usuarios{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">CONTROL DE ACCESO</p><h1>Usuarios y roles</h1><p>Asigná el mínimo permiso necesario para cada administrador de PyFog.</p></div><span class="count-badge">{{ users|length }} usuarios</span></div>
+<section class="panel"><div class="panel-heading"><div><h2>Acceso administrativo</h2><p>Los cambios se registran en la auditoría y no modifican contraseñas.</p></div></div>
+<div class="table-wrap"><table><caption class="sr-only">Usuarios y roles administrativos</caption><thead><tr><th>Usuario</th><th>Rol actual</th><th>Nuevo rol</th><th>Acción</th></tr></thead><tbody>
+{% for account in users %}<tr><td><strong>{{ account.username }}</strong>{% if account.id == user.id %}<small>Sesión actual</small>{% endif %}</td><td>{{ role_labels.get(account.role, 'Rol desconocido') }}</td><td><form method="post" action="/users/{{ account.id }}/role" class="actions"><input type="hidden" name="csrf" value="{{ csrf }}"><label class="sr-only" for="role-{{ account.id }}">Nuevo rol para {{ account.username }}</label><select id="role-{{ account.id }}" name="role">{% for role in roles %}<option value="{{ role }}"{% if account.role == role %} selected{% endif %}>{{ role_labels[role] }}</option>{% endfor %}</select><button class="button secondary" type="submit" data-loading-text="Guardando…">Guardar</button></form></td></tr>{% endfor %}
+</tbody></table></div></section>
+<aside class="guide-card"><span class="guide-number">RBAC</span><h2>Acceso explícito.</h2><p>Administrador gestiona usuarios y todas las operaciones. Operador ejecuta inventario e imágenes. Auditor consulta información y trazabilidad sin mutar estado.</p><hr><p class="muted">El servidor conserva siempre al menos un administrador.</p></aside>
+{% endblock %}

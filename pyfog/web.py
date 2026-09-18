@@ -37,8 +37,16 @@ from pyfog.models import (
     User,
     now,
 )
+from pyfog.rbac import ROLE_LABELS, ROLES, has_permission, is_role
 from pyfog.schemas import CloneInput, HostInput, ImageInput, Inventory
-from pyfog.security import authenticate, csrf_token, digest, require_user, verify_csrf
+from pyfog.security import (
+    authenticate,
+    csrf_token,
+    digest,
+    require_permission,
+    require_user,
+    verify_csrf,
+)
 from pyfog.services import ingest_inventory
 from pyfog.storage import StorageError
 from pyfog.tasking import (
@@ -112,16 +120,22 @@ def take_flash(request: Request) -> Flash | None:
 
 
 def render(request: Request, template: str, *, status: int = 200, **context: Any) -> Response:
+    user = context.get("user")
     section = context.pop("section", current_section(request.url.path))
+    navigation = tuple(
+        item for item in NAVIGATION if user is not None and has_permission(user, item.permission)
+    )
     return templates.TemplateResponse(
         request=request,
         name=template,
         context={
             "csrf": csrf_token(request),
             "flash": take_flash(request),
-            "navigation": NAVIGATION,
+            "navigation": navigation,
             "shell": SHELL_COPY,
             "section": section,
+            "can": lambda permission: has_permission(user, permission),
+            "role_labels": ROLE_LABELS,
             **context,
         },
         status_code=status,
@@ -361,7 +375,7 @@ def home() -> Response:
 
 @router.get("/status", response_class=HTMLResponse)
 def status_page(request: Request, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(request, db, "status.read")
     snapshot: dict[str, Any] | None
     try:
         snapshot = operational_snapshot(db, request.app.state.artifact_store)
@@ -384,7 +398,7 @@ def audit_list(
     db: Db,
     page: Annotated[int, Query(ge=1, le=100000)] = 1,
 ) -> Response:
-    user = require_user(request, db)
+    user = require_permission(request, db, "audit.read")
     query = select(AuditEvent)
     matching = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     pages = max(1, (matching + 49) // 50)
@@ -423,6 +437,67 @@ def audit_list(
     )
 
 
+@router.get("/users", response_class=HTMLResponse)
+def user_list(request: Request, db: Db) -> Response:
+    user = require_permission(request, db, "users.manage")
+    users = db.scalars(select(User).order_by(User.username.asc())).all()
+    return render(
+        request,
+        "users.html",
+        user=user,
+        users=users,
+        roles=ROLES,
+        role_labels=ROLE_LABELS,
+        section="users",
+    )
+
+
+@router.post("/users/{user_id}/role")
+async def user_role_update(request: Request, user_id: int, db: Db) -> Response:
+    user = require_permission(
+        request, db, "users.manage", resource_type="user", resource_id=str(user_id)
+    )
+    form = await request.form()
+    verify_csrf(request, form.get("csrf"))
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404, "No se encontró el usuario.")
+    role = str(form.get("role", ""))
+    if not is_role(role):
+        raise HTTPException(422, "El rol seleccionado no es válido.")
+    if target.role == "admin" and role != "admin":
+        admin_count = (
+            db.scalar(select(func.count()).select_from(User).where(User.role == "admin")) or 0
+        )
+        if admin_count <= 1:
+            record_audit(
+                db,
+                actor_user_id=user.id,
+                action="user.role.update",
+                resource_type="user",
+                resource_id=str(target.id),
+                outcome="failure",
+                reason="No se puede quitar el último administrador.",
+                detail="Cambio de rol rechazado para conservar acceso administrativo.",
+            )
+            db.commit()
+            raise HTTPException(409, "Debe existir al menos un administrador.")
+    previous_role = target.role
+    target.role = role
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="user.role.update",
+        resource_type="user",
+        resource_id=str(target.id),
+        reason=f"Rol cambiado de {previous_role} a {role}.",
+        detail="Rol de usuario actualizado sin modificar credenciales.",
+    )
+    db.commit()
+    set_flash(request, f"Rol de {target.username} actualizado a {ROLE_LABELS[role]}.")
+    return RedirectResponse("/users", 303)
+
+
 @router.get("/images", response_class=HTMLResponse)
 def image_list(
     request: Request,
@@ -433,7 +508,7 @@ def image_list(
     ] = "all",
     page: Annotated[int, Query(ge=1, le=100000)] = 1,
 ) -> Response:
-    user = require_user(request, db)
+    user = require_permission(request, db, "images.read")
     query = select(Image)
     if q.strip():
         term = q.strip()
@@ -479,12 +554,18 @@ def image_list(
 
 @router.get("/images/new", response_class=HTMLResponse)
 def image_new(request: Request, db: Db) -> Response:
-    return render(request, "image_form.html", user=require_user(request, db), values={}, errors={})
+    return render(
+        request,
+        "image_form.html",
+        user=require_permission(request, db, "images.create"),
+        values={},
+        errors={},
+    )
 
 
 @router.post("/images/new")
 async def image_create(request: Request, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(request, db, "images.create")
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     values = {key: str(form.get(key, "")) for key in ("name", "description")}
@@ -518,7 +599,9 @@ async def image_create(request: Request, db: Db) -> Response:
 
 @router.get("/images/{image_id}", response_class=HTMLResponse)
 def image_detail(request: Request, image_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "images.read", resource_type="image", resource_id=str(image_id)
+    )
     image = get_image(db, image_id)
     source_host = db.get(Host, image.source_host_id) if image.source_host_id else None
     return render(
@@ -535,7 +618,9 @@ def image_detail(request: Request, image_id: UUID, db: Db) -> Response:
 
 @router.get("/images/{image_id}/edit", response_class=HTMLResponse)
 def image_edit(request: Request, image_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "images.update", resource_type="image", resource_id=str(image_id)
+    )
     image = get_image(db, image_id)
     if image.deleted_at is not None:
         raise HTTPException(409, "Una imagen eliminada conserva su historial y no se puede editar.")
@@ -552,7 +637,9 @@ def image_edit(request: Request, image_id: UUID, db: Db) -> Response:
 
 @router.post("/images/{image_id}/edit")
 async def image_update(request: Request, image_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "images.update", resource_type="image", resource_id=str(image_id)
+    )
     image = get_image(db, image_id)
     if image.deleted_at is not None:
         raise HTTPException(409, "Una imagen eliminada conserva su historial y no se puede editar.")
@@ -597,7 +684,9 @@ async def image_update(request: Request, image_id: UUID, db: Db) -> Response:
 
 @router.post("/images/{image_id}/delete")
 async def image_delete(request: Request, image_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "images.delete", resource_type="image", resource_id=str(image_id)
+    )
     image = get_image(db, image_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -637,7 +726,9 @@ async def image_delete(request: Request, image_id: UUID, db: Db) -> Response:
 
 @router.get("/hosts/{host_id}/capture", response_class=HTMLResponse)
 def capture_page(request: Request, host_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "images.capture", resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     report = latest_report(db, host)
     if report is None:
@@ -664,7 +755,9 @@ def capture_page(request: Request, host_id: UUID, db: Db) -> Response:
 
 @router.post("/hosts/{host_id}/capture")
 async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "images.capture", resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -843,7 +936,10 @@ def deployment_images(db: Session, host: Host, operation: str) -> list[Image]:
 
 
 def deployment_page(request: Request, host_id: UUID, db: Session, *, operation: str) -> Response:
-    user = require_user(request, db)
+    permission = "restore.execute" if operation == "restore" else "clone.execute"
+    user = require_permission(
+        request, db, permission, resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     report = latest_report(db, host)
     return render(
@@ -865,7 +961,10 @@ def deployment_page(request: Request, host_id: UUID, db: Session, *, operation: 
 async def deployment_request(
     request: Request, host_id: UUID, db: Session, *, operation: str
 ) -> Response:
-    user = require_user(request, db)
+    permission = "restore.execute" if operation == "restore" else "clone.execute"
+    user = require_permission(
+        request, db, permission, resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -1087,8 +1186,8 @@ def task_list(
     ] = "all",
     page: Annotated[int, Query(ge=1, le=100000)] = 1,
 ) -> Response:
-    user = require_user(request, db)
-    if expire_stale_tasks(db):
+    user = require_permission(request, db, "tasks.read")
+    if has_permission(user, "tasks.cancel") and expire_stale_tasks(db):
         db.commit()
     query = select(Task)
     if task_status != "all":
@@ -1127,8 +1226,10 @@ def task_list(
 
 @router.get("/tasks/{task_id}", response_class=HTMLResponse)
 def task_detail(request: Request, task_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
-    if expire_stale_tasks(db):
+    user = require_permission(
+        request, db, "tasks.read", resource_type="task", resource_id=str(task_id)
+    )
+    if has_permission(user, "tasks.cancel") and expire_stale_tasks(db):
         db.commit()
     task = db.get(Task, str(task_id))
     if task is None:
@@ -1164,8 +1265,10 @@ def task_detail(request: Request, task_id: UUID, db: Db) -> Response:
 
 @router.get("/tasks/{task_id}/status")
 def task_status(request: Request, task_id: UUID, db: Db) -> JSONResponse:
-    require_user(request, db)
-    if expire_stale_tasks(db):
+    user = require_permission(
+        request, db, "tasks.read", resource_type="task", resource_id=str(task_id)
+    )
+    if has_permission(user, "tasks.cancel") and expire_stale_tasks(db):
         db.commit()
     task = db.get(Task, str(task_id))
     if task is None:
@@ -1175,7 +1278,9 @@ def task_status(request: Request, task_id: UUID, db: Db) -> JSONResponse:
 
 @router.post("/tasks/{task_id}/cancel")
 async def task_cancel(request: Request, task_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "tasks.cancel", resource_type="task", resource_id=str(task_id)
+    )
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     if expire_stale_tasks(db):
@@ -1214,7 +1319,9 @@ async def task_cancel(request: Request, task_id: UUID, db: Db) -> Response:
 
 @router.post("/tasks/{task_id}/reconcile")
 async def task_reconcile(request: Request, task_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "tasks.reconcile", resource_type="task", resource_id=str(task_id)
+    )
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     if form.get("confirm") != "1":
@@ -1256,17 +1363,18 @@ async def task_reconcile(request: Request, task_id: UUID, db: Db) -> Response:
 
 @router.get("/pairing", response_class=HTMLResponse)
 def pairing_list(request: Request, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(request, db, "pairing.read")
     current = now()
-    db.execute(
-        update(PairingRequest)
-        .where(
-            PairingRequest.status.in_(["pending", "approved"]),
-            PairingRequest.expires_at <= current,
+    if has_permission(user, "pairing.manage"):
+        db.execute(
+            update(PairingRequest)
+            .where(
+                PairingRequest.status.in_(["pending", "approved"]),
+                PairingRequest.expires_at <= current,
+            )
+            .values(status="expired", challenge=None)
         )
-        .values(status="expired", challenge=None)
-    )
-    db.commit()
+        db.commit()
     requests = db.scalars(
         select(PairingRequest).order_by(PairingRequest.created_at.desc()).limit(50)
     ).all()
@@ -1283,7 +1391,9 @@ def pairing_list(request: Request, db: Db) -> Response:
 
 @router.post("/pairing/{pairing_id}/approve")
 async def pairing_approve(request: Request, pairing_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "pairing.manage", resource_type="pairing", resource_id=str(pairing_id)
+    )
     pairing = get_pairing_request(db, pairing_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -1345,7 +1455,9 @@ async def pairing_approve(request: Request, pairing_id: UUID, db: Db) -> Respons
 
 @router.post("/pairing/{pairing_id}/reject")
 async def pairing_reject(request: Request, pairing_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "pairing.manage", resource_type="pairing", resource_id=str(pairing_id)
+    )
     pairing = get_pairing_request(db, pairing_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -1382,7 +1494,7 @@ def host_list(
     state: Annotated[str, Query(pattern="^(all|ready|pending)$")] = "all",
     page: Annotated[int, Query(ge=1, le=100000)] = 1,
 ) -> Response:
-    user = require_user(request, db)
+    user = require_permission(request, db, "hosts.read")
     query = select(Host)
     if q.strip():
         term = q.strip()
@@ -1424,12 +1536,18 @@ def host_list(
 
 @router.get("/hosts/new", response_class=HTMLResponse)
 def host_new(request: Request, db: Db) -> Response:
-    return render(request, "host_form.html", user=require_user(request, db), values={}, errors={})
+    return render(
+        request,
+        "host_form.html",
+        user=require_permission(request, db, "hosts.create"),
+        values={},
+        errors={},
+    )
 
 
 @router.post("/hosts/new")
 async def host_create(request: Request, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(request, db, "hosts.create")
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     values = {key: str(form.get(key, "")) for key in ("name", "mac_address", "notes")}
@@ -1468,7 +1586,9 @@ def host_detail(
     db: Db,
     page: Annotated[int, Query(ge=1, le=100000)] = 1,
 ) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "hosts.read", resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     reports = select(InventoryReport).where(InventoryReport.host_id == host.id)
     count = db.scalar(select(func.count()).select_from(reports.subquery())) or 0
@@ -1494,14 +1614,18 @@ def host_detail(
 
 @router.get("/hosts/{host_id}/edit", response_class=HTMLResponse)
 def host_edit(request: Request, host_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "hosts.update", resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     return render(request, "host_form.html", user=user, host=host, values=host, errors={})
 
 
 @router.post("/hosts/{host_id}/edit")
 async def host_update(request: Request, host_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "hosts.update", resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
@@ -1542,7 +1666,9 @@ def import_page(request: Request, host_id: UUID, db: Db) -> Response:
     return render(
         request,
         "import.html",
-        user=require_user(request, db),
+        user=require_permission(
+            request, db, "inventory.import", resource_type="host", resource_id=str(host_id)
+        ),
         host=get_host(db, host_id),
         error="",
     )
@@ -1550,7 +1676,9 @@ def import_page(request: Request, host_id: UUID, db: Db) -> Response:
 
 @router.post("/hosts/{host_id}/import")
 async def import_report(request: Request, host_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "inventory.import", resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     async with request.form(max_files=1, max_fields=4) as form:
         verify_csrf(request, form.get("csrf"))
@@ -1606,7 +1734,9 @@ async def import_report(request: Request, host_id: UUID, db: Db) -> Response:
 
 @router.get("/hosts/{host_id}/reports/{report_id}", response_class=HTMLResponse)
 def report_detail(request: Request, host_id: UUID, report_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "inventory.read", resource_type="report", resource_id=str(report_id)
+    )
     host = get_host(db, host_id)
     report = db.get(InventoryReport, str(report_id))
     if report is None or report.host_id != host.id:
@@ -1616,7 +1746,9 @@ def report_detail(request: Request, host_id: UUID, report_id: UUID, db: Db) -> R
 
 @router.post("/hosts/{host_id}/token")
 async def inventory_token(request: Request, host_id: UUID, db: Db) -> Response:
-    user = require_user(request, db)
+    user = require_permission(
+        request, db, "inventory.token", resource_type="host", resource_id=str(host_id)
+    )
     host = get_host(db, host_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))

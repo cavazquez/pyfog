@@ -7,15 +7,27 @@ class NavigationItem:
     href: str
     label: str
     icon: str
+    permission: str
 
 
 NAVIGATION = (
-    NavigationItem(key="hosts", href="/hosts", label="Equipos", icon="▣"),
-    NavigationItem(key="pairing", href="/pairing", label="Descubiertos", icon="⌁"),
-    NavigationItem(key="images", href="/images", label="Imágenes", icon="◈"),
-    NavigationItem(key="tasks", href="/tasks", label="Tareas", icon="◷"),
-    NavigationItem(key="status", href="/status", label="Estado", icon="✓"),
-    NavigationItem(key="audit", href="/audit", label="Auditoría", icon="≡"),
+    NavigationItem(key="hosts", href="/hosts", label="Equipos", icon="▣", permission="hosts.read"),
+    NavigationItem(
+        key="pairing", href="/pairing", label="Descubiertos", icon="⌁", permission="pairing.read"
+    ),
+    NavigationItem(
+        key="images", href="/images", label="Imágenes", icon="◈", permission="images.read"
+    ),
+    NavigationItem(key="tasks", href="/tasks", label="Tareas", icon="◷", permission="tasks.read"),
+    NavigationItem(
+        key="status", href="/status", label="Estado", icon="✓", permission="status.read"
+    ),
+    NavigationItem(
+        key="audit", href="/audit", label="Auditoría", icon="≡", permission="audit.read"
+    ),
+    NavigationItem(
+        key="users", href="/users", label="Usuarios", icon="◎", permission="users.manage"
+    ),
 )
 
 SHELL_COPY = {

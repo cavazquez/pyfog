@@ -7,7 +7,9 @@ from pwdlib import PasswordHash
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from pyfog.audit import record_audit
 from pyfog.models import LoginAttempt, LoginSession, User, now
+from pyfog.rbac import has_permission, role_of
 
 passwords = PasswordHash.recommended()
 DUMMY_HASH = passwords.hash(secrets.token_urlsafe(32))
@@ -50,6 +52,40 @@ def require_user(request: Request, db: Session) -> User:
     if user is None:
         raise HTTPException(303, headers={"Location": "/login"})
     return user
+
+
+def require_permission(
+    request: Request,
+    db: Session,
+    permission: str,
+    *,
+    resource_type: str = "route",
+    resource_id: str = "",
+) -> User:
+    """Require an authenticated user with one explicit permission.
+
+    Denials are persisted before returning 403. The event contains only the
+    route, role and permission name; it never receives form values or secrets.
+    """
+
+    user = require_user(request, db)
+    if has_permission(user, permission):
+        return user
+    resolved_resource_id = (resource_id or request.url.path)[:100]
+    reason = f"Rol {role_of(user) or 'desconocido'} sin permiso {permission}."
+    record_audit(
+        db,
+        actor_user_id=user.id,
+        action="access.denied",
+        resource_type=resource_type,
+        resource_id=resolved_resource_id,
+        outcome="failure",
+        decision="deny",
+        reason=reason,
+        detail="Acceso denegado por la política de permisos.",
+    )
+    db.commit()
+    raise HTTPException(403, "No tenés permiso para realizar esta acción.")
 
 
 def authenticate(request: Request, db: Session, username: str, password: str) -> User | None:

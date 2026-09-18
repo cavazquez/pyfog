@@ -11,13 +11,13 @@
       <div class="pairing-summary"><div><span class="eyebrow">{{ pairing.created_at|date }}</span><h3><code>{{ pairing.mac_address }}</code></h3><p>Expira: {{ pairing.expires_at|date }}</p></div><span class="badge {{ 'ready' if pairing.status == 'approved' else 'pending' if pairing.status == 'pending' else 'muted' }}">{{ {'pending': 'Pendiente', 'approved': 'Aprobada', 'rejected': 'Rechazada', 'expired': 'Vencida'}.get(pairing.status, pairing.status) }}</span></div>
       {% if pairing.status == 'pending' %}
       <div class="pairing-challenge"><span class="eyebrow">DESAFÍO MOSTRADO EN EL EQUIPO</span><code>{{ pairing.challenge or 'No disponible' }}</code></div>
-      <form method="post" action="/pairing/{{ pairing.id }}/approve" class="pairing-form">
+      {% if can('pairing.manage') %}<form method="post" action="/pairing/{{ pairing.id }}/approve" class="pairing-form">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <div class="field"><label for="challenge-{{ pairing.id }}">Verificá el desafío</label><input id="challenge-{{ pairing.id }}" name="challenge" required minlength="16" maxlength="128" pattern="[A-Za-z0-9_-]+" autocomplete="off" spellcheck="false"><small>Compará carácter por carácter con la consola del equipo.</small></div>
         <div class="field"><label for="host-{{ pairing.id }}">Asociar a un equipo existente (opcional)</label><select id="host-{{ pairing.id }}" name="host_id"><option value="">Crear un equipo con esta MAC</option>{% for host in hosts %}{% if host.mac_address == pairing.mac_address %}<option value="{{ host.id }}">{{ host.name }} · {{ host.mac_address }}</option>{% endif %}{% endfor %}</select><small>Si la MAC ya está registrada, elegí ese equipo para evitar duplicados.</small></div>
         <div class="form-actions"><button class="button primary" type="submit" data-loading-text="Aprobando…">Aprobar y esperar inventario <span aria-hidden="true">→</span></button></div>
       </form>
-      <form method="post" action="/pairing/{{ pairing.id }}/reject" class="pairing-reject"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="reason-{{ pairing.id }}">Motivo opcional</label><input id="reason-{{ pairing.id }}" name="reason" maxlength="500" placeholder="No reconozco este equipo"><button class="button danger" type="submit" data-loading-text="Rechazando…">Rechazar</button></form>
+      <form method="post" action="/pairing/{{ pairing.id }}/reject" class="pairing-reject"><input type="hidden" name="csrf" value="{{ csrf }}"><label for="reason-{{ pairing.id }}">Motivo opcional</label><input id="reason-{{ pairing.id }}" name="reason" maxlength="500" placeholder="No reconozco este equipo"><button class="button danger" type="submit" data-loading-text="Rechazando…">Rechazar</button></form>{% endif %}
       {% elif pairing.status == 'approved' %}
       <p class="panel-note">Asociada al equipo <a class="text-link" href="/hosts/{{ pairing.host_id }}">{{ pairing.host_id }}</a>. La capacidad temporal se consume al recibir el inventario.</p>
       {% elif pairing.status == 'rejected' %}

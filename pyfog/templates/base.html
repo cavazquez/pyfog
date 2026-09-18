@@ -18,7 +18,7 @@
     <div class="nav-label">{{ shell.workspace_label }}</div>
     <nav>{% for item in navigation %}<a href="{{ item.href }}" class="nav-item{% if section == item.key %} active{% endif %}"{% if section == item.key %} aria-current="page"{% endif %}><span aria-hidden="true">{{ item.icon }}</span> {{ item.label }}</a>{% endfor %}</nav>
     <div class="sidebar-note"><span class="small-badge">{{ shell.first_stage }}</span><p>{{ shell.first_stage_title }}</p><span>{{ shell.first_stage_description }}</span></div>
-    <div class="sidebar-footer"><span class="avatar">{{ user.username[:1]|upper }}</span><div><strong>{{ user.username }}</strong><span>{{ shell.administrator }}</span></div>
+    <div class="sidebar-footer"><span class="avatar">{{ user.username[:1]|upper }}</span><div><strong>{{ user.username }}</strong><span>{{ role_labels.get(user.role, shell.administrator) }}</span></div>
       <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="logout" title="{{ shell.logout }}" aria-label="{{ shell.logout }}" data-loading-text="Cerrando…">↗</button></form>
     </div>
   </aside>

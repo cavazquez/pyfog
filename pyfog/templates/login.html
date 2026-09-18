@@ -3,7 +3,7 @@
 {% block content %}
 <div class="login-layout">
   <section class="login-intro"><a href="/login" class="brand"><span class="brand-mark" aria-hidden="true">p<span>f</span></span>pyfog<span class="brand-dot">.</span></a><div><p class="eyebrow">INFRAESTRUCTURA LINUX</p><h1>Todo empieza<br>por conocer<br>tus equipos.</h1><p>Registrá, inventariá y organizá tu infraestructura desde un solo lugar.</p></div><small>Registro e inventario · Primera etapa</small></section>
-  <section class="login-form"><div class="login-card"><p class="eyebrow">BIENVENIDO</p><h2>Ingresá a tu espacio</h2><p class="muted">Usá tu cuenta de administrador para continuar.</p>
+  <section class="login-form"><div class="login-card"><p class="eyebrow">BIENVENIDO</p><h2>Ingresá a tu espacio</h2><p class="muted">Usá tu cuenta de PyFog para continuar.</p>
     {% if error %}<div class="alert error" role="alert">{{ error }}</div>{% endif %}
     <form method="post" action="/login">
       <input type="hidden" name="csrf" value="{{ csrf }}">

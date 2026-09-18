@@ -28,10 +28,16 @@ def identifier() -> str:
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("role IN ('admin', 'operator', 'auditor')", name="ck_users_role"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(100), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(
+        String(16), default="admin", server_default="admin", nullable=False
+    )
 
 
 class LoginSession(Base):
@@ -147,6 +153,7 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
     __table_args__ = (
         CheckConstraint("outcome IN ('success', 'failure')", name="ck_audit_outcome"),
+        CheckConstraint("decision IN ('allow', 'deny')", name="ck_audit_decision"),
         Index("ix_audit_events_created", "created_at"),
         Index("ix_audit_events_resource", "resource_type", "resource_id", "created_at"),
     )
@@ -162,6 +169,10 @@ class AuditEvent(Base):
     resource_type: Mapped[str] = mapped_column(String(32))
     resource_id: Mapped[str] = mapped_column(String(100), default="")
     outcome: Mapped[str] = mapped_column(String(16), default="success")
+    decision: Mapped[str] = mapped_column(
+        String(16), default="allow", server_default="allow", nullable=False
+    )
+    reason: Mapped[str] = mapped_column(String(500), default="", server_default="")
     detail: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(default=now)
 

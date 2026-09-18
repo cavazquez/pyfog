@@ -86,6 +86,7 @@ trabajo están implementados.
 - [x] #51 Contrato de capacidades de imagen v2, adaptación v1 y rechazo temprano.
 - [x] #74 Matriz declarativa y fixtures QCOW2 deterministas para perfiles soportados y negativos.
 - [x] #63 ADR de cadena de confianza, propietarios, rotación y negativos de Secure Boot.
+- [x] #66 Roles admin/operator/auditor, matriz deny-by-default, gestión web y auditoría de denegaciones.
 
 ## Evidencia de validación
 
@@ -103,6 +104,8 @@ trabajo están implementados.
   quedó en `.e2e/run.*` y las VMs se detuvieron limpiamente.
 - `make compatibility-check` genera ocho QCOW2 descartables y verifica su hash, tamaño,
   capacidades y rechazo del agente sin usar discos físicos ni credenciales.
+- `uv run pytest tests/test_rbac.py` verifica la matriz de permisos, la migración de cuentas MVP,
+  la denegación de acciones y la auditoría con actor, recurso, decisión y motivo.
 
 ## Limitaciones conocidas de v0.1.0
 

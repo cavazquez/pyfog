@@ -28,6 +28,9 @@ La cadena de confianza de Secure Boot y la custodia de sus claves están fijadas
 [ADR 0003](adr/0003-secure-boot-trust-chain.md). Las claves privadas de release permanecen fuera
 de Git, CI, argumentos, logs, imágenes y artefactos; sólo se publican certificados y fingerprints.
 
+La autorización humana es deny-by-default y está documentada en la [matriz RBAC](rbac.md). Las
+denegaciones quedan auditadas sin guardar secretos.
+
 ## Respuesta ante un hallazgo
 
 Si aparece una credencial real, se revoca o rota de inmediato fuera del repositorio. Después se

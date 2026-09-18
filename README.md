@@ -21,6 +21,7 @@ del token del equipo.
 [Contrato del MVP Linux](docs/adr/0001-mvp-linux.md) ·
 [Manifiesto de imágenes](docs/image-manifest.md) ·
 [Backup y recuperación](docs/backup-recovery.md) ·
+[Roles y permisos](docs/rbac.md) ·
 [Guía operativa en español](docs/guia-es.md) ·
 [Accesibilidad](docs/accessibility.md) ·
 [Despliegue LAN](deploy/README.md) ·
@@ -47,6 +48,15 @@ Abrí **http://127.0.0.1:8000**. El comando de creación solicita una contraseñ
 excluido de Git. Las migraciones se aplican explícitamente, sin borrar datos al arrancar.
 
 También están disponibles `make setup`, `make migrate` y `make run`.
+
+Después del primer administrador, podés crear cuentas con permisos acotados:
+
+```bash
+uv run python -m pyfog create-user --username operador --role operator
+uv run python -m pyfog create-user --username auditor --role auditor
+```
+
+La matriz completa y la política de migración están en [Roles y permisos](docs/rbac.md).
 
 ## Registrar e inventariar un equipo
 

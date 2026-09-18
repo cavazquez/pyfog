@@ -105,9 +105,10 @@ operación y disco origen antes de encolar la tarea.
 
 El canal web y el canal de agente usan HTTPS con certificados de la CA de la instalación; el agente
 no sigue redirecciones ni usa proxies heredados. Los tokens, claves y rutas de almacenamiento no se
-incluyen en HTML, logs de progreso ni manifiestos. La primera entrega permite un único administrador
-local; la autorización por roles queda para una etapa posterior. El detalle de despliegue TLS está
-en la [guía HTTPS](../https.md), implementada en el issue [#7](https://github.com/cavazquez/pyfog/issues/7).
+incluyen en HTML, logs de progreso ni manifiestos. El MVP comenzó con un único administrador local;
+la autorización multiusuario posterior está documentada en [Roles y permisos](../rbac.md). El
+detalle de despliegue TLS está en la [guía HTTPS](../https.md), implementada en el issue
+[#7](https://github.com/cavazquez/pyfog/issues/7).
 
 Cada tarea persiste una máquina de estados: `draft`, `approved`, `assigned`, `running`, `verifying`,
 `succeeded`, `failed`, `cancelled` o `intervention_required`. Sólo el coordinador puede avanzar

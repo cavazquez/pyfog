@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from pyfog.models import AuditEvent
 
 AUDIT_OUTCOMES = frozenset({"success", "failure"})
+AUDIT_DECISIONS = frozenset({"allow", "deny"})
 
 
 def record_audit(
@@ -14,6 +15,8 @@ def record_audit(
     resource_type: str,
     resource_id: str = "",
     outcome: str = "success",
+    decision: str = "allow",
+    reason: str = "",
     actor_user_id: int | None = None,
     actor_host_id: str | None = None,
     detail: str = "",
@@ -26,6 +29,8 @@ def record_audit(
 
     if outcome not in AUDIT_OUTCOMES:
         raise ValueError("El resultado de auditoría no es válido.")
+    if decision not in AUDIT_DECISIONS:
+        raise ValueError("La decisión de auditoría no es válida.")
     if not action or len(action) > 64 or not resource_type or len(resource_type) > 32:
         raise ValueError("La acción o el tipo de recurso de auditoría no es válido.")
     if len(resource_id) > 100:
@@ -37,6 +42,8 @@ def record_audit(
         resource_type=resource_type,
         resource_id=resource_id,
         outcome=outcome,
+        decision=decision,
+        reason=(reason or detail)[:500],
         detail=detail[:500],
     )
     db.add(event)

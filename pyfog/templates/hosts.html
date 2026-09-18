@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Equipos{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">TU INFRAESTRUCTURA</p><h1>Equipos</h1><p>Un lugar para conocer y organizar cada máquina de tu red.</p></div><a class="button primary" href="/hosts/new"><span aria-hidden="true">＋</span> Registrar equipo</a></div>
+<div class="page-heading"><div><p class="eyebrow">TU INFRAESTRUCTURA</p><h1>Equipos</h1><p>Un lugar para conocer y organizar cada máquina de tu red.</p></div>{% if can('hosts.create') %}<a class="button primary" href="/hosts/new"><span aria-hidden="true">＋</span> Registrar equipo</a>{% endif %}</div>
 <section class="stats" aria-label="Resumen del inventario">
   <div class="stat"><span>Equipos registrados</span><strong>{{ total }}</strong><small>Tu inventario de infraestructura</small></div>
   <div class="stat"><span>Con inventario</span><strong>{{ ready }}<i class="stat-dot" aria-hidden="true"></i></strong><small>Con información de hardware</small></div>
@@ -19,7 +19,7 @@
   {% for host in hosts %}<tr><td><div class="device-cell"><span class="device-icon" aria-hidden="true">▣</span><div><a href="/hosts/{{ host.id }}" class="host-name">{{ host.name }}</a><small>{{ host.hostname or 'Hostname pendiente' }}</small></div></div></td><td><code>{{ host.mac_address }}</code></td><td>{{ host.os_name or 'Sin datos' }}</td><td class="date-cell">{{ host.last_inventory_at|date }}</td><td><span class="badge {{ 'ready' if host.last_inventory_at else 'pending' }}">{{ 'Recibido' if host.last_inventory_at else 'Pendiente' }}</span></td></tr>{% endfor %}
   </tbody></table></div>
   {% else %}
-  <div class="empty-state"><span class="empty-icon" aria-hidden="true">▣</span><h3>{{ 'No encontramos equipos' if total else 'Tu inventario empieza acá' }}</h3><p>{{ 'Probá con otra búsqueda o cambiá el filtro de estado.' if total else 'Registrá tu primer equipo Linux y agregá un informe para conocer su hardware.' }}</p><a class="button secondary" href="{{ '/hosts' if total else '/hosts/new' }}">{{ 'Ver todos los equipos' if total else 'Registrar primer equipo' }} <span aria-hidden="true">→</span></a></div>
+  <div class="empty-state"><span class="empty-icon" aria-hidden="true">▣</span><h3>{{ 'No encontramos equipos' if total else 'Tu inventario empieza acá' }}</h3><p>{{ 'Probá con otra búsqueda o cambiá el filtro de estado.' if total else 'Registrá tu primer equipo Linux y agregá un informe para conocer su hardware.' }}</p>{% if total or can('hosts.create') %}<a class="button secondary" href="{{ '/hosts' if total else '/hosts/new' }}">{{ 'Ver todos los equipos' if total else 'Registrar primer equipo' }} <span aria-hidden="true">→</span></a>{% endif %}</div>
   {% endif %}
   {% if pages > 1 %}<nav class="pagination" aria-label="Páginas de equipos">{% if page > 1 %}<a class="button secondary" href="{{ request.url.include_query_params(page=page-1) }}">Anterior</a>{% endif %}<span>Página {{ page }} de {{ pages }}</span>{% if page < pages %}<a class="button secondary" href="{{ request.url.include_query_params(page=page+1) }}">Siguiente</a>{% endif %}</nav>{% endif %}
 </section>
