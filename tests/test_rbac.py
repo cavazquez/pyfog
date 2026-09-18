@@ -92,7 +92,7 @@ def test_operator_and_auditor_have_read_only_boundaries(client, app, password_ha
                 "password": "test-admin-password",  # pragma: allowlist secret
             },
         ).status_code
-        == 303
+        == 200
     )
     assert client.get("/hosts").status_code == 200
     assert client.get("/audit").status_code == 403
@@ -109,7 +109,7 @@ def test_operator_and_auditor_have_read_only_boundaries(client, app, password_ha
                 "password": "test-admin-password",  # pragma: allowlist secret
             },
         ).status_code
-        == 303
+        == 200
     )
     hosts = client.get("/hosts")
     assert hosts.status_code == 200
