@@ -74,8 +74,10 @@ secuencia, duración, throughput y código de fallo; una lease vencida pasa a
 [Observabilidad operativa](observability.md).
 
 El agente en modo `imaging` vuelve a leer el inventario, identifica el disco por WWN, serie o ruta
-junto con capacidad y modelo, comprueba GPT, la matriz Ubuntu UEFI/GPT y que ningún sistema de
-archivos o swap esté montado. Partclone lee ESP, `/boot` y raíz ext4 en modo de solo lectura, y
+junto con capacidad y modelo, comprueba el perfil Ubuntu UEFI/GPT o BIOS/MBR y que ningún sistema de
+archivos o swap esté montado. Partclone lee ESP cuando el perfil es UEFI, o `/boot` y raíz ext4 en
+modo de solo lectura cuando es BIOS; en este último caso también conserva y valida el boot sector,
+incluido el espacio de embedding requerido por GRUB BIOS, y
 sube artefactos comprimidos por fragmentos con SHA-256. El servidor valida el manifiesto v1/v2,
 sus capacidades, las geometrías, las sumas y los archivos declarados antes de mover el staging a
 `published` en una operación atómica; sólo entonces cambia la imagen a `ready`.

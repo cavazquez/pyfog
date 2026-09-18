@@ -175,6 +175,40 @@ def generate_fixture(fixture: dict[str, Any], output_dir: Path) -> Path:
     path = output_dir / str(fixture["file"])
     if path.exists() or path.is_symlink():
         raise FixtureError(f"No se sobrescribe el fixture existente: {path}")
+    if fixture["capabilities"]["partition_table"] == "mbr":
+        raw_path = output_dir / f".{fixture['id']}.raw"
+        _run_qemu(["create", "-f", "raw", str(raw_path), str(fixture["virtual_size_bytes"])])
+        try:
+            raw = bytearray(fixture["virtual_size_bytes"])
+            raw[0:446] = b"\x90" * 446
+            raw[440:444] = bytes.fromhex("1a2b3c4d")
+            entry = bytearray(16)
+            entry[0] = 0x80
+            entry[4] = 0x83
+            entry[8:12] = (2_048).to_bytes(4, "little")
+            entry[12:16] = (
+                (fixture["virtual_size_bytes"] // 512 - 2_048).to_bytes(4, "little")
+            )
+            raw[446:462] = entry
+            raw[510:512] = b"\x55\xaa"
+            raw_path.write_bytes(raw)
+            _run_qemu(
+                [
+                    "convert",
+                    "-f",
+                    "raw",
+                    "-O",
+                    QCOW2_FORMAT,
+                    "-o",
+                    f"compat={QCOW2_COMPAT},lazy_refcounts={QCOW2_LAZY_REFCOUNTS},"
+                    f"cluster_size={QCOW2_CLUSTER_SIZE}",
+                    str(raw_path),
+                    str(path),
+                ]
+            )
+        finally:
+            raw_path.unlink(missing_ok=True)
+        return path
     _run_qemu(
         [
             "create",

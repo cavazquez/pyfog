@@ -28,7 +28,7 @@ ACTIVE_TASK_STATES = frozenset(
     {"approved", "assigned", "running", "verifying", "intervention_required"}
 )
 TERMINAL_TASK_STATES = frozenset({"succeeded", "failed", "cancelled"})
-CLAIM_CAPABILITIES = frozenset({"gpt", "partclone.ext4", "partclone.fat"})
+CLAIM_CAPABILITIES = frozenset({"gpt", "mbr", "partclone.ext4", "partclone.fat"})
 TASK_PHASES = frozenset(
     {
         "queued",
@@ -123,11 +123,18 @@ REQUIRED_CAPABILITIES = {
 }
 
 
-def required_capabilities(operation: str) -> frozenset[str]:
+def required_capabilities(
+    operation: str, manifest: dict[str, object] | None = None
+) -> frozenset[str]:
     try:
-        return REQUIRED_CAPABILITIES[operation]
+        required = REQUIRED_CAPABILITIES[operation]
     except KeyError:
         raise TaskError("La operación de la tarea no es válida.") from None
+    if operation in {"restore", "clone"} and manifest is not None:
+        firmware = manifest.get("firmware")
+        if isinstance(firmware, dict) and firmware.get("type") == "bios":
+            return required | {"mbr"}
+    return required
 
 
 class TaskError(ValueError):
@@ -479,7 +486,12 @@ def claim_task(
     if task is None:
         db.rollback()
         return None
-    required = required_capabilities(task.operation)
+    manifest: dict[str, object] | None = None
+    if task.operation in {"restore", "clone"} and task.image_id is not None:
+        image = db.get(Image, task.image_id)
+        if image is not None and isinstance(image.manifest_json, dict):
+            manifest = image.manifest_json
+    required = required_capabilities(task.operation, manifest)
     if not required.issubset(capabilities):
         db.rollback()
         raise TaskError("El agente no anuncia todas las capacidades requeridas para la operación.")

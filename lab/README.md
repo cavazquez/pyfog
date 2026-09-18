@@ -1,4 +1,4 @@
-# Laboratorio UEFI descartable
+# Laboratorio UEFI y BIOS descartable
 
 Este laboratorio permite probar PyFog sin tocar discos físicos ni una red de producción. Crea
 dos VMs x86_64 con QEMU y OVMF, cada una con un overlay QCOW2 descartable, y las enlaza por una
@@ -17,8 +17,18 @@ imagen de referencia. Nunca se pasa un dispositivo físico a QEMU.
 
 En Ubuntu:
 
-    sudo apt-get install qemu-system-x86 qemu-utils ovmf cloud-image-utils file gdisk socat sbsigntool osslsigncode shim-signed
+    sudo apt-get install qemu-system-x86 qemu-utils ovmf seabios fdisk cloud-image-utils file gdisk socat sbsigntool osslsigncode shim-signed
     ./lab/pyfog-lab doctor
+
+El smoke BIOS/MBR independiente usa SeaBIOS, `sfdisk` y un disco raw descartable:
+
+    ./lab/bios-smoke.sh doctor
+    ./lab/e2e.sh plan --bios
+    ./lab/e2e.sh run --bios
+
+El runner crea una tabla DOS con la primera partición en el sector 2048, arranca el sector 0 y
+conserva la salida serial `PYFOG_BIOS_MBR_OK` en el informe E2E. No crea ni monta un filesystem y
+no toca ningún disco del host.
 
 Por defecto OVMF se usa sin Secure Boot. Para probar la cadena de confianza se seleccionan el
 firmware `OVMF_CODE_4M.secboot.fd` y la NVRAM pública de prueba `OVMF_VARS_4M.ms.fd`:
@@ -91,7 +101,8 @@ Se puede ejecutar la comprobación sola con:
 
 ## Prueba E2E reproducible
 
-El runner [`e2e.sh`](e2e.sh) combina el contrato de tareas/agente con un smoke real de arranque UEFI:
+El runner [`e2e.sh`](e2e.sh) combina el contrato de tareas/agente con un smoke real de arranque
+UEFI o BIOS/MBR:
 
     ./lab/e2e.sh plan
     ./lab/e2e.sh run
@@ -103,6 +114,9 @@ logs de pytest y consolas en `.e2e/run.*` —incluidos `source.serial.log` y `ta
 no recibe tokens por argumentos ni los escribe en esos archivos. Un fallo conserva los recursos
 para diagnóstico; después de revisar el informe usá
 `./lab/pyfog-lab destroy`.
+
+Con `--bios`, el mismo contrato se ejecuta junto con `lab/bios-smoke.sh`; el informe conserva
+`bios.serial.log` y `bios.qemu.log`.
 
 El smoke espera hasta 120 segundos por el prompt Linux de ambas VMs en la salida serial. Se puede ajustar para
 hosts lentos con `PYFOG_E2E_UEFI_TIMEOUT_SECONDS=240 ./lab/e2e.sh run`.

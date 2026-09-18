@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -32,6 +33,44 @@ def fixture_manifest(fixture: dict[str, object]) -> ImageManifest:
     assert isinstance(capabilities, dict)
     payload["firmware"] = copy.deepcopy(capabilities["firmware"])
     payload["capabilities"] = capabilities
+    if capabilities["partition_table"] == "mbr":
+        disk = payload["disk"]
+        assert isinstance(disk, dict)
+        root = copy.deepcopy(disk["partitions"][1])
+        root.update(
+            {
+                "number": 1,
+                "start_sector": 2_048,
+                "size_sectors": disk["sector_count"] - 2_048,
+                "partition_guid": None,
+                "artifact": "partitions/01-root.partclone",
+            }
+        )
+        disk.pop("gpt_disk_guid")
+        disk.pop("first_usable_sector")
+        disk.pop("last_usable_sector")
+        disk["mbr_disk_signature"] = "1a2b3c4d"
+        disk["partitions"] = [root]
+        disk["boot_sector"] = {
+            "path": "boot-sector.bin",
+            "size_bytes": 446,
+            "compression": "none",
+            "sha256": hashlib.sha256(b"b" * 446).hexdigest(),
+        }
+        payload["tool"] = {
+            "name": "partclone",
+            "version": "0.3.45",
+            "commands": ["mbr", "partclone.ext4"],
+        }
+        payload["artifacts"] = [
+            {
+                "path": "partitions/01-root.partclone",
+                "size_bytes": 4,
+                "compression": "zstd",
+                "sha256": hashlib.sha256(b"root").hexdigest(),
+            },
+            disk["boot_sector"],
+        ]
     return ImageManifest.model_validate(payload)
 
 
@@ -50,7 +89,7 @@ def test_matrix_has_one_supported_profile_and_explicit_restrictions(
         "multiple-disks",
     }
     supported = [fixture for fixture in specs if fixture["status"] == "supported"]
-    assert [fixture["id"] for fixture in supported] == ["uefi-ext4"]
+    assert [fixture["id"] for fixture in supported] == ["uefi-ext4", "bios-mbr"]
     for fixture in specs:
         ImageCapabilities.model_validate(fixture["capabilities"])
         assert fixture["checks"]

@@ -170,7 +170,13 @@ def upload_chunk(
         raise ValueError("Se interrumpió la transferencia del artefacto.") from None
 
 
-def run_command(arguments: list[str], *, timeout: int = 30, check: bool = True) -> str:
+def run_command(
+    arguments: list[str],
+    *,
+    timeout: int = 30,
+    check: bool = True,
+    input_text: str | None = None,
+) -> str:
     executable = shutil.which(arguments[0])
     if not executable:
         raise ValueError(f"Falta la herramienta {arguments[0]} en el agente.")
@@ -180,6 +186,7 @@ def run_command(arguments: list[str], *, timeout: int = 30, check: bool = True) 
         capture_output=True,
         text=True,
         timeout=timeout,
+        input=input_text,
     )
     if check and result.returncode != 0:
         raise ValueError(f"La herramienta {arguments[0]} rechazó el disco.")
@@ -203,7 +210,7 @@ def block_inventory() -> dict[str, Any]:
             "--bytes",
             "--paths",
             "--output",
-            "NAME,KNAME,PATH,TYPE,SIZE,MODEL,SERIAL,WWN,TRAN,LOG-SEC,RM,FSTYPE,UUID,PARTUUID,MOUNTPOINTS",
+            "NAME,KNAME,PATH,TYPE,SIZE,MODEL,SERIAL,WWN,TRAN,LOG-SEC,PTTYPE,RM,FSTYPE,UUID,PARTUUID,MOUNTPOINTS",
         ],
         timeout=30,
     )
@@ -307,8 +314,14 @@ def validate_manifest_capabilities(manifest: dict[str, Any]) -> None:
     else:
         raise ValueError("El manifiesto de restauración no es compatible con el agente.")
 
-    if capabilities.get("partition_table") != "gpt":
+    firmware_type = firmware.get("type")
+    if firmware_type not in {"uefi", "bios"} or firmware.get("secure_boot") is not False:
+        raise ValueError("El firmware declarado no es compatible con el agente.")
+    partition_table = capabilities.get("partition_table")
+    if partition_table not in {"gpt", "mbr"}:
         raise ValueError("La tabla de particiones declarada no es compatible con el agente.")
+    if (firmware_type, partition_table) not in {("uefi", "gpt"), ("bios", "mbr")}:
+        raise ValueError("El firmware y la tabla de particiones declarados son incompatibles.")
     if type(capabilities.get("disks")) is not int or capabilities["disks"] != 1:
         raise ValueError("La imagen requiere exactamente un disco.")
     filesystems = capabilities.get("filesystems")
@@ -319,7 +332,10 @@ def validate_manifest_capabilities(manifest: dict[str, Any]) -> None:
         or len(set(filesystems)) != len(filesystems)
     ):
         raise ValueError("La lista de sistemas de archivos declarada no es válida.")
-    unsupported = set(filesystems) - {"fat32", "ext4", "swap"}
+    supported_filesystems = {"fat32", "ext4", "swap"}
+    if firmware_type == "bios":
+        supported_filesystems = {"ext4", "swap"}
+    unsupported = set(filesystems) - supported_filesystems
     if unsupported:
         raise ValueError(
             "La imagen contiene sistemas de archivos no soportados: "
@@ -366,10 +382,11 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
     firmware = manifest.get("firmware")
     if (
         not isinstance(firmware, dict)
-        or firmware.get("type") != "uefi"
+        or firmware.get("type") not in {"uefi", "bios"}
         or firmware.get("secure_boot") is not False
     ):
-        raise ValueError("La imagen requiere firmware UEFI sin Secure Boot.")
+        raise ValueError("La imagen requiere firmware UEFI o BIOS sin Secure Boot.")
+    firmware_type = str(firmware["type"])
     system = manifest.get("system")
     if not isinstance(system, dict) or str(system.get("id", "")).lower() != "ubuntu":
         raise ValueError("El agente sólo puede restaurar imágenes Ubuntu compatibles.")
@@ -377,7 +394,12 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
     if not isinstance(tool, dict) or tool.get("name") != "partclone":
         raise ValueError("El manifiesto no identifica Partclone.")
     commands = tool.get("commands")
-    if not isinstance(commands, list) or not {"partclone.ext4", "partclone.fat"}.issubset(commands):
+    required_commands = {"partclone.ext4"}
+    if firmware_type == "uefi":
+        required_commands.add("partclone.fat")
+    else:
+        required_commands.add("mbr")
+    if not isinstance(commands, list) or not required_commands.issubset(commands):
         raise ValueError("El manifiesto no contiene los comandos Partclone requeridos.")
     disk = manifest.get("disk")
     if not isinstance(disk, dict):
@@ -387,16 +409,45 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
     if type(sector) is not int or sector not in {512, 4096}:
         raise ValueError("El sector lógico de la imagen no es válido.")
     sectors = manifest_int(disk.get("sector_count"), "La cantidad de sectores", minimum=1)
-    first = manifest_int(disk.get("first_usable_sector"), "El primer sector GPT")
-    last = manifest_int(disk.get("last_usable_sector"), "El último sector GPT")
-    if size != sector * sectors or first >= last or last >= sectors:
-        raise ValueError("La geometría de la imagen no es segura.")
-    manifest_uuid(disk.get("gpt_disk_guid"), "El GUID GPT")
+    is_gpt = firmware_type == "uefi"
+    if is_gpt:
+        first = manifest_int(disk.get("first_usable_sector"), "El primer sector GPT")
+        last = manifest_int(disk.get("last_usable_sector"), "El último sector GPT")
+        if size != sector * sectors or first >= last or last >= sectors:
+            raise ValueError("La geometría de la imagen no es segura.")
+        manifest_uuid(disk.get("gpt_disk_guid"), "El GUID GPT")
+        if disk.get("mbr_disk_signature") is not None or disk.get("boot_sector") is not None:
+            raise ValueError("Un manifiesto UEFI no puede declarar datos MBR.")
+    else:
+        first = 2_048
+        last = sectors - 1
+        if size != sector * sectors or sector != 512 or not re.fullmatch(
+            r"[0-9A-Fa-f]{8}", str(disk.get("mbr_disk_signature", ""))
+        ):
+            raise ValueError("La geometría del disco MBR no es segura.")
+        if any(
+            disk.get(field) is not None
+            for field in ("gpt_disk_guid", "first_usable_sector", "last_usable_sector")
+        ):
+            raise ValueError("Un manifiesto MBR no puede declarar geometría GPT.")
+        boot_sector = disk.get("boot_sector")
+        if (
+            not isinstance(boot_sector, dict)
+            or boot_sector.get("path") != "boot-sector.bin"
+            or boot_sector.get("size_bytes") != 446
+            or boot_sector.get("compression") != "none"
+        ):
+            raise ValueError("El manifiesto MBR no contiene un boot sector de 446 bytes.")
     partitions = disk.get("partitions")
     artifacts = manifest.get("artifacts")
     if not isinstance(partitions, list) or not isinstance(artifacts, list):
         raise ValueError("El manifiesto no contiene particiones y artefactos.")
-    if len(partitions) < 2 or len(partitions) > 4 or len(artifacts) < 2 or len(artifacts) > 4:
+    if (
+        len(partitions) < (2 if is_gpt else 1)
+        or len(partitions) > 4
+        or len(artifacts) < 2
+        or len(artifacts) > 5
+    ):
         raise ValueError("La cantidad de particiones o artefactos no es válida.")
     artifact_paths: set[str] = set()
     artifact_metadata: dict[str, dict[str, Any]] = {}
@@ -406,7 +457,7 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
         path = artifact.get("path")
         if not isinstance(path, str):
             raise ValueError("La ruta de un artefacto no es válida.")
-        safe_artifact_path(path)
+        safe_artifact_path(path, allow_boot_sector=not is_gpt)
         if path in artifact_paths:
             raise ValueError("El manifiesto contiene artefactos repetidos.")
         artifact_paths.add(path)
@@ -427,6 +478,13 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
     filesystem_uuids: set[str] = set()
     spans: list[tuple[int, int]] = []
     roles: list[str] = []
+    if not is_gpt:
+        boot_sector = disk["boot_sector"]
+        if boot_sector["path"] not in artifact_paths:
+            raise ValueError("El manifiesto MBR no publica el artefacto de boot sector.")
+        if artifact_metadata[boot_sector["path"]]["size_bytes"] != 446:
+            raise ValueError("El artefacto de boot sector MBR debe medir 446 bytes.")
+        referenced.add(boot_sector["path"])
     expected_filesystems = {
         "esp": ("fat32", "/boot/efi"),
         "boot": ("ext4", "/boot"),
@@ -438,7 +496,7 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
             raise ValueError("El manifiesto contiene una partición inválida.")
         number = manifest_int(partition.get("number"), "El número de partición", minimum=1)
         if number > 128 or number in numbers:
-            raise ValueError("El GPT contiene números de partición inválidos o repetidos.")
+            raise ValueError("La tabla contiene números de partición inválidos o repetidos.")
         numbers.add(number)
         role = partition.get("role")
         if role not in expected_filesystems:
@@ -447,10 +505,14 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
         filesystem, mountpoint = expected_filesystems[role]
         if partition.get("filesystem") != filesystem or partition.get("mountpoint") != mountpoint:
             raise ValueError(f"La partición {role} no coincide con su sistema de archivos.")
-        partition_guid = manifest_uuid(partition.get("partition_guid"), "El GUID de partición")
-        if partition_guid in partition_guids:
-            raise ValueError("El GPT contiene GUIDs de partición repetidos.")
-        partition_guids.add(partition_guid)
+        raw_partition_guid = partition.get("partition_guid")
+        if is_gpt:
+            partition_guid = manifest_uuid(raw_partition_guid, "El GUID de partición")
+            if partition_guid in partition_guids:
+                raise ValueError("El GPT contiene GUIDs de partición repetidos.")
+            partition_guids.add(partition_guid)
+        elif raw_partition_guid is not None:
+            raise ValueError("La tabla MBR no puede declarar GUIDs de partición.")
         filesystem_uuid = partition.get("filesystem_uuid")
         if not isinstance(filesystem_uuid, str):
             raise ValueError("El UUID de filesystem no es válido.")
@@ -469,7 +531,8 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
         count = manifest_int(partition.get("size_sectors"), "El tamaño de partición", minimum=1)
         end = start + count - 1
         if start < first or end > last:
-            raise ValueError("Una partición queda fuera del rango GPT seguro.")
+            label = "GPT" if is_gpt else "MBR"
+            raise ValueError(f"Una partición queda fuera del rango {label} seguro.")
         spans.append((start, end))
         artifact = partition.get("artifact")
         if role == "swap":
@@ -484,22 +547,24 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
     previous_end = first - 1
     for start, end in ordered_spans:
         if start <= previous_end:
-            raise ValueError("Las particiones GPT se superponen.")
+            raise ValueError("Las particiones se superponen.")
         previous_end = end
     if (
-        roles.count("esp") != 1
+        (is_gpt and roles.count("esp") != 1)
         or roles.count("root") != 1
+        or (not is_gpt and roles.count("esp") != 0)
         or roles.count("boot") > 1
         or roles.count("swap") > 1
     ):
-        raise ValueError("El GPT no tiene una combinación de roles válida.")
+        label = "GPT" if is_gpt else "MBR"
+        raise ValueError(f"El {label} no tiene una combinación de roles válida.")
     if referenced != artifact_paths or set(artifact_metadata) != artifact_paths:
         raise ValueError("El manifiesto no tiene referencias de artefactos consistentes.")
     validate_manifest_capabilities(manifest)
     return manifest
 
 
-def safe_artifact_path(value: str) -> str:
+def safe_artifact_path(value: str, *, allow_boot_sector: bool = False) -> str:
     if (
         not value
         or not value.isascii()
@@ -509,7 +574,10 @@ def safe_artifact_path(value: str) -> str:
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
         or any(part in {"", ".", ".."} for part in value.split("/"))
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value)
-        or not value.startswith("partitions/")
+        or not (
+            value.startswith("partitions/")
+            or (allow_boot_sector and value == "boot-sector.bin")
+        )
     ):
         raise ValueError("La ruta del artefacto no es segura.")
     return value
@@ -548,8 +616,13 @@ def validate_restore_target(
         if isinstance(child, dict)
     ):
         raise ValueError("El disco destino tiene una partición montada o en uso.")
-    if not Path("/sys/firmware/efi").is_dir():
+    firmware = manifest.get("firmware")
+    firmware_type = firmware.get("type") if isinstance(firmware, dict) else None
+    running_uefi = Path("/sys/firmware/efi").is_dir()
+    if firmware_type == "uefi" and not running_uefi:
         raise ValueError("El agente debe arrancar en firmware UEFI para esta imagen.")
+    if firmware_type == "bios" and running_uefi:
+        raise ValueError("La imagen BIOS/MBR no puede restaurarse desde firmware UEFI.")
 
 
 def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
@@ -641,6 +714,134 @@ def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
         "last_usable_sector": int(last_match[1]),
         "partitions": result,
     }
+
+
+def parse_mbr(device: str, selected: dict[str, Any]) -> dict[str, Any]:
+    """Read a DOS partition table and classify its Linux filesystems without guessing UEFI."""
+
+    if int(selected.get("log-sec") or 0) != 512:
+        raise ValueError("El arranque BIOS/MBR requiere sectores lógicos de 512 bytes.")
+    try:
+        document = json.loads(run_command(["sfdisk", "--json", device]))
+    except json.JSONDecodeError:
+        raise ValueError("sfdisk devolvió una tabla MBR inválida.") from None
+    table = document.get("partitiontable") if isinstance(document, dict) else None
+    if not isinstance(table, dict) or str(table.get("label", "")).lower() != "dos":
+        raise ValueError("El disco no contiene una tabla MBR.")
+    raw_signature = str(table.get("id", ""))
+    signature_match = re.fullmatch(r"0x([0-9A-Fa-f]{8})", raw_signature)
+    if not signature_match:
+        raise ValueError("La tabla MBR no tiene una firma de disco válida.")
+    raw_partitions = table.get("partitions")
+    if not isinstance(raw_partitions, list) or not raw_partitions:
+        raise ValueError("El disco no tiene particiones MBR reconocibles.")
+    children = selected.get("children") or []
+    child_by_number: dict[int, dict[str, Any]] = {}
+    for child in children:
+        if not isinstance(child, dict):
+            continue
+        match = re.search(r"(\d+)$", str(child.get("name") or child.get("path") or ""))
+        if match:
+            child_by_number[int(match[1])] = child
+    result: list[dict[str, Any]] = []
+    for raw_partition in raw_partitions:
+        if not isinstance(raw_partition, dict):
+            raise ValueError("sfdisk devolvió una partición MBR inválida.")
+        node = raw_partition.get("node")
+        number_match = re.search(r"(\d+)$", str(node or ""))
+        if not number_match:
+            raise ValueError("No se pudo determinar el número de una partición MBR.")
+        number = int(number_match[1])
+        start = raw_partition.get("start")
+        count = raw_partition.get("size")
+        if type(start) is not int or type(count) is not int or start < 2_048 or count <= 0:
+            raise ValueError("Una partición MBR no deja espacio suficiente para GRUB BIOS.")
+        child = child_by_number.get(number, {})
+        part_path = (
+            device_path(child)
+            if child
+            else f"{device}{'p' if device[-1].isdigit() else ''}{number}"
+        )
+        filesystem = str(child.get("fstype") or "").lower()
+        filesystem_uuid = str(child.get("uuid") or "")
+        if not filesystem_uuid or not filesystem:
+            values = parse_export(run_command(["blkid", "-o", "export", part_path], check=False))
+            filesystem = filesystem or values.get("TYPE", "").lower()
+            filesystem_uuid = filesystem_uuid or values.get("UUID", "")
+        mountpoints = child.get("mountpoints") or child.get("mountpoint") or []
+        if isinstance(mountpoints, str):
+            mountpoints = [mountpoints]
+        if filesystem == "swap":
+            role, mountpoint = "swap", None
+        elif filesystem == "ext4" and "/boot" in mountpoints:
+            role, mountpoint = "boot", "/boot"
+        elif filesystem == "ext4":
+            role, mountpoint = "root", "/"
+        else:
+            raise ValueError(f"La partición {number} no pertenece a la matriz BIOS/MBR admitida.")
+        if not filesystem_uuid:
+            raise ValueError(f"La partición {number} no tiene UUID de filesystem.")
+        result.append(
+            {
+                "number": number,
+                "role": role,
+                "start_sector": start,
+                "size_sectors": count,
+                "partition_guid": None,
+                "filesystem": filesystem,
+                "filesystem_uuid": filesystem_uuid,
+                "mountpoint": mountpoint,
+                "device": part_path,
+            }
+        )
+    roles = [partition["role"] for partition in result]
+    if roles.count("root") != 1 or roles.count("boot") > 1 or roles.count("swap") > 1:
+        raise ValueError("El disco MBR debe tener una raíz única y como máximo /boot y swap.")
+    sectors = int(selected["size"]) // int(selected["log-sec"])
+    if any(
+        int(partition["start_sector"]) + int(partition["size_sectors"]) > sectors
+        for partition in result
+    ):
+        raise ValueError("Una partición MBR queda fuera de la capacidad del disco.")
+    spans = sorted(
+        (
+            int(partition["start_sector"]),
+            int(partition["start_sector"]) + int(partition["size_sectors"]) - 1,
+        )
+        for partition in result
+    )
+    if any(
+        start <= previous_end
+        for (start, _), (_, previous_end) in zip(spans[1:], spans, strict=False)
+    ):
+        raise ValueError("Las particiones MBR se superponen.")
+    return {
+        "size_bytes": int(selected["size"]),
+        "logical_sector_bytes": int(selected["log-sec"]),
+        "sector_count": sectors,
+        "mbr_disk_signature": signature_match[1].lower(),
+        "partitions": result,
+    }
+
+
+def read_mbr_boot_sector(device: str) -> bytes:
+    try:
+        with Path(device).open("rb", buffering=0) as source:
+            value = source.read(512)
+    except OSError as error:
+        raise ValueError(f"No se pudo leer el sector de arranque MBR: {error}") from None
+    if len(value) != 512 or value[510:512] != b"\x55\xaa":
+        raise ValueError("El sector de arranque MBR no tiene la firma 55aa.")
+    if not any(value[:446]):
+        raise ValueError("El sector de arranque MBR no contiene código de arranque.")
+    return value
+
+
+def validate_mbr_boot_sector(device: str, geometry: dict[str, Any]) -> bytes:
+    value = read_mbr_boot_sector(device)
+    if any(int(partition["start_sector"]) < 2_048 for partition in geometry["partitions"]):
+        raise ValueError("El MBR no deja el espacio requerido para incrustar GRUB BIOS.")
+    return value[:446]
 
 
 def assert_disk_is_quiescent(partitions: list[dict[str, Any]]) -> None:
@@ -818,7 +1019,7 @@ class LeaseHeartbeat:
 
 
 def staging_path(root: Path, relative: str) -> Path:
-    safe = safe_artifact_path(relative)
+    safe = safe_artifact_path(relative, allow_boot_sector=True)
     if root.exists() and (root.is_symlink() or not root.is_dir()):
         raise ValueError("El directorio de staging no es seguro.")
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -898,9 +1099,13 @@ def partition_device(device: str, number: int) -> str:
     return f"{base}{'p' if base[-1].isdigit() else ''}{number}"
 
 
-def role_code(role: str) -> str:
+def role_code(role: str, partition_table: str = "gpt") -> str:
     try:
-        return {"esp": "EF00", "boot": "8300", "root": "8300", "swap": "8200"}[role]
+        codes = {
+            "gpt": {"esp": "EF00", "boot": "8300", "root": "8300", "swap": "8200"},
+            "mbr": {"boot": "83", "root": "83", "swap": "82"},
+        }
+        return codes[partition_table][role]
     except KeyError:
         raise ValueError("La imagen contiene un rol de partición no admitido.") from None
 
@@ -909,6 +1114,33 @@ def restore_partition_table(device: str, disk: dict[str, Any]) -> None:
     """Recreate only the manifest layout; the caller must validate the target first."""
 
     partitions = disk["partitions"]
+    if disk.get("mbr_disk_signature") is not None:
+        lines = [
+            "label: dos",
+            f"label-id: 0x{str(disk['mbr_disk_signature']).lower().removeprefix('0x')}",
+            "unit: sectors",
+            "sector-size: 512",
+            "",
+        ]
+        for partition in partitions:
+            role = str(partition["role"])
+            if role == "esp":
+                raise ValueError("Una tabla MBR no puede contener una ESP UEFI.")
+            start = int(partition["start_sector"])
+            count = int(partition["size_sectors"])
+            bootable = ", bootable" if role in {"root", "boot"} else ""
+            lines.append(
+                f"start={start}, size={count}, type={role_code(role, 'mbr')}{bootable}"
+            )
+        run_command(
+            ["sfdisk", "--wipe", "always", "--no-reread", device],
+            timeout=120,
+            input_text="\n".join(lines) + "\n",
+        )
+        if shutil.which("partprobe"):
+            run_command(["partprobe", device], timeout=60, check=False)
+        run_command(["sfdisk", "--verify", device], timeout=120)
+        return
     run_command(["sgdisk", "--zap-all", device], timeout=120)
     run_command(["sgdisk", "--clear", f"--disk-guid={disk['gpt_disk_guid']}", device], timeout=120)
     for partition in partitions:
@@ -938,6 +1170,23 @@ def restore_partition_table(device: str, disk: dict[str, Any]) -> None:
     if shutil.which("partprobe"):
         run_command(["partprobe", device], timeout=60, check=False)
     run_command(["sgdisk", "--verify", device], timeout=120)
+
+
+def write_mbr_boot_code(artifact: Path, device: str) -> None:
+    try:
+        value = artifact.read_bytes()
+    except OSError as error:
+        raise ValueError(f"No se pudo leer el boot sector MBR publicado: {error}") from None
+    if len(value) != 446:
+        raise ValueError("El artefacto de boot sector MBR debe medir 446 bytes.")
+    try:
+        with Path(device).open("r+b", buffering=0) as target:
+            target.seek(0)
+            target.write(value)
+            target.flush()
+            os.fsync(target.fileno())
+    except OSError as error:
+        raise ValueError(f"No se pudo instalar el boot sector MBR: {error}") from None
 
 
 def restore_partition_artifact(
@@ -1008,7 +1257,21 @@ def initialize_swap(partition: dict[str, Any], device: str) -> None:
 def verify_restored_layout(device: str, disk: dict[str, Any]) -> None:
     if shutil.which("partprobe"):
         run_command(["partprobe", device], timeout=60, check=False)
-    run_command(["sgdisk", "--verify", device], timeout=120)
+    if disk.get("mbr_disk_signature") is not None:
+        run_command(["sfdisk", "--verify", device], timeout=120)
+        try:
+            document = json.loads(run_command(["sfdisk", "--json", device]))
+        except json.JSONDecodeError:
+            raise ValueError("sfdisk devolvió un layout MBR inválido al verificar.") from None
+        table = document.get("partitiontable") if isinstance(document, dict) else None
+        if not isinstance(table, dict) or str(table.get("label", "")).lower() != "dos":
+            raise ValueError("La restauración no conservó la tabla MBR.")
+        actual_signature = str(table.get("id", "")).lower().removeprefix("0x")
+        if actual_signature != str(disk["mbr_disk_signature"]).lower().removeprefix("0x"):
+            raise ValueError("La firma de disco MBR restaurada no coincide.")
+        read_mbr_boot_sector(device)
+    else:
+        run_command(["sgdisk", "--verify", device], timeout=120)
     expected_types = {
         "esp": {"vfat", "fat32"},
         "boot": {"ext4"},
@@ -1168,7 +1431,10 @@ def customize_clone_identity(root: Path, hostname: str) -> None:
 
 @contextlib.contextmanager
 def mounted_target(
-    root: Path, device: str, partitions: list[dict[str, Any]]
+    root: Path,
+    device: str,
+    partitions: list[dict[str, Any]],
+    partition_table: str = "gpt",
 ) -> Iterator[dict[str, Path]]:
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     by_role = {str(partition["role"]): partition for partition in partitions}
@@ -1192,12 +1458,19 @@ def mounted_target(
                 timeout=60,
             )
             mounted.append(boot_mount)
-        esp_mount.mkdir(parents=True, mode=0o755, exist_ok=True)
-        run_command(
-            ["mount", partition_device(device, int(by_role["esp"]["number"])), str(esp_mount)],
-            timeout=60,
-        )
-        mounted.append(esp_mount)
+        if partition_table == "gpt":
+            if "esp" not in by_role:
+                raise ValueError("El layout UEFI no contiene una ESP.")
+            esp_mount.mkdir(parents=True, mode=0o755, exist_ok=True)
+            run_command(
+                [
+                    "mount",
+                    partition_device(device, int(by_role["esp"]["number"])),
+                    str(esp_mount),
+                ],
+                timeout=60,
+            )
+            mounted.append(esp_mount)
         yield {"root": root_mount, "esp": esp_mount, "boot": boot_mount}
     finally:
         for mountpoint in reversed(mounted):
@@ -1231,6 +1504,29 @@ def ensure_uefi_boot(root: Path, device: str, partitions: list[dict[str, Any]]) 
         run_command(["sync"], timeout=60, check=False)
 
 
+def ensure_bios_boot(root: Path, device: str, partitions: list[dict[str, Any]]) -> None:
+    with mounted_target(root, device, partitions, "mbr") as mounts:
+        grub = shutil.which("grub-install")
+        if not grub:
+            raise ValueError("Falta grub-install para preparar el arranque BIOS.")
+        run_command(
+            [
+                "grub-install",
+                "--target=i386-pc",
+                f"--boot-directory={mounts['boot']}",
+                "--recheck",
+                device,
+            ],
+            timeout=300,
+        )
+        read_mbr_boot_sector(device)
+        update_grub = mounts["root"] / "usr/sbin/update-grub"
+        if update_grub.is_file() and not update_grub.is_symlink():
+            run_command(["chroot", str(mounts["root"]), "/usr/sbin/update-grub"], timeout=300)
+    if shutil.which("sync"):
+        run_command(["sync"], timeout=60, check=False)
+
+
 def restore_claimed_task(
     base: str,
     claim: dict[str, Any],
@@ -1248,6 +1544,8 @@ def restore_claimed_task(
     if not isinstance(manifest_value, dict):
         raise ValueError("La tarea no contiene el manifiesto de la imagen.")
     manifest = validate_restore_manifest(manifest_value, image_id)
+    firmware_type = str(manifest["firmware"]["type"])
+    partition_table = "gpt" if firmware_type == "uefi" else "mbr"
     target = claim.get("target")
     selector = target.get("disk") if isinstance(target, dict) else claim.get("disk")
     if not isinstance(selector, dict):
@@ -1279,7 +1577,10 @@ def restore_claimed_task(
         phase="inspecting",
         processed=0,
         total=total,
-        message="Destino validado en modo UEFI; todavía no se escribió ningún bloque.",
+        message=(
+            f"Destino validado para {firmware_type.upper()}/{partition_table.upper()}; "
+            "todavía no se escribió ningún bloque."
+        ),
     )
     artifact_files: dict[str, Path] = {}
     processed = 0
@@ -1313,6 +1614,8 @@ def restore_claimed_task(
     lease.check()
     device = device_path(selected)
     restore_partition_table(device, disk)
+    if firmware_type == "bios":
+        write_mbr_boot_code(artifact_files["boot-sector.bin"], device)
     sequence = post_progress(
         base,
         task_id,
@@ -1322,7 +1625,7 @@ def restore_claimed_task(
         phase="restoring",
         processed=0,
         total=total,
-        message="Layout GPT creado; restaurando particiones verificadas.",
+        message=f"Layout {partition_table.upper()} creado; restaurando particiones verificadas.",
     )
     processed = 0
     for partition in disk["partitions"]:
@@ -1372,12 +1675,20 @@ def restore_claimed_task(
         phase="finalizing",
         processed=total,
         total=total,
-        message="Layout y sistemas de archivos verificados; preparando UEFI.",
+        message=(
+            f"Layout {partition_table.upper()} y sistemas de archivos verificados; "
+            f"preparando arranque {firmware_type.upper()}."
+        ),
     )
     if operation == "clone":
-        with mounted_target(staging_dir / f"{task_id}.mount", device, disk["partitions"]) as mounts:
+        with mounted_target(
+            staging_dir / f"{task_id}.mount", device, disk["partitions"], partition_table
+        ) as mounts:
             customize_clone_identity(mounts["root"], hostname)
-    ensure_uefi_boot(staging_dir / f"{task_id}.boot", device, disk["partitions"])
+    if firmware_type == "uefi":
+        ensure_uefi_boot(staging_dir / f"{task_id}.boot", device, disk["partitions"])
+    else:
+        ensure_bios_boot(staging_dir / f"{task_id}.boot", device, disk["partitions"])
     lease.check()
     sequence = post_progress(
         base,
@@ -1388,7 +1699,10 @@ def restore_claimed_task(
         phase="verifying",
         processed=total,
         total=total,
-        message="Arranque UEFI listo; el servidor recibirá la confirmación antes de reiniciar.",
+        message=(
+            f"Arranque {firmware_type.upper()} listo; el servidor recibirá la confirmación "
+            "antes de reiniciar."
+        ),
     )
     json_request(
         f"{base}/api/v1/tasks/{task_id}/result",
@@ -1420,6 +1734,7 @@ def capture_task(
             "session_id": str(uuid.uuid4()),
             "capabilities": [
                 "gpt",
+                "mbr",
                 "partclone.ext4",
                 "partclone.fat",
                 "restore",
@@ -1461,7 +1776,21 @@ def capture_task(
             raise ValueError("La tarea no contiene un selector de disco.")
         selected = select_disk(document, selector)
         device = device_path(selected)
-        geometry = parse_gpt(device, selected)
+        partition_table = str(selected.get("pttype") or "").lower()
+        if not partition_table:
+            partition_table = parse_export(
+                run_command(["blkid", "-o", "export", device], check=False)
+            ).get("PTTYPE", "gpt")
+        if partition_table in {"dos", "mbr"}:
+            partition_table = "mbr"
+            geometry = parse_mbr(device, selected)
+        elif partition_table == "gpt":
+            geometry = parse_gpt(device, selected)
+        else:
+            raise ValueError("El disco no contiene una tabla GPT o MBR admitida.")
+        boot_code: bytes | None = None
+        if partition_table == "mbr":
+            boot_code = validate_mbr_boot_sector(device, geometry)
         assert_disk_is_quiescent(geometry["partitions"])
         total = int(selected["size"])
         sequence = post_progress(
@@ -1476,8 +1805,30 @@ def capture_task(
             message="Disco validado en modo de solo lectura.",
         )
         artifacts: list[dict[str, Any]] = []
+        partition_artifacts: list[dict[str, Any]] = []
         commands: set[str] = set()
         processed_total = 0
+        if boot_code is not None:
+            boot_path = "boot-sector.bin"
+            upload_chunk(
+                f"{base}/api/v1/tasks/{task_id}/artifacts/{boot_path}",
+                boot_code,
+                token=task_token,
+                ca_file=ca_file,
+                index=0,
+                offset=0,
+                chunk_size=int(claim.get("chunk_bytes") or DEFAULT_CHUNK_BYTES),
+            )
+            artifacts.append(
+                {
+                    "path": boot_path,
+                    "size_bytes": len(boot_code),
+                    "compression": "none",
+                    "sha256": hashlib.sha256(boot_code).hexdigest(),
+                }
+            )
+            commands.add("mbr")
+            processed_total += len(boot_code)
         for partition in geometry["partitions"]:
             if partition["role"] == "swap":
                 continue
@@ -1522,7 +1873,7 @@ def capture_task(
                         total=total,
                         message=f"Transfiriendo {path}.",
                     )
-            artifacts.append(
+            partition_artifacts.append(
                 {
                     "path": path,
                     "size_bytes": processed_partition,
@@ -1539,13 +1890,28 @@ def capture_task(
             for partition in geometry["partitions"]
         ]
         for partition, artifact in zip(
-            [part for part in partition_payload if part["role"] != "swap"], artifacts, strict=True
+            [part for part in partition_payload if part["role"] != "swap"],
+            partition_artifacts,
+            strict=True,
         ):
             partition["artifact"] = artifact["path"]
         for partition in partition_payload:
             partition.setdefault("artifact", None)
         source = claim.get("source")
         system = claim.get("system")
+        disk_payload: dict[str, Any] = {
+            **{key: geometry[key] for key in geometry if key != "partitions"},
+            "partitions": partition_payload,
+        }
+        if boot_code is not None:
+            disk_payload["boot_sector"] = next(
+                artifact for artifact in artifacts if artifact["path"] == "boot-sector.bin"
+            )
+        firmware = (
+            {"type": "bios", "secure_boot": False}
+            if partition_table == "mbr"
+            else {"type": "uefi", "secure_boot": False}
+        )
         manifest = {
             "format": "pyfog-disk-image",
             "format_version": 2,
@@ -1555,19 +1921,16 @@ def capture_task(
             "source": source,
             "system": system,
             "architecture": "x86_64",
-            "firmware": {"type": "uefi", "secure_boot": False},
+            "firmware": firmware,
             "capabilities": {
-                "firmware": {"type": "uefi", "secure_boot": False},
-                "partition_table": "gpt",
+                "firmware": firmware,
+                "partition_table": partition_table,
                 "disks": 1,
                 "filesystems": sorted({part["filesystem"] for part in partition_payload}),
                 "encryption": "none",
                 "volumes": "partitions",
             },
-            "disk": {
-                **{key: geometry[key] for key in geometry if key != "partitions"},
-                "partitions": partition_payload,
-            },
+            "disk": disk_payload,
             "tool": {
                 "name": "partclone",
                 "version": command_version(),

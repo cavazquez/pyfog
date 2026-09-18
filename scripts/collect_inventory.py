@@ -38,7 +38,7 @@ def read_text(path: Path, warnings: list[str], *, optional: bool = False) -> str
 
 
 def disk_inventory(warnings: list[str]) -> list[dict[str, Any]]:
-    columns = "NAME,TYPE,SIZE,MODEL,SERIAL,WWN,TRAN,LOG-SEC,RM"
+    columns = "NAME,TYPE,SIZE,MODEL,SERIAL,WWN,TRAN,LOG-SEC,PTTYPE,RM"
     try:
         executable = shutil.which("lsblk")
         if not executable:
@@ -65,6 +65,13 @@ def disk_inventory(warnings: list[str]) -> list[dict[str, Any]]:
                     "transport": (device.get("tran") or "")[:200],
                     "logical_sector_bytes": (
                         int(device["log-sec"]) if device.get("log-sec") else None
+                    ),
+                    "partition_table": (
+                        "mbr"
+                        if str(device.get("pttype") or "").lower() in {"dos", "mbr"}
+                        else "gpt"
+                        if str(device.get("pttype") or "").lower() == "gpt"
+                        else None
                     ),
                     "removable": str(device.get("rm", False)).lower() in {"true", "1"},
                 }
@@ -136,6 +143,7 @@ def collect(proc: Path = Path("/proc"), sysfs: Path = Path("/sys")) -> dict[str,
         "report_id": str(uuid.uuid4()),
         "collected_at": datetime.now(timezone.utc).isoformat(),  # noqa: UP017 (Python 3.10 client)
         "hostname": socket.gethostname()[:253],
+        "firmware": "uefi" if (sysfs / "firmware/efi").is_dir() else "bios",
         "os": {
             "name": os_release.get("PRETTY_NAME", "Linux")[:200],
             "id": os_release.get("ID", "linux")[:200],

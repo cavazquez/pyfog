@@ -101,12 +101,71 @@ def valid_manifest_v2() -> dict[str, object]:
     return payload
 
 
+def valid_bios_manifest() -> dict[str, object]:
+    payload = copy.deepcopy(valid_manifest_v2())
+    firmware = {"type": "bios", "secure_boot": False}
+    payload["firmware"] = firmware
+    payload["capabilities"] = {
+        "firmware": firmware,
+        "partition_table": "mbr",
+        "disks": 1,
+        "filesystems": ["ext4"],
+        "encryption": "none",
+        "volumes": "partitions",
+    }
+    disk = payload["disk"]
+    assert isinstance(disk, dict)
+    root = copy.deepcopy(disk["partitions"][1])
+    root.update(
+        {
+            "number": 1,
+            "start_sector": 2_048,
+            "size_sectors": disk["sector_count"] - 2_048,
+            "partition_guid": None,
+            "artifact": "partitions/01-root.partclone",
+        }
+    )
+    for field in ("gpt_disk_guid", "first_usable_sector", "last_usable_sector"):
+        disk.pop(field)
+    disk["mbr_disk_signature"] = "1a2b3c4d"
+    disk["partitions"] = [root]
+    disk["boot_sector"] = {
+        "path": "boot-sector.bin",
+        "size_bytes": 446,
+        "compression": "none",
+        "sha256": hashlib.sha256(b"b" * 446).hexdigest(),
+    }
+    payload["tool"] = {
+        "name": "partclone",
+        "version": "0.3.45",
+        "commands": ["mbr", "partclone.ext4"],
+    }
+    payload["artifacts"] = [
+        {
+            "path": "partitions/01-root.partclone",
+            "size_bytes": 4,
+            "compression": "zstd",
+            "sha256": hashlib.sha256(b"root").hexdigest(),
+        },
+        disk["boot_sector"],
+    ]
+    return payload
+
+
 def test_valid_manifest_preserves_boot_layout_and_artifact_metadata():
     manifest = ImageManifest.model_validate(valid_manifest())
     assert manifest.disk.logical_sector_bytes == 512
     assert [part.role for part in manifest.disk.partitions] == ["esp", "root"]
     assert manifest.disk.partitions[0].filesystem_uuid == "A1B2C3D4"
     assert manifest.artifacts[1].compression == "zstd"
+
+
+def test_valid_bios_mbr_manifest_preserves_boot_sector_and_is_supported():
+    manifest = ImageManifest.model_validate(valid_bios_manifest())
+    assert manifest.firmware.type == "bios"
+    assert manifest.disk.mbr_disk_signature == "1a2b3c4d"
+    assert manifest.disk.boot_sector is not None
+    ensure_supported_image(manifest)
 
 
 @pytest.mark.parametrize(

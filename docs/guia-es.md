@@ -1,7 +1,8 @@
 # Guía operativa de PyFog
 
 Esta guía cubre el MVP Linux de punta a punta. El alcance comprobado es Ubuntu x86_64, firmware
-UEFI sin Secure Boot, un disco GPT por tarea, ESP FAT32, `/boot` y/o raíz ext4 y swap opcional.
+UEFI/GPT o BIOS/MBR sin Secure Boot, un disco por tarea, raíz ext4, ESP FAT32 sólo para UEFI y
+swap opcional.
 El destino debe tener igual o mayor capacidad y sector lógico compatible. PyFog no promete
 compatibilidad de imágenes con FOG ni con otras distribuciones fuera de esa matriz.
 
@@ -9,7 +10,8 @@ compatibilidad de imágenes con FOG ni con otras distribuciones fuera de esa mat
 
 Para desarrollo necesitás Linux, Python 3.12–3.14 y [uv](https://docs.astral.sh/uv/). Docker
 Engine con Compose v2 es una alternativa cómoda. Para crear el agente PXE completo necesitás una
-máquina Linux x86_64 con kernel, BusyBox, Partclone, `sgdisk`, `zstd`, herramientas UEFI y una CA
+máquina Linux x86_64 con kernel, BusyBox, Partclone, `sgdisk`, `sfdisk`, `zstd`, `grub-pc-bin`,
+`grub-efi-amd64-bin`, GRUB UEFI/BIOS y una CA
 confiable; consultá [agent/README.md](../agent/README.md). QEMU/OVMF y `gdisk` son necesarios para
 el laboratorio descartable.
 
@@ -83,7 +85,8 @@ no la conectividad de cada equipo.
 
 ## 4. Preparar y capturar una referencia
 
-La referencia debe ser Ubuntu x86_64 con GPT, ESP FAT32 y raíz ext4, sin LVM ni LUKS. Instalá las
+La referencia UEFI debe ser Ubuntu x86_64 con GPT, ESP FAT32 y raíz ext4; la referencia BIOS debe
+usar MBR, raíz ext4 y espacio libre desde el sector 2048. En ambos casos no uses LVM ni LUKS. Instalá las
 aplicaciones, actualizaciones y configuración que quieras distribuir; dejá el direccionamiento en
 DHCP. Comprobá el layout con el laboratorio o con el recolector antes de capturar.
 
@@ -97,7 +100,7 @@ En la ficha de un equipo con inventario:
 5. Seguí la tarea: la imagen sólo pasa a **Lista** después de validar hashes, manifiesto y
    publicación atómica.
 
-El agente vuelve a comprobar el selector estable del disco, montajes, GPT y herramientas justo antes
+El agente vuelve a comprobar el selector estable del disco, montajes, la tabla GPT/MBR y las herramientas justo antes
 de leer. Una captura parcial queda fallida y nunca aparece como imagen desplegable.
 
 ## 5. Restaurar el origen
@@ -108,7 +111,7 @@ fecha/origen de la imagen; marcá la confirmación de sobrescritura. El servidor
 imagen, permisos, inventario, disco e idempotencia.
 
 El agente descarga cada artefacto a staging efímero, verifica SHA-256, recrea GPT/ESP/ext4/swap,
-comprueba UUIDs y arranque UEFI fallback, y recién entonces informa éxito. La restauración no
+  comprueba UUIDs y arranque UEFI fallback o GRUB BIOS, y recién entonces informa éxito. La restauración no
 personaliza hostname, machine-id, claves SSH ni red: conserva la identidad del sistema de origen.
 
 ## 6. Clonar otro equipo

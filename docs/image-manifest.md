@@ -27,10 +27,10 @@ Una imagen v2 agrega `capabilities`:
 }
 ```
 
-La capacidad declarada debe coincidir con el firmware y los filesystems del layout. El perfil
-actual admite UEFI sin Secure Boot, GPT, un disco, FAT32/ext4/swap, sin cifrado y volúmenes por
-particiones. BIOS/MBR, Secure Boot, LVM, RAID, LUKS, otros filesystems y varios discos se rechazan
-antes de iniciar una escritura.
+La capacidad declarada debe coincidir con el firmware y los filesystems del layout. Los perfiles
+habilitados son UEFI sin Secure Boot con GPT/FAT32/ext4/swap, o BIOS sin Secure Boot con MBR/ext4
+(swap opcional), siempre con un disco, sin cifrado y con volúmenes por particiones. Secure Boot,
+LVM, RAID, LUKS, otros filesystems y varios discos se rechazan antes de iniciar una escritura.
 
 El catálogo comprueba el manifiesto y las capacidades antes de mostrar una imagen como utilizable.
 La validación de creación de tareas vuelve a comprobarlas, y el agente las valida inmediatamente
@@ -41,23 +41,31 @@ produce un error explícito y no se publica ni se restaura.
 
 El manifiesto registra el UUID de imagen, fecha de creación, algoritmo `sha256`, equipo e informe
 de inventario de origen, sistema Ubuntu, arquitectura `x86_64`, firmware, herramienta Partclone,
-capacidades y un disco GPT. El disco conserva capacidad total, sector lógico, cantidad de sectores,
-GUID GPT y rango utilizable. Cada partición registra número, rol, sector inicial, cantidad de
-sectores, GUID, filesystem, UUID, punto de montaje y artefacto:
+capacidades y un disco GPT o MBR. El disco conserva capacidad total, sector lógico, cantidad de
+sectores y, según el perfil, GUID/rango GPT o firma MBR. Cada partición registra número, rol, sector
+inicial, cantidad de sectores, filesystem, UUID, punto de montaje y artefacto; sólo GPT agrega GUID
+de partición:
 
 * `esp`: FAT32, `/boot/efi`, con UUID FAT32 de ocho dígitos y `partclone.fat`;
 * `boot`: ext4, `/boot`, opcional, con `partclone.ext4`;
 * `root`: ext4, `/`, obligatorio, con `partclone.ext4`;
 * `swap`: swap, sin punto de montaje ni artefacto de datos, opcional.
 
+En el perfil BIOS/MBR el disco agrega `boot_sector`, un artefacto `boot-sector.bin` sin compresión
+de exactamente 446 bytes. La captura conserva el código del sector 0, valida la firma `55aa` y
+exige que la primera partición empiece en el sector 2048 para dejar espacio al embedding de GRUB
+BIOS. La restauración escribe ese código sin tocar la tabla MBR, reinstala GRUB con
+`grub-install --target=i386-pc` y vuelve a verificar el sector antes de informar éxito. Un perfil
+UEFI nunca acepta ese artefacto, y un perfil BIOS nunca acepta ESP/GPT.
+
 Los artefactos sólo pueden ser archivos relativos POSIX dentro del directorio de la imagen. Cada
 uno registra tamaño, compresión (`none`, `gzip` o `zstd`) y SHA-256 hexadecimal en minúsculas.
 Todas las rutas se referencian exactamente una vez desde una partición de datos; swap queda
 explícita para conservar su UUID sin copiar sus bloques.
 
-El validador comprueba la capacidad, el rango GPT, las particiones no superpuestas, las UUID,
-referencias, rutas, tamaños, sumas y capacidades. Los campos desconocidos, el JSON inválido, los
-artefactos ausentes o alterados y los perfiles incompatibles se rechazan.
+El validador comprueba la capacidad, el rango GPT o el espacio seguro MBR, las particiones no
+superpuestas, las UUID, referencias, rutas, tamaños, sumas y capacidades. Los campos desconocidos,
+el JSON inválido, los artefactos ausentes o alterados y los perfiles incompatibles se rechazan.
 
 La matriz reproducible de perfiles y sus QCOW2 descartables está en
 [`docs/compatibility-fixtures.md`](compatibility-fixtures.md).

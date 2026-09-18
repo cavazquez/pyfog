@@ -168,7 +168,9 @@ def integer_header(value: str | None, name: str) -> int:
 
 
 def artifact_route_path(value: str) -> str:
-    if len(value) > 240 or not value.startswith("partitions/"):
+    if len(value) > 240 or not (
+        value.startswith("partitions/") or value == "boot-sector.bin"
+    ):
         raise HTTPException(422, "La ruta del artefacto no es válida.")
     try:
         validate_relative_path(value)
@@ -566,6 +568,12 @@ def finish_agent_task(
             return JSONResponse(
                 {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
             )
+        image = db.get(Image, task.image_id)
+        firmware_type = "uefi"
+        if image is not None and isinstance(image.manifest_json, dict):
+            firmware = image.manifest_json.get("firmware")
+            if isinstance(firmware, dict) and firmware.get("type") in {"uefi", "bios"}:
+                firmware_type = str(firmware["type"])
         try:
             record_progress(
                 db,
@@ -576,7 +584,7 @@ def finish_agent_task(
                 phase="verifying",
                 bytes_processed=attempt.bytes_processed,
                 total_bytes=attempt.total_bytes,
-                message="El agente verificó el destino y el arranque UEFI.",
+                message=f"El agente verificó el destino y el arranque {firmware_type.upper()}.",
             )
             attempt.finished_at = now()
             attempt.phase = "completed"

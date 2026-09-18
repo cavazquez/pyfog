@@ -30,6 +30,7 @@ def test_linux_collector_produces_valid_partial_inventory(tmp_path, monkeypatch)
     assert inventory.memory.total_bytes == 8192000 * 1024
     assert len(inventory.interfaces) == 1
     assert inventory.disks == []
+    assert inventory.firmware == "bios"
     assert any("lsblk" in warning for warning in inventory.warnings)
     assert inventory.system.serial_number == ""
 
@@ -37,7 +38,14 @@ def test_linux_collector_produces_valid_partial_inventory(tmp_path, monkeypatch)
 def test_disks_are_parsed_without_changing_devices(monkeypatch):
     data = {
         "blockdevices": [
-            {"name": "vda", "type": "disk", "size": "1048576", "log-sec": 512, "rm": "0"},
+            {
+                "name": "vda",
+                "type": "disk",
+                "size": "1048576",
+                "log-sec": 512,
+                "pttype": "dos",
+                "rm": "0",
+            },
             {"name": "loop0", "type": "loop", "size": 4096},
         ]
     }
@@ -48,6 +56,7 @@ def test_disks_are_parsed_without_changing_devices(monkeypatch):
     assert len(result) == 1
     assert result[0]["name"] == "/dev/vda"
     assert result[0]["removable"] is False
+    assert result[0]["partition_table"] == "mbr"
     args, kwargs = run.call_args
     assert args[0][0] == "/usr/bin/lsblk"
     assert "shell" not in kwargs

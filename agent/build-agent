@@ -50,7 +50,7 @@ Opciones de build:
   --output-dir DIR          Directorio de artefactos (por defecto: dist/agent)
   --mode MODE               imaging (por defecto) o inventory-only
   --inventory-only          Alias de --mode inventory-only
-  --kernel PATH             Kernel UEFI x86_64 legible
+  --kernel PATH             Kernel x86_64 legible para UEFI o BIOS
   --kernel-version VERSION  Versión usada para buscar /lib/modules/VERSION
   --modules-dir DIR         Directorio de módulos correspondiente al kernel
   --include-all-modules     Copiar todos los módulos, no sólo los de red/almacenamiento
@@ -58,9 +58,9 @@ Opciones de build:
   --source-date-epoch N     Fecha fija de archivos, en segundos UTC
   --version VERSION         Sobrescribir la versión de agent/VERSION
 
-El modo imaging exige busybox, Python, HTTPS, red, sgdisk, Partclone ext4/FAT y las herramientas
-de restauración UEFI. El modo inventory-only omite las herramientas de escritura para probar un
-agente sin riesgo.
+El modo imaging exige busybox, Python, HTTPS, red, sgdisk/sfdisk, Partclone ext4/FAT y las
+herramientas GRUB de restauración UEFI/BIOS. El modo inventory-only omite las herramientas de
+escritura para probar un agente sin riesgo.
 EOF
 }
 
@@ -102,6 +102,10 @@ find_partclone_fat() {
         fi
     done
     return 1
+}
+
+grub_target_available() {
+    [ -d "/usr/lib/grub/$1" ]
 }
 
 parse_common_options() {
@@ -175,7 +179,7 @@ doctor() {
     local missing=0 path kernel
     local -a required=(bash cpio gzip sha256sum find sort ldd readlink python3 busybox curl openssl ip)
     if [ "$MODE" = imaging ]; then
-        required+=(sgdisk blockdev partprobe mount umount grub-install chroot ssh-keygen zstd mkswap)
+        required+=(sgdisk sfdisk blockdev partprobe mount umount grub-install chroot ssh-keygen zstd mkswap)
     fi
     printf 'PyFog agent %s (%s)\n' "$VERSION" "$MODE"
     for command_name in "${required[@]}"; do
@@ -200,6 +204,14 @@ doctor() {
             printf '  FALTA   %-18s (partclone.fat o partclone.vfat)\n' partclone.fat
             missing=1
         fi
+        for grub_target in i386-pc x86_64-efi; do
+            if grub_target_available "$grub_target"; then
+                printf '  OK      %-18s /usr/lib/grub/%s\n' "grub-$grub_target" "$grub_target"
+            else
+                printf '  FALTA   %-18s (instalá el target GRUB correspondiente)\n' "grub-$grub_target"
+                missing=1
+            fi
+        done
     fi
     if [ -n "$CA_FILE_SOURCE" ]; then
         if [ -r "$CA_FILE_SOURCE" ]; then
@@ -459,8 +471,12 @@ build() {
     if [ "$MODE" = imaging ]; then
         path=$(resolve_tool sgdisk)
         [ -n "$path" ] || error "falta sgdisk para el modo imaging"
+        path=$(resolve_tool sfdisk)
+        [ -n "$path" ] || error "falta sfdisk para el modo imaging"
         partclone_ext4=$(find_partclone) || error "falta partclone.ext4 o partclone.ext4dev"
         partclone_fat=$(find_partclone_fat) || error "falta partclone.fat o partclone.vfat"
+        grub_target_available i386-pc || error "falta el target GRUB i386-pc (grub-pc-bin)"
+        grub_target_available x86_64-efi || error "falta el target GRUB x86_64-efi (grub-efi-amd64-bin)"
     else
         partclone_ext4=""
         partclone_fat=""
@@ -513,7 +529,7 @@ build() {
 
     tools=(curl openssl gzip ip lsblk blkid)
     if [ "$MODE" = imaging ]; then
-        tools+=(blockdev partprobe mount umount grub-install chroot ssh-keygen mkswap)
+        tools+=(sfdisk blockdev partprobe mount umount grub-install chroot ssh-keygen mkswap)
         path=$(resolve_tool zstd)
         [ -n "$path" ] || error "falta zstd para restaurar artefactos zstd"
         tools+=(zstd)
@@ -522,7 +538,7 @@ build() {
         path=$(resolve_tool "$tool_name")
         [ -n "$path" ] || error "falta $tool_name"
         case "$tool_name" in
-            ip|blkid|blockdev|partprobe|mount|umount|grub-install|chroot|mkswap) stage_binary "$tool_name" "$path" "/usr/sbin/$tool_name" ;;
+            ip|blkid|sfdisk|blockdev|partprobe|mount|umount|grub-install|chroot|mkswap) stage_binary "$tool_name" "$path" "/usr/sbin/$tool_name" ;;
             *) stage_binary "$tool_name" "$path" "/usr/bin/$tool_name" ;;
         esac
     done
@@ -530,7 +546,14 @@ build() {
         stage_binary sgdisk "$(resolve_tool sgdisk)" /usr/sbin/sgdisk
         stage_binary partclone.ext4 "$partclone_ext4" /usr/sbin/partclone.ext4
         stage_binary partclone.fat "$partclone_fat" /usr/sbin/partclone.fat
-        printf '%s\n' gpt partclone.ext4 partclone.fat restore clone identity >>"$CAPABILITIES_FILE"
+        for grub_tool in grub-file grub-install grub-mkconfig grub-mkimage grub-probe; do
+            path=$(resolve_tool "$grub_tool")
+            [ -n "$path" ] || error "falta $grub_tool"
+            stage_binary "$grub_tool" "$path" "/usr/sbin/$grub_tool"
+        done
+        copy_path /usr/lib/grub /usr/lib/grub
+        [ -d /usr/share/grub ] && copy_path /usr/share/grub /usr/share/grub
+        printf '%s\n' gpt mbr partclone.ext4 partclone.fat restore clone identity >>"$CAPABILITIES_FILE"
     fi
     if path=$(resolve_tool modprobe); then
         stage_binary modprobe "$path" /sbin/modprobe

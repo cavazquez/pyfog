@@ -36,7 +36,7 @@ si se actualiza una dependencia.
 | Caddy 2.11.4-alpine | TLS y proxy LAN | [caddyserver.com](https://github.com/caddyserver/caddy), Apache-2.0 |
 | Ubuntu Server 24.04 LTS | Referencia del laboratorio | [Canonical cloud images](https://cloud-images.ubuntu.com/), Ubuntu licenses; URL y SHA-256 fijados en `lab/reference-image.env` |
 | Partclone 0.3.45 | Copia de ESP/ext4 | [partclone.org](https://partclone.org/), GPL-2.0-or-later |
-| `sgdisk`/`gdisk`, `zstd`, BusyBox, GRUB, `iproute2` | Layout, compresión, red y UEFI | Proyectos/distribución Ubuntu; conservar avisos de sus paquetes |
+| `sgdisk`/`sfdisk`/`gdisk`, `zstd`, BusyBox, GRUB, `iproute2` | Layout GPT/MBR, compresión, red y arranque UEFI/BIOS | Proyectos/distribución Ubuntu; conservar avisos de sus paquetes |
 | QEMU/OVMF | Laboratorio descartable | [qemu.org](https://www.qemu.org/), GPL-2.0-or-later / [edk2](https://github.com/tianocore/tianocore.github.io/wiki/Contributions), BSD-2-Clause |
 | iPXE | Bootstrap PXE opcional | [ipxe.org](https://ipxe.org/), GPL-2.0-or-later con excepciones de imagen |
 

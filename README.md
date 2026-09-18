@@ -224,18 +224,20 @@ El [roadmap](https://github.com/cavazquez/pyfog/issues/1) organizó cinco entreg
 4. Restauración y clonación (completa).
 5. Operación, documentación y validación del MVP (completa; la ejecución UEFI requiere el host del laboratorio).
 
-Las imágenes tendrán una matriz inicial acotada a Linux x86_64, UEFI sin Secure Boot, GPT, raíz ext4,
-ESP FAT32 y swap opcional; un disco por tarea y destino de igual o mayor capacidad. El inventario
-actual puede describir hardware fuera de esa matriz. No se promete compatibilidad de formato con FOG.
+Las imágenes tienen una matriz acotada a Linux x86_64, UEFI/GPT o BIOS/MBR sin Secure Boot, raíz
+ext4, ESP FAT32 sólo para UEFI y swap opcional; un disco por tarea y destino de igual o mayor
+capacidad. El inventario actual puede describir hardware fuera de esa matriz. No se promete
+compatibilidad de formato con FOG.
 
 La publicación EFI post-MVP puede firmarse con `pxe/build-pxe --secure-boot` usando una clave
 externa al checkout; el laboratorio ofrece el smoke reproducible con `./lab/e2e.sh run --secure-boot`.
 
-## Laboratorio y E2E UEFI
+## Laboratorio y E2E UEFI/BIOS
 
 El laboratorio reproducible [lab/README.md](lab/README.md) crea dos VMs QEMU/OVMF con discos
 descartables y una red aislada en loopback. `./lab/e2e.sh run` combina el contrato del coordinador,
-los casos negativos y el smoke de arranque UEFI sin exponer discos físicos ni la red de una LAN.
+los casos negativos y el smoke de arranque UEFI; `./lab/e2e.sh run --bios` prueba un MBR raw
+descartable con SeaBIOS sin exponer discos físicos ni la red de una LAN.
 
 ## Construir el agente de arranque
 
@@ -245,8 +247,8 @@ agent/build-agent build --mode inventory-only --output-dir dist/agent
 agent/build-agent verify --output-dir dist/agent
 ```
 
-El modo `imaging` añade `sgdisk`, `partclone.ext4` y `partclone.fat` al initramfs y falla si alguno
-no está instalado. Antes de publicar los archivos en PXE hay que revisar `manifest.json` y
+El modo `imaging` añade `sgdisk`, `sfdisk`, `partclone.ext4`, `partclone.fat` y GRUB BIOS/UEFI al
+initramfs y falla si alguno no está instalado. Antes de publicar los archivos en PXE hay que revisar `manifest.json` y
 `SHA256SUMS`; el servidor no descarga paquetes durante el arranque.
 
 Para ejecutar una captura, primero encolala desde **Capturar una imagen** en la ficha de un equipo

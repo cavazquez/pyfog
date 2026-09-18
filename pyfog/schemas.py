@@ -62,6 +62,7 @@ class Disk(Schema):
     wwn: ShortText = ""
     transport: ShortText = ""
     logical_sector_bytes: Annotated[int, Field(gt=0, le=65536, strict=True)] | None = None
+    partition_table: Literal["gpt", "mbr"] | None = None
     removable: bool = Field(default=False, strict=True)
 
 
@@ -78,6 +79,7 @@ class Inventory(Schema):
     report_id: UUID
     collected_at: datetime
     hostname: str = Field(min_length=1, max_length=253)
+    firmware: Literal["uefi", "bios"] | None = None
     os: OperatingSystem
     kernel: ShortText
     architecture: ShortText

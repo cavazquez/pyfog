@@ -11,7 +11,8 @@ trabajo están implementados.
 
 ## Alcance y decisiones
 
-- Solo Linux x86_64, UEFI sin Secure Boot, GPT, raíz ext4, ESP FAT32, swap opcional y un disco por tarea.
+- Solo Linux x86_64, UEFI/GPT o BIOS/MBR sin Secure Boot, raíz ext4, ESP FAT32 sólo para UEFI,
+  swap opcional y un disco por tarea.
 - Una LAN administrada, un servidor, un administrador local y transferencia unicast.
 - Restaurar conserva la identidad del origen; clonar regenera la identidad del destino.
 - Las imágenes no prometen compatibilidad binaria con FOG.
@@ -90,6 +91,7 @@ trabajo están implementados.
 - [x] #66 Roles admin/operator/auditor, matriz deny-by-default, gestión web y auditoría de denegaciones.
 - [x] #67 Rotación con gracia, revocación inmediata, binding de tareas y recuperación offline de credenciales de agentes.
 - [x] #68 Métricas agregadas, eventos estructurados de tareas, correlación autenticada y health exporter sin secretos.
+- [x] #62 Arranque BIOS con MBR y reinstalación/verificación de GRUB BIOS.
 
 ## Evidencia de validación
 
@@ -108,6 +110,8 @@ trabajo están implementados.
 - `./lab/e2e.sh run --secure-boot` pasó el contrato y arrancó `source` y `target` con
   `OVMF_CODE_4M.secboot.fd` y `OVMF_VARS_4M.ms.fd`; el informe registró
   `secure_boot=enabled` y `signature_status=verified-by-ovmf`.
+- `./lab/e2e.sh run --bios` pasó el contrato y ejecutó un MBR descartable con SeaBIOS; el
+  sector 0 emitió la marca serial `PYFOG_BIOS_MBR_OK` y el informe conservó sus logs.
 - `make compatibility-check` genera ocho QCOW2 descartables y verifica su hash, tamaño,
   capacidades y rechazo del agente sin usar discos físicos ni credenciales.
 - `uv run pytest tests/test_rbac.py` verifica la matriz de permisos, la migración de cuentas MVP,
@@ -120,7 +124,7 @@ trabajo están implementados.
 
 ## Limitaciones conocidas de v0.1.0
 
-Windows, macOS, BIOS/MBR, perfiles de imagen Secure Boot para cualquier distribución, LVM/RAID/cifrado, otros sistemas de archivos,
+Windows, macOS, perfiles de imagen Secure Boot para cualquier distribución, LVM/RAID/cifrado, otros sistemas de archivos,
 reducción automática de disco, captura en caliente, varios discos por tarea,
 multicast, plugins y administración de software/dominio quedan fuera del MVP.
 También queda fuera la publicación automática de un tag o release externo.

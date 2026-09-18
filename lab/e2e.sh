@@ -9,6 +9,7 @@ REPORT_ROOT="${PYFOG_E2E_REPORT_DIR:-$PROJECT_ROOT/.e2e}"
 RUN_DIR=""
 QEMU_STARTED=0
 SECURE_BOOT=0
+BIOS=0
 LAB_MODE_ARGS=()
 
 die() {
@@ -18,11 +19,11 @@ die() {
 
 usage() {
     cat <<'EOF'
-Uso: ./lab/e2e.sh COMANDO [--secure-boot]
+Uso: ./lab/e2e.sh COMANDO [--secure-boot|--bios]
 
 Comandos:
   plan    Imprime los escenarios y herramientas requeridas, sin modificar nada.
-  run     Ejecuta el contrato agente/coordinador y el smoke UEFI en .lab/.
+  run     Ejecuta el contrato agente/coordinador y el smoke UEFI o BIOS/MBR.
 
 El comando run conserva un informe en .e2e/run.*. No acepta tokens en argumentos ni los
 imprime. Las VMs sólo usan los overlays marcados por lab/pyfog-lab; no se pasan discos del host.
@@ -41,11 +42,12 @@ PyFog E2E reproducible
    corte de red y reinicio del coordinador sin segundo escritor.
 5. UEFI: arranca source y target con OVMF sobre overlays QCOW2 descartables.
    Por defecto es sin Secure Boot; agregá --secure-boot para usar OVMF secboot y NVRAM MS.
+6. BIOS/MBR: arranca un sector MBR descartable con SeaBIOS y valida la salida serial.
 
 El contrato se ejecuta con tests/test_e2e_contract.py y las pruebas unitarias de restauración/tareas.
 El smoke UEFI se ejecuta con lab/pyfog-lab; los logs se guardan sin credenciales.
 
-Herramientas: uv, QEMU/qemu-img, OVMF, cloud-localds, gdisk/sgdisk, file, socat y curl.
+Herramientas: uv, QEMU/qemu-img, OVMF, SeaBIOS, sfdisk, cloud-localds, gdisk/sgdisk, file, socat y curl.
 El flujo Secure Boot también exige osslsigncode y sbsigntool para firmar/verificar artefactos EFI.
 El smoke espera hasta 120 segundos por el prompt Linux en la salida serial; se puede ajustar con
 PYFOG_E2E_UEFI_TIMEOUT_SECONDS.
@@ -81,11 +83,16 @@ prepare_report() {
         else
             printf 'unavailable\n'
         fi
-        printf 'firmware=OVMF\n'
-        if ((SECURE_BOOT)); then
+        if ((BIOS)); then
+            printf 'firmware=SeaBIOS\n'
+            printf 'secure_boot=disabled\n'
+            printf 'signature_status=not-evaluated\n'
+        elif ((SECURE_BOOT)); then
+            printf 'firmware=OVMF\n'
             printf 'secure_boot=enabled\n'
             printf 'signature_status=pending\n'
         else
+            printf 'firmware=OVMF\n'
             printf 'secure_boot=disabled\n'
             printf 'signature_status=not-evaluated\n'
         fi
@@ -214,36 +221,59 @@ run_qemu() {
     return 1
 }
 
+run_bios_smoke() {
+    if "$SCRIPT_DIR/bios-smoke.sh" run >"$RUN_DIR/bios.log" 2>&1; then
+        record "bios-mbr" "PASS" "SeaBIOS ejecutó el MBR y emitió la marca serial"
+        return 0
+    fi
+    record "bios-mbr" "FAIL" "ver bios.log, bios.serial.log y bios.qemu.log"
+    return 1
+}
+
 run_all() {
     trap stop_lab_on_exit EXIT
     prepare_report
-    if ((SECURE_BOOT)); then
-        LAB_MODE_ARGS=(--secure-boot)
-    fi
     if ! command -v uv >/dev/null 2>&1; then
         record "preflight" "FAIL" "falta uv"
         return 1
     fi
-    if ! "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" doctor >"$RUN_DIR/doctor.log" 2>&1; then
-        record "preflight" "FAIL" "ver doctor.log"
-        printf 'status=blocked\n' >"$RUN_DIR/result.env"
-        return 1
-    fi
-    if ! "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" firmware-info >"$RUN_DIR/firmware.log" 2>&1; then
-        record "preflight" "FAIL" "ver firmware.log"
-        printf 'status=blocked\n' >"$RUN_DIR/result.env"
-        return 1
-    fi
-    if ((SECURE_BOOT)); then
-        record "preflight" "PASS" "herramientas QEMU/OVMF y firmware Secure Boot disponibles"
+    if ((BIOS)); then
+        if ! "$SCRIPT_DIR/bios-smoke.sh" doctor >"$RUN_DIR/doctor.log" 2>&1; then
+            record "preflight" "FAIL" "ver doctor.log"
+            printf 'status=blocked\n' >"$RUN_DIR/result.env"
+            return 1
+        fi
+        record "preflight" "PASS" "herramientas QEMU/SeaBIOS/sfdisk disponibles"
     else
-        record "preflight" "PASS" "herramientas QEMU/OVMF disponibles"
+        if ((SECURE_BOOT)); then
+            LAB_MODE_ARGS=(--secure-boot)
+        fi
+        if ! "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" doctor >"$RUN_DIR/doctor.log" 2>&1; then
+            record "preflight" "FAIL" "ver doctor.log"
+            printf 'status=blocked\n' >"$RUN_DIR/result.env"
+            return 1
+        fi
+        if ! "$LAB_DRIVER" "${LAB_MODE_ARGS[@]}" firmware-info >"$RUN_DIR/firmware.log" 2>&1; then
+            record "preflight" "FAIL" "ver firmware.log"
+            printf 'status=blocked\n' >"$RUN_DIR/result.env"
+            return 1
+        fi
+        if ((SECURE_BOOT)); then
+            record "preflight" "PASS" "herramientas QEMU/OVMF y firmware Secure Boot disponibles"
+        else
+            record "preflight" "PASS" "herramientas QEMU/OVMF disponibles"
+        fi
     fi
     if ! run_contract; then
         printf 'status=failed\n' >"$RUN_DIR/result.env"
         return 1
     fi
-    if ! run_qemu; then
+    if ((BIOS)); then
+        if ! run_bios_smoke; then
+            printf 'status=failed\n' >"$RUN_DIR/result.env"
+            return 1
+        fi
+    elif ! run_qemu; then
         printf 'status=failed\n' >"$RUN_DIR/result.env"
         return 1
     fi
@@ -256,17 +286,23 @@ case "$command_name" in
     plan)
         if [[ $# -eq 2 && ${2:-} == "--secure-boot" ]]; then
             SECURE_BOOT=1
+        elif [[ $# -eq 2 && ${2:-} == "--bios" ]]; then
+            BIOS=1
         else
-            (($# == 1)) || die "plan sólo acepta --secure-boot como argumento opcional."
+            (($# == 1)) || die "plan sólo acepta --secure-boot o --bios como argumento opcional."
         fi
+        ((SECURE_BOOT && BIOS)) && die "--secure-boot y --bios son excluyentes."
         plan
         ;;
     run)
         if [[ $# -eq 2 && ${2:-} == "--secure-boot" ]]; then
             SECURE_BOOT=1
+        elif [[ $# -eq 2 && ${2:-} == "--bios" ]]; then
+            BIOS=1
         else
-            (($# == 1)) || die "run sólo acepta --secure-boot como argumento opcional."
+            (($# == 1)) || die "run sólo acepta --secure-boot o --bios como argumento opcional."
         fi
+        ((SECURE_BOOT && BIOS)) && die "--secure-boot y --bios son excluyentes."
         run_all
         ;;
     help | --help | -h)

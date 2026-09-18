@@ -59,7 +59,7 @@ def validate_optional_path(value: str | None) -> str | None:
 
 
 class ImageArtifact(Schema):
-    """One immutable partition payload referenced by the GPT layout."""
+    """One immutable payload referenced by a disk layout."""
 
     path: str = Field(min_length=1, max_length=240)
     size_bytes: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
@@ -111,7 +111,7 @@ class ImagePartition(Schema):
     role: Literal["esp", "boot", "root", "swap"]
     start_sector: NonNegativeInt
     size_sectors: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
-    partition_guid: UUID
+    partition_guid: UUID | None = None
     filesystem: Literal["fat32", "ext4", "swap"]
     filesystem_uuid: FilesystemUuid
     mountpoint: Literal["/boot/efi", "/boot", "/", None]
@@ -149,42 +149,92 @@ class ImageDisk(Schema):
     size_bytes: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
     logical_sector_bytes: SectorSize
     sector_count: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
-    gpt_disk_guid: UUID
-    first_usable_sector: NonNegativeInt
-    last_usable_sector: NonNegativeInt
-    partitions: list[ImagePartition] = Field(min_length=2, max_length=4)
+    partitions: list[ImagePartition] = Field(min_length=1, max_length=4)
+    gpt_disk_guid: UUID | None = None
+    first_usable_sector: NonNegativeInt | None = None
+    last_usable_sector: NonNegativeInt | None = None
+    mbr_disk_signature: Annotated[
+        str, Field(min_length=8, max_length=8, pattern=r"^[0-9A-Fa-f]{8}$", strict=True)
+    ] | None = None
+    boot_sector: ImageArtifact | None = None
 
     @model_validator(mode="after")
     def validate_geometry(self) -> "ImageDisk":
         if self.size_bytes != self.logical_sector_bytes * self.sector_count:
             raise ValueError("La capacidad del disco no coincide con sus sectores lógicos.")
-        if self.first_usable_sector >= self.last_usable_sector:
-            raise ValueError("El rango GPT utilizable no es válido.")
-        if self.last_usable_sector >= self.sector_count:
-            raise ValueError("El último sector GPT queda fuera de la capacidad del disco.")
+        is_gpt = self.gpt_disk_guid is not None
+        is_mbr = self.mbr_disk_signature is not None
+        if is_gpt == is_mbr:
+            raise ValueError("El disco debe declarar exactamente una tabla GPT o MBR.")
+        if is_gpt:
+            if self.first_usable_sector is None or self.last_usable_sector is None:
+                raise ValueError("El disco GPT debe declarar su rango utilizable.")
+            if self.first_usable_sector >= self.last_usable_sector:
+                raise ValueError("El rango GPT utilizable no es válido.")
+            if self.last_usable_sector >= self.sector_count:
+                raise ValueError("El último sector GPT queda fuera de la capacidad del disco.")
+            if self.boot_sector is not None:
+                raise ValueError("Un disco GPT no puede declarar un boot sector MBR.")
+            if len(self.partitions) < 2:
+                raise ValueError("El GPT debe incluir al menos una ESP y una raíz.")
+        else:
+            if any(
+                value is not None
+                for value in (self.first_usable_sector, self.last_usable_sector, self.gpt_disk_guid)
+            ):
+                raise ValueError("Un disco MBR no puede declarar geometría o GUID GPT.")
+            if self.logical_sector_bytes != 512:
+                raise ValueError("El arranque BIOS/MBR requiere sectores lógicos de 512 bytes.")
+            if self.boot_sector is None:
+                raise ValueError("El disco MBR debe conservar un artefacto de boot sector.")
+            if (
+                self.boot_sector.size_bytes != 446
+                or self.boot_sector.compression != "none"
+                or self.boot_sector.path != "boot-sector.bin"
+            ):
+                raise ValueError(
+                    "El boot sector MBR debe ser boot-sector.bin, sin compresión y de 446 bytes."
+                )
         if len({part.number for part in self.partitions}) != len(self.partitions):
-            raise ValueError("El GPT contiene números de partición repetidos.")
-        if len({part.partition_guid for part in self.partitions}) != len(self.partitions):
-            raise ValueError("El GPT contiene GUIDs de partición repetidos.")
+            raise ValueError("La tabla contiene números de partición repetidos.")
+        partition_guids = [part.partition_guid for part in self.partitions]
+        if is_gpt:
+            if any(guid is None for guid in partition_guids):
+                raise ValueError("El GPT requiere GUIDs de partición.")
+            if len(set(partition_guids)) != len(partition_guids):
+                raise ValueError("El GPT contiene GUIDs de partición repetidos.")
+        elif any(guid is not None for guid in partition_guids):
+            raise ValueError("La tabla MBR no puede declarar GUIDs de partición GPT.")
         if len({part.filesystem_uuid.lower() for part in self.partitions}) != len(self.partitions):
-            raise ValueError("El GPT contiene UUIDs de filesystem repetidos.")
+            raise ValueError("La tabla contiene UUIDs de filesystem repetidos.")
         roles = {part.role for part in self.partitions}
-        if not roles.issuperset({"esp", "root"}):
-            raise ValueError("El GPT debe incluir exactamente una ESP y una raíz.")
-        for role in ("esp", "root"):
+        expected_roles = ("esp", "root") if is_gpt else ("root",)
+        if not roles.issuperset(expected_roles):
+            label = "GPT" if is_gpt else "MBR"
+            raise ValueError(f"El {label} debe incluir una raíz{ ' y una ESP' if is_gpt else ''}.")
+        for role in expected_roles:
             if sum(part.role == role for part in self.partitions) != 1:
-                raise ValueError(f"El GPT debe incluir una sola partición {role}.")
+                label = "GPT" if is_gpt else "MBR"
+                raise ValueError(f"El {label} debe incluir una sola partición {role}.")
         for role in ("boot", "swap"):
             if sum(part.role == role for part in self.partitions) > 1:
-                raise ValueError(f"El GPT no puede incluir más de una partición {role}.")
+                label = "GPT" if is_gpt else "MBR"
+                raise ValueError(f"El {label} no puede incluir más de una partición {role}.")
         ordered = sorted(self.partitions, key=lambda part: part.start_sector)
-        previous_end = self.first_usable_sector - 1
+        first_sector = self.first_usable_sector if is_gpt else 2_048
+        last_sector = self.last_usable_sector if is_gpt else self.sector_count - 1
+        if first_sector is None or last_sector is None:
+            raise ValueError("La geometría del disco no declara un rango utilizable.")
+        previous_end = first_sector - 1
         for part in ordered:
             end = part.start_sector + part.size_sectors - 1
-            if part.start_sector < self.first_usable_sector or end > self.last_usable_sector:
-                raise ValueError("Una partición queda fuera del rango GPT utilizable.")
+            if part.start_sector < first_sector or end > last_sector:
+                label = "GPT utilizable" if is_gpt else "MBR seguro"
+                raise ValueError(f"Una partición queda fuera del rango {label}.")
+            if part.role == "esp" and not is_gpt:
+                raise ValueError("La tabla MBR no puede incluir una ESP UEFI.")
             if part.start_sector <= previous_end:
-                raise ValueError("Las particiones GPT se superponen.")
+                raise ValueError("Las particiones se superponen.")
             previous_end = end
         return self
 
@@ -201,7 +251,7 @@ class ImageManifest(Schema):
     firmware: ImageFirmware
     disk: ImageDisk
     tool: ImageTool
-    artifacts: list[ImageArtifact] = Field(min_length=2, max_length=4)
+    artifacts: list[ImageArtifact] = Field(min_length=1, max_length=5)
     capabilities: ImageCapabilities | None = None
     publishable: bool = Field(default=False, strict=True)
 
@@ -231,6 +281,8 @@ class ImageManifest(Schema):
             for partition in self.disk.partitions
             if partition.artifact is not None
         ]
+        if self.disk.boot_sector is not None:
+            partition_paths.append(self.disk.boot_sector.path)
         if len(set(partition_paths)) != len(partition_paths):
             raise ValueError("Dos particiones no pueden compartir un artefacto.")
         if set(paths) != set(partition_paths):
@@ -244,6 +296,10 @@ class ImageManifest(Schema):
         for partition in self.disk.partitions:
             if partition.role != "swap" and expected_commands[partition.role] not in commands:
                 raise ValueError(f"Falta la herramienta para la partición {partition.role}.")
+        if self.disk.mbr_disk_signature is not None and "mbr" not in commands:
+            raise ValueError("Falta la herramienta para validar el boot sector MBR.")
+        if self.disk.gpt_disk_guid is not None and "mbr" in commands:
+            raise ValueError("Un manifiesto GPT no puede declarar herramientas MBR.")
         if self.system.id.lower() != "ubuntu":
             raise ValueError("El manifiesto v1 sólo admite una imagen Ubuntu Linux.")
         return self
@@ -290,17 +346,28 @@ def image_compatibility_errors(manifest: ImageManifest) -> list[str]:
 
     capabilities = manifest_capabilities(manifest)
     errors: list[str] = []
-    if capabilities.firmware.type != "uefi":
-        errors.append("requiere firmware UEFI")
+    firmware_type = capabilities.firmware.type
+    partition_table = capabilities.partition_table
+    if firmware_type not in {"uefi", "bios"}:
+        errors.append("requiere firmware UEFI o BIOS")
     if capabilities.firmware.secure_boot is not False:
         errors.append("Secure Boot todavía no está soportado")
-    if capabilities.partition_table != "gpt":
-        errors.append("requiere tabla de particiones GPT")
+    if partition_table not in {"gpt", "mbr"}:
+        errors.append("requiere tabla de particiones GPT o MBR")
+    elif (firmware_type, partition_table) not in {("uefi", "gpt"), ("bios", "mbr")}:
+        errors.append("el firmware y la tabla de particiones son incompatibles")
+    if firmware_type == "uefi" and manifest.disk.gpt_disk_guid is None:
+        errors.append("el perfil UEFI requiere un disco GPT")
+    if firmware_type == "bios" and manifest.disk.mbr_disk_signature is None:
+        errors.append("el perfil BIOS requiere un disco MBR")
     if capabilities.disks != 1:
         errors.append("requiere exactamente un disco")
     actual_filesystems = {partition.filesystem for partition in manifest.disk.partitions}
     declared_filesystems = set(capabilities.filesystems)
-    unsupported_filesystems = declared_filesystems - {"fat32", "ext4", "swap"}
+    allowed_filesystems = {"fat32", "ext4", "swap"}
+    if firmware_type == "bios":
+        allowed_filesystems = {"ext4", "swap"}
+    unsupported_filesystems = declared_filesystems - allowed_filesystems
     if unsupported_filesystems:
         errors.append(
             "contiene sistemas de archivos no soportados: "
