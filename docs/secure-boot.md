@@ -20,7 +20,7 @@ checkout. El firmador recibe la privada por una ruta controlada fuera del reposi
 contiene sólo el certificado público, fingerprints y hashes:
 
 ```bash
-sudo apt-get install sbsigntool
+sudo apt-get install sbsigntool osslsigncode
 pxe/build-pxe build \
   --agent-dir dist/agent \
   --base-url https://pyfog.example/boot \

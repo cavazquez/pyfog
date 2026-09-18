@@ -46,7 +46,7 @@ El contrato se ejecuta con tests/test_e2e_contract.py y las pruebas unitarias de
 El smoke UEFI se ejecuta con lab/pyfog-lab; los logs se guardan sin credenciales.
 
 Herramientas: uv, QEMU/qemu-img, OVMF, cloud-localds, gdisk/sgdisk, file, socat y curl.
-El flujo Secure Boot también exige sbsigntool para firmar/verificar artefactos EFI.
+El flujo Secure Boot también exige osslsigncode y sbsigntool para firmar/verificar artefactos EFI.
 El smoke espera hasta 120 segundos por el prompt Linux en la salida serial; se puede ajustar con
 PYFOG_E2E_UEFI_TIMEOUT_SECONDS.
 EOF

@@ -153,7 +153,7 @@ doctor() {
             missing=1
         fi
     done
-    for command_name in sbsign sbverify; do
+    for command_name in osslsigncode sbverify; do
         if command -v "$command_name" >/dev/null 2>&1; then
             printf 'OK       %s (Secure Boot)\n' "$command_name"
         else

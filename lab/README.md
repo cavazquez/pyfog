@@ -17,7 +17,7 @@ imagen de referencia. Nunca se pasa un dispositivo físico a QEMU.
 
 En Ubuntu:
 
-    sudo apt-get install qemu-system-x86 qemu-utils ovmf cloud-image-utils file gdisk socat sbsigntool shim-signed
+    sudo apt-get install qemu-system-x86 qemu-utils ovmf cloud-image-utils file gdisk socat sbsigntool osslsigncode shim-signed
     ./lab/pyfog-lab doctor
 
 Por defecto OVMF se usa sin Secure Boot. Para probar la cadena de confianza se seleccionan el

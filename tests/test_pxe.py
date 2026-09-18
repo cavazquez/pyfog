@@ -122,7 +122,7 @@ def test_pxe_builder_publishes_a_verified_profile_without_ipxe_binary(tmp_path: 
 
 
 def test_pxe_builder_signs_and_verifies_secure_boot_profile(tmp_path: Path) -> None:
-    required = ("openssl", "sbsign", "sbverify")
+    required = ("openssl", "osslsigncode", "sbverify")
     fixture = Path("/usr/lib/shim/shimx64.efi.signed.latest")
     if any(shutil.which(command) is None for command in required) or not fixture.is_file():
         pytest.skip("faltan herramientas o fixture EFI para Secure Boot")

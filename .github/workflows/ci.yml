@@ -73,7 +73,7 @@ jobs:
       - name: Install Secure Boot tooling
         run: |
           sudo apt-get update
-          sudo apt-get install --yes sbsigntool shim-signed ovmf qemu-system-x86 qemu-utils cloud-image-utils file gdisk socat
+          sudo apt-get install --yes sbsigntool osslsigncode shim-signed ovmf qemu-system-x86 qemu-utils cloud-image-utils file gdisk socat
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: "0.11.21"

@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -27,8 +28,9 @@ class SecureBootArtifactError(ValueError):
 def _tool(name: str) -> str:
     executable = shutil.which(name)
     if executable is None:
+        package = "sbsigntool" if name == "sbverify" else "osslsigncode"
         raise SecureBootArtifactError(
-            f"Falta {name}; instalá sbsigntool (en Ubuntu: sudo apt-get install sbsigntool)."
+            f"Falta {name}; instalá {package} (en Ubuntu: sudo apt-get install {package})."
         )
     return executable
 
@@ -194,7 +196,7 @@ def sign_artifacts(
     key = _safe_file(key, "La clave privada", private=True)
     certificate = _safe_file(certificate, "El certificado público")
     _copy_tree(input_dir, output_dir)
-    signer = _tool("sbsign")
+    signer = _tool("osslsigncode")
     images = _pe_images(output_dir)
     if not images:
         raise SecureBootArtifactError(
@@ -204,7 +206,21 @@ def sign_artifacts(
         temporary = image.with_name(f".{image.name}.signed")
         _run(
             signer,
-            ["--key", str(key), "--cert", str(certificate), "--output", str(temporary), str(image)],
+            [
+                "sign",
+                "-certs",
+                str(certificate),
+                "-key",
+                str(key),
+                "-h",
+                "sha256",
+                "-time",
+                str(source_date_epoch),
+                "-in",
+                str(image),
+                "-out",
+                str(temporary),
+            ],
             source_date_epoch=source_date_epoch,
         )
         mode = stat.S_IMODE(image.stat().st_mode)
@@ -350,6 +366,7 @@ def run_artifact_checks(work_dir: Path, fixture: Path | None = None) -> dict[str
         trusted_b = work_dir / "trusted-b"
         untrusted = work_dir / "untrusted-key"
         sign_artifacts(source, trusted_a, trusted_key, trusted_certificate)
+        time.sleep(2)
         sign_artifacts(source, trusted_b, trusted_key, trusted_certificate)
         sign_artifacts(source, untrusted, untrusted_key, untrusted_certificate)
 

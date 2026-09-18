@@ -7,7 +7,7 @@ from scripts.secure_boot_artifacts import run_artifact_checks
 
 
 def test_secure_boot_artifact_signatures_are_reproducible_and_fail_closed(tmp_path: Path) -> None:
-    required = ("openssl", "sbsign", "sbverify")
+    required = ("openssl", "osslsigncode", "sbverify")
     if any(shutil.which(command) is None for command in required):
         pytest.skip("faltan herramientas Authenticode para el fixture Secure Boot")
     fixtures = (
