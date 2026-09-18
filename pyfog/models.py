@@ -281,6 +281,8 @@ class TaskEvent(Base):
     __table_args__ = (
         UniqueConstraint("attempt_id", "sequence", name="uq_task_event_sequence"),
         Index("ix_task_events_task_created", "task_id", "created_at"),
+        Index("ix_task_events_type_created", "event_type", "created_at"),
+        Index("ix_task_events_failure_created", "failure_code", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -293,5 +295,8 @@ class TaskEvent(Base):
     phase: Mapped[str] = mapped_column(String(32), default="queued")
     bytes_processed: Mapped[int] = mapped_column(BigInteger, default=0)
     total_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    throughput_bytes_per_second: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     message: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(default=now, index=True)

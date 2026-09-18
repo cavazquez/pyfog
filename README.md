@@ -23,6 +23,7 @@ del token del equipo.
 [Backup y recuperación](docs/backup-recovery.md) ·
 [Roles y permisos](docs/rbac.md) ·
 [Credenciales de agentes](docs/agent-credentials.md) ·
+[Observabilidad operativa](docs/observability.md) ·
 [Guía operativa en español](docs/guia-es.md) ·
 [Accesibilidad](docs/accessibility.md) ·
 [Despliegue LAN](deploy/README.md) ·

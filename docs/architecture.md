@@ -69,7 +69,9 @@ modifica sus datos descriptivos. La selección para restaurar queda habilitada c
 La web crea tareas persistentes de captura a partir de un inventario reciente. Una tarea reserva el
 equipo y el único slot de transferencia, y un agente Linux arrancado por PXE la reclama con las
 capacidades requeridas. Cada intento tiene un token de tarea, lease, heartbeat y eventos con
-secuencia; una lease vencida pasa a `intervention_required` y nunca se reasigna automáticamente.
+secuencia, duración, throughput y código de fallo; una lease vencida pasa a
+`intervention_required` y nunca se reasigna automáticamente. El formato portable está en
+[Observabilidad operativa](observability.md).
 
 El agente en modo `imaging` vuelve a leer el inventario, identifica el disco por WWN, serie o ruta
 junto con capacidad y modelo, comprueba GPT, la matriz Ubuntu UEFI/GPT y que ningún sistema de

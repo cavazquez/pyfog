@@ -216,6 +216,24 @@ def task_status_payload(task: Task) -> dict[str, Any]:
     }
 
 
+def task_event_payload(event: TaskEvent) -> dict[str, Any]:
+    return {
+        "event_id": event.id,
+        "task_id": event.task_id,
+        "attempt_id": event.attempt_id,
+        "sequence": event.sequence,
+        "event_type": event.event_type,
+        "phase": event.phase,
+        "bytes_processed": event.bytes_processed,
+        "total_bytes": event.total_bytes,
+        "duration_ms": event.duration_ms,
+        "throughput_bytes_per_second": event.throughput_bytes_per_second,
+        "failure_code": event.failure_code,
+        "message": event.message,
+        "created_at": iso_task_date(event.created_at),
+    }
+
+
 def iso_task_date(value: datetime) -> str:
     return f"{value.isoformat()}Z"
 
@@ -887,6 +905,14 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
         total_bytes=task.total_bytes,
         message=task.message,
     )
+    add_event(
+        db,
+        task,
+        event_type="reserved",
+        phase="queued",
+        total_bytes=task.total_bytes,
+        message="Equipo y slot de transferencia reservados para la tarea.",
+    )
     try:
         db.flush()
         record_audit(
@@ -1109,6 +1135,14 @@ async def deployment_request(
         total_bytes=task.total_bytes,
         message=task.message,
     )
+    add_event(
+        db,
+        task,
+        event_type="reserved",
+        phase="queued",
+        total_bytes=task.total_bytes,
+        message="Equipo y slot de transferencia reservados para la tarea.",
+    )
     try:
         db.flush()
         record_audit(
@@ -1275,6 +1309,33 @@ def task_status(request: Request, task_id: UUID, db: Db) -> JSONResponse:
     if task is None:
         raise HTTPException(404, "No se encontró la tarea.")
     return JSONResponse(task_status_payload(task), status_code=200)
+
+
+@router.get("/tasks/{task_id}/events")
+def task_events(
+    request: Request,
+    task_id: UUID,
+    db: Db,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> JSONResponse:
+    user = require_permission(
+        request, db, "tasks.read", resource_type="task", resource_id=str(task_id)
+    )
+    if has_permission(user, "tasks.cancel") and expire_stale_tasks(db):
+        db.commit()
+    task = db.get(Task, str(task_id))
+    if task is None:
+        raise HTTPException(404, "No se encontró la tarea.")
+    events = db.scalars(
+        select(TaskEvent)
+        .where(TaskEvent.task_id == task.id)
+        .order_by(TaskEvent.created_at.asc(), TaskEvent.id.asc())
+        .limit(limit)
+    ).all()
+    return JSONResponse(
+        {"task_id": task.id, "events": [task_event_payload(event) for event in events]},
+        status_code=200,
+    )
 
 
 @router.post("/tasks/{task_id}/cancel")

@@ -1,8 +1,9 @@
 """State and lease management for durable image tasks."""
 
+import re
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -62,6 +63,34 @@ PHASE_ORDER = {
     "completed": 11,
     "failed": 12,
 }
+TASK_EVENT_TYPES = frozenset(
+    {
+        "created",
+        "reserved",
+        "assigned",
+        "progress",
+        "lease_expired",
+        "cancellation_requested",
+        "cancelled",
+        "reconciled",
+        "error",
+        "result",  # Kept for events written by an older coordinator.
+        "completed",
+    }
+)
+TASK_FAILURE_CODES = frozenset(
+    {
+        "agent_error",
+        "artifact_integrity",
+        "cancelled",
+        "destination_incomplete",
+        "lease_expired",
+        "manifest_invalid",
+        "reconciliation_required",
+        "storage_error",
+    }
+)
+METRIC_EVENT_TYPES = frozenset({"progress", "lease_expired", "cancelled", "error", "completed"})
 TASK_LABELS = {
     "draft": "Borrador",
     "approved": "En cola",
@@ -150,6 +179,60 @@ def transition_task(
     db.flush()
 
 
+def safe_event_message(message: str) -> str:
+    """Keep event text bounded and redact common credential-shaped values."""
+
+    value = " ".join(message.split())[:500]
+    value = re.sub(
+        r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+",
+        r"\1[redacted]",
+        value,
+    )
+    return re.sub(
+        r"(?i)((?:token|password|secret|clave)\s*[:=]\s*)\S+",
+        r"\1[redacted]",
+        value,
+    )
+
+
+def failure_code(reason: str) -> str:
+    """Map free-form failures to a small, stable metric label set."""
+
+    normalized = reason.casefold()
+    if "lease" in normalized or "concesión" in normalized:
+        return "lease_expired"
+    if "cancel" in normalized:
+        return "cancelled"
+    if "reconcili" in normalized or "intervención" in normalized:
+        return "reconciliation_required"
+    if "manifiesto" in normalized:
+        return "manifest_invalid"
+    if "artefact" in normalized or "integridad" in normalized or "suma" in normalized:
+        return "artifact_integrity"
+    if "almacén" in normalized or "storage" in normalized or "espacio" in normalized:
+        return "storage_error"
+    if "destino" in normalized and "incompleto" in normalized:
+        return "destination_incomplete"
+    return "agent_error"
+
+
+def event_metrics(
+    task: Task,
+    attempt: TaskAttempt | None,
+    current: datetime,
+    bytes_processed: int,
+) -> tuple[int, int | None]:
+    started_at = (
+        attempt.started_at
+        if attempt is not None and attempt.started_at is not None
+        else task.started_at or task.created_at
+    )
+    duration_ms = max(0, int((current - started_at).total_seconds() * 1000))
+    if duration_ms == 0 or bytes_processed <= 0:
+        return duration_ms, None
+    return duration_ms, int(bytes_processed * 1000 / duration_ms)
+
+
 def add_event(
     db: Session,
     task: Task,
@@ -160,8 +243,18 @@ def add_event(
     phase: str | None = None,
     bytes_processed: int = 0,
     total_bytes: int | None = None,
+    failure_code: str | None = None,
     message: str = "",
 ) -> TaskEvent:
+    if event_type not in TASK_EVENT_TYPES:
+        raise TaskError("El tipo de evento de tarea no es válido.")
+    if failure_code is not None and failure_code not in TASK_FAILURE_CODES:
+        raise TaskError("El código de fallo de tarea no es válido.")
+    current = now()
+    duration_ms: int | None = None
+    throughput: int | None = None
+    if event_type in METRIC_EVENT_TYPES:
+        duration_ms, throughput = event_metrics(task, attempt, current, bytes_processed)
     event = TaskEvent(
         task_id=task.id,
         attempt_id=attempt.id if attempt else None,
@@ -170,7 +263,11 @@ def add_event(
         phase=phase or task.phase,
         bytes_processed=bytes_processed,
         total_bytes=total_bytes,
-        message=message[:500],
+        duration_ms=duration_ms,
+        throughput_bytes_per_second=throughput,
+        failure_code=failure_code,
+        message=safe_event_message(message),
+        created_at=current,
     )
     db.add(event)
     return event
@@ -219,6 +316,7 @@ def expire_stale_tasks(db: Session) -> int:
             phase="failed",
             bytes_processed=attempt.bytes_processed,
             total_bytes=attempt.total_bytes,
+            failure_code="lease_expired",
             message=reason,
         )
         attempt.last_sequence += 1
@@ -245,10 +343,28 @@ def request_task_cancellation(db: Session, task: Task, *, reason: str) -> bool:
     if task.status == "approved":
         transition_task(db, task, "cancelled", phase=task.phase, message=reason)
         task.cancel_acknowledged_at = current
-        add_event(db, task, event_type="cancelled", phase=task.phase, message=reason)
+        add_event(
+            db,
+            task,
+            event_type="cancelled",
+            phase=task.phase,
+            bytes_processed=task.bytes_processed,
+            total_bytes=task.total_bytes,
+            failure_code="cancelled",
+            message=reason,
+        )
         return True
     transition_task(db, task, task.status, phase="cancelling", message=reason)
-    add_event(db, task, event_type="cancellation_requested", phase="cancelling", message=reason)
+    add_event(
+        db,
+        task,
+        event_type="cancellation_requested",
+        phase="cancelling",
+        bytes_processed=task.bytes_processed,
+        total_bytes=task.total_bytes,
+        failure_code="cancelled",
+        message=reason,
+    )
     db.flush()
     return True
 
@@ -292,6 +408,7 @@ def acknowledge_task_cancellation(
         phase="failed",
         bytes_processed=attempt.bytes_processed,
         total_bytes=attempt.total_bytes,
+        failure_code="cancelled",
         message=reason,
     )
     db.flush()

@@ -88,6 +88,7 @@ trabajo están implementados.
 - [x] #63 ADR de cadena de confianza, propietarios, rotación y negativos de Secure Boot.
 - [x] #66 Roles admin/operator/auditor, matriz deny-by-default, gestión web y auditoría de denegaciones.
 - [x] #67 Rotación con gracia, revocación inmediata, binding de tareas y recuperación offline de credenciales de agentes.
+- [x] #68 Métricas agregadas, eventos estructurados de tareas, correlación autenticada y health exporter sin secretos.
 
 ## Evidencia de validación
 
@@ -110,6 +111,8 @@ trabajo están implementados.
 - `uv run pytest tests/test_agent_credentials.py` y las pruebas de seguridad/tareas verifican
   rotaciones encadenadas, gracia acotada, replay, revocación de transferencias y recuperación sin
   credenciales activas desde backup.
+- `uv run pytest tests/test_observability.py` verifica el esquema de eventos, métricas de duración/
+  throughput, códigos de fallo, redacción de mensajes y el endpoint de salud agregado.
 
 ## Limitaciones conocidas de v0.1.0
 

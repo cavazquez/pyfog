@@ -186,11 +186,27 @@ def test_capture_queue_claim_upload_and_atomic_publish(admin, app, host_id, inve
         assert image.manifest_image_id == image_id
         assert [event.event_type for event in events] == [
             "created",
+            "reserved",
             "assigned",
             "progress",
             "progress",
             "completed",
         ]
+    exported = admin.get(f"/tasks/{task_id}/events")
+    assert exported.status_code == 200
+    event_payload = exported.json()
+    assert event_payload["task_id"] == task_id
+    assert [event["event_type"] for event in event_payload["events"]] == [
+        "created",
+        "reserved",
+        "assigned",
+        "progress",
+        "progress",
+        "completed",
+    ]
+    assert {"task_id", "attempt_id", "duration_ms", "throughput_bytes_per_second"}.issubset(
+        event_payload["events"][-1]
+    )
     published = app.state.artifact_store.published_directory(image_id)
     assert (published / "manifest.json").is_file()
     assert (published / "partitions/01-esp.img").read_bytes() == b"esp"

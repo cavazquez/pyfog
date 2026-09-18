@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from pyfog.agent_credentials import AgentAuthorization, credential_is_usable
 from pyfog.audit import record_audit
 from pyfog.database import get_db
-from pyfog.health import operational_snapshot
+from pyfog.health import operational_metrics, operational_snapshot
 from pyfog.image_manifest import (
     ensure_supported_image,
     parse_image_manifest,
@@ -47,6 +47,7 @@ from pyfog.tasking import (
     add_event,
     claim_task,
     expire_stale_tasks,
+    failure_code,
     record_progress,
     touch_attempt,
     transition_task,
@@ -246,6 +247,21 @@ def health(request: Request, db: Db) -> JSONResponse:
     """Backward-compatible readiness probe used by the container healthcheck."""
 
     return health_ready(request, db)
+
+
+@router.get("/health/metrics", include_in_schema=False)
+def health_metrics(db: Db) -> JSONResponse:
+    """Expose aggregate task metrics without task IDs, messages or credentials."""
+
+    try:
+        metrics = operational_metrics(db)
+    except Exception:  # pragma: no cover - exercised by deployment probes
+        db.rollback()
+        return JSONResponse(
+            {"status": "not_ready", "metrics": "unavailable"},
+            status_code=503,
+        )
+    return JSONResponse({"status": "ok", "metrics": metrics}, status_code=200)
 
 
 @router.post("/api/v1/tasks/claim")
@@ -484,12 +500,13 @@ def fail_agent_task(
         add_event(
             db,
             task,
-            event_type="result",
+            event_type="error",
             attempt=attempt,
             sequence=sequence,
             phase="failed",
             bytes_processed=attempt.bytes_processed,
             total_bytes=attempt.total_bytes,
+            failure_code=failure_code(reason),
             message=reason,
         )
     attempt.finished_at = current

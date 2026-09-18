@@ -77,7 +77,8 @@ LAN.
 ## Salud, migraciones y rollback
 
 `/health/live` sólo confirma que el proceso responde; `/health/ready` comprueba DB, almacenamiento
-y el coordinador integrado. Caddy espera el readiness del servicio web antes de arrancar.
+y el coordinador integrado. `/health/metrics` expone sólo métricas agregadas de tareas para un
+colector, sin IDs ni mensajes. Caddy espera el readiness del servicio web antes de arrancar.
 
 Para actualizar, respaldá primero, construí la nueva imagen, aplicá las migraciones y reiniciá:
 
