@@ -25,9 +25,8 @@ def stable_disk_id(device: dict[str, Any]) -> str:
     # A device node is useful for a single-disk legacy operation, but it is not a
     # stable identity for a multi-disk mapping.  Keep this helper deliberately
     # strict so callers cannot accidentally turn detection order into identity.
-    raise DiskMappingError(
-        "El disco no tiene una identidad estable utilizable; no use el orden /dev."
-    )
+    msg = "El disco no tiene una identidad estable utilizable; no use el orden /dev."
+    raise DiskMappingError(msg)
 
 
 def require_non_path_identity(device: dict[str, Any]) -> str:
@@ -35,28 +34,32 @@ def require_non_path_identity(device: dict[str, Any]) -> str:
 
     identity = stable_disk_id(device)
     if identity.startswith("path:"):
-        raise DiskMappingError("La imagen multidisco no puede depender del orden /dev.")
+        msg = "La imagen multidisco no puede depender del orden /dev."
+        raise DiskMappingError(msg)
     return identity
 
 
 def _device_path(device: dict[str, Any]) -> str:
     value = device.get("path") or device.get("name")
     if not isinstance(value, str) or not value.startswith("/dev/"):
-        raise DiskMappingError("El inventario no contiene una ruta de dispositivo válida.")
+        msg = "El inventario no contiene una ruta de dispositivo válida."
+        raise DiskMappingError(msg)
     return value
 
 
 def _size(device: dict[str, Any]) -> int:
     value = device.get("size_bytes", device.get("size"))
     if type(value) is not int or value <= 0:
-        raise DiskMappingError("El inventario no contiene un tamaño de disco válido.")
+        msg = "El inventario no contiene un tamaño de disco válido."
+        raise DiskMappingError(msg)
     return value
 
 
 def _sector(device: dict[str, Any]) -> int:
     value = device.get("logical_sector_bytes", device.get("log-sec"))
     if type(value) is not int or value not in {512, 4096}:
-        raise DiskMappingError("El inventario no contiene un sector lógico admitido.")
+        msg = "El inventario no contiene un sector lógico admitido."
+        raise DiskMappingError(msg)
     return value
 
 
@@ -87,28 +90,35 @@ def plan_multi_disk_restore(
     """
 
     if not source_disks or len(source_disks) != len(target_disks):
-        raise DiskMappingError("La cantidad de discos de origen y destino no coincide.")
+        msg = "La cantidad de discos de origen y destino no coincide."
+        raise DiskMappingError(msg)
     source_ids = [require_non_path_identity(disk) for disk in source_disks]
     if len(set(source_ids)) != len(source_ids):
-        raise DiskMappingError("La captura contiene identidades de disco repetidas.")
+        msg = "La captura contiene identidades de disco repetidas."
+        raise DiskMappingError(msg)
     target_ids = [stable_disk_id(disk) for disk in target_disks]
     if len(set(target_ids)) != len(target_ids):
-        raise DiskMappingError("El destino contiene identidades de disco repetidas.")
+        msg = "El destino contiene identidades de disco repetidas."
+        raise DiskMappingError(msg)
     by_id = dict(zip(target_ids, target_disks, strict=True))
     plans: list[DiskRestorePlan] = []
     for source, source_id in zip(source_disks, source_ids, strict=True):
         target = by_id.get(source_id)
         if target is None:
-            raise DiskMappingError(f"No se encontró el disco destino {source_id}.")
+            msg = f"No se encontró el disco destino {source_id}."
+            raise DiskMappingError(msg)
         if str(target.get("rm", target.get("removable", False))).lower() in {"true", "1"}:
-            raise DiskMappingError(f"El destino {source_id} es removible.")
+            msg = f"El destino {source_id} es removible."
+            raise DiskMappingError(msg)
         source_size = _size(source)
         target_size = _size(target)
         if target_size < source_size or (not allow_larger_targets and target_size != source_size):
-            raise DiskMappingError(f"El destino {source_id} no tiene capacidad suficiente.")
+            msg = f"El destino {source_id} no tiene capacidad suficiente."
+            raise DiskMappingError(msg)
         source_sector = _sector(source)
         if _sector(target) != source_sector:
-            raise DiskMappingError(f"El sector lógico de {source_id} no coincide.")
+            msg = f"El sector lógico de {source_id} no coincide."
+            raise DiskMappingError(msg)
         plans.append(
             DiskRestorePlan(
                 source_id=source_id,
