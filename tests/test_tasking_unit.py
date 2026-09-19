@@ -140,6 +140,7 @@ def test_expired_attempt_requires_reconcile_before_new_writer(task_database):
     assert expire_stale_tasks(db) == 1
     db.commit()
     assert task.status == "intervention_required"
+    assert "concesión del agente venció" in task.failure_reason
     assert task.reservation_key == host.id
     assert first.attempt.finished_at is not None
     with pytest.raises(TaskError, match="reconciliación"):

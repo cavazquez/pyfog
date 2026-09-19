@@ -177,7 +177,6 @@ def transition_task(
     *,
     phase: str | None = None,
     message: str | None = None,
-    failure_reason: str | None = None,
 ) -> None:
     if status not in TASK_STATES:
         raise TaskError("El estado de la tarea no es válido.")
@@ -192,8 +191,6 @@ def transition_task(
         task.phase = phase
     if message is not None:
         task.message = message[:500]
-    if failure_reason is not None:
-        task.failure_reason = failure_reason[:500]
     if status == "assigned":
         task.assigned_at = task.assigned_at or current
     if status == "running":
@@ -323,13 +320,13 @@ def expire_stale_tasks(db: Session) -> int:
         attempt.finished_at = current
         attempt.failure_reason = reason
         attempt.phase = "failed"
+        task.failure_reason = reason[:500]
         transition_task(
             db,
             task,
             "intervention_required",
             phase="failed",
             message=reason,
-            failure_reason=reason,
         )
         # A different host may use the single transfer slot, while this host remains reserved.
         task.transfer_slot = None
@@ -419,13 +416,14 @@ def acknowledge_task_cancellation(
     if task.operation == "capture" and image is not None and image.status == "capturing":
         image.status = "failed"
         image.failure_reason = "La captura fue cancelada y no se publicó ningún artefacto."
+    if task.operation in {"restore", "clone"}:
+        task.failure_reason = reason[:500]
     transition_task(
         db,
         task,
         "cancelled",
         phase="failed",
         message=reason,
-        failure_reason=reason if task.operation in {"restore", "clone"} else None,
     )
     sequence = attempt.last_sequence + 1
     attempt.last_sequence = sequence
