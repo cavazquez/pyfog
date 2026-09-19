@@ -716,7 +716,8 @@ def _finish_restore_agent_task(
 def _get_capture_image(db: Session, image_id: str) -> Image:
     image = db.get(Image, image_id)
     if image is None:
-        raise ValueError("La imagen de la tarea ya no existe.")
+        msg = "La imagen de la tarea ya no existe."
+        raise ValueError(msg)
     return image
 
 
