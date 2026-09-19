@@ -67,6 +67,11 @@ from pyfog.tasking import (
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
 Db = Annotated[Session, Depends(get_db)]
+BYTES_PER_UNIT = 1024
+MAX_LOGIN_PASSWORD_LENGTH = 1024
+MAX_LOGIN_USERNAME_LENGTH = 100
+MAX_REJECTION_REASON_LENGTH = 500
+MAX_TASK_IDEMPOTENCY_KEY_LENGTH = 128
 
 
 class Flash(TypedDict):
@@ -88,9 +93,9 @@ def format_bytes(value: int | None) -> str:
         return "No disponible"
     size = float(value)
     for unit in ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]:
-        if size < 1024 or unit == "PiB":
+        if size < BYTES_PER_UNIT or unit == "PiB":
             return f"{size:,.1f} {unit}"
-        size /= 1024
+        size /= BYTES_PER_UNIT
     return "No disponible"
 
 
@@ -415,7 +420,7 @@ async def login(request: Request, db: Db) -> Response:
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
     username, password = str(form.get("username", "")), str(form.get("password", ""))
-    if len(username) > 100 or len(password) > 1024:
+    if len(username) > MAX_LOGIN_USERNAME_LENGTH or len(password) > MAX_LOGIN_PASSWORD_LENGTH:
         raise HTTPException(400, "Credenciales inválidas.")
     user = authenticate(request, db, username, password)
     if user is None:
@@ -890,7 +895,7 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
                 ]
             )
         )
-    elif len(values["idempotency_key"]) > 128:
+    elif len(values["idempotency_key"]) > MAX_TASK_IDEMPOTENCY_KEY_LENGTH:
         errors["form"] = "La solicitud no tiene un identificador válido."
     existing = db.scalar(select(Task).where(Task.idempotency_key == values["idempotency_key"]))
     if existing is not None:
@@ -1119,7 +1124,7 @@ async def deployment_request(
                 ]
             )
         )
-    elif len(values["idempotency_key"]) > 128:
+    elif len(values["idempotency_key"]) > MAX_TASK_IDEMPOTENCY_KEY_LENGTH:
         errors["form"] = "La solicitud no tiene un identificador válido."
     existing = db.scalar(select(Task).where(Task.idempotency_key == values["idempotency_key"]))
     if existing is not None:
@@ -1591,7 +1596,7 @@ async def pairing_reject(request: Request, pairing_id: UUID, db: Db) -> Response
     if pairing.status != "pending":
         raise HTTPException(409, "La solicitud ya no está pendiente.")
     reason = str(form.get("reason", "Solicitud rechazada por el administrador.")).strip()
-    if len(reason) > 500:
+    if len(reason) > MAX_REJECTION_REASON_LENGTH:
         raise HTTPException(422, "El motivo no puede superar 500 caracteres.")
     pairing.status = "rejected"
     pairing.rejected_at = now()
