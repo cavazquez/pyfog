@@ -62,12 +62,15 @@ from pyfog.tasking import (
 
 router = APIRouter()
 Db = Annotated[Session, Depends(get_db)]
+MAX_ARTIFACT_ROUTE_LENGTH = 240
+MAX_BEARER_TOKEN_LENGTH = 256
+MAX_PENDING_PAIRINGS_PER_MAC = 5
 
 
 def bearer_token(request: Request) -> str:
     authorization = request.headers.get("authorization", "")
     token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
-    if not token or len(token) > 256 or "\n" in token or "\r" in token:
+    if not token or len(token) > MAX_BEARER_TOKEN_LENGTH or "\n" in token or "\r" in token:
         return ""
     return token
 
@@ -198,7 +201,9 @@ def integer_header(value: str | None, name: str) -> int:
 
 
 def artifact_route_path(value: str) -> str:
-    if len(value) > 240 or not (value.startswith("partitions/") or value == "boot-sector.bin"):
+    if len(value) > MAX_ARTIFACT_ROUTE_LENGTH or not (
+        value.startswith("partitions/") or value == "boot-sector.bin"
+    ):
         raise HTTPException(422, "La ruta del artefacto no es válida.")
     try:
         validate_relative_path(value)
@@ -897,7 +902,7 @@ def create_pairing_request(payload: PairingRequestInput, request: Request, db: D
         )
         or 0
     )
-    if pending >= 5:
+    if pending >= MAX_PENDING_PAIRINGS_PER_MAC:
         db.rollback()
         raise HTTPException(429, "Hay demasiadas solicitudes pendientes para esta MAC.")
     capability = secrets.token_urlsafe(32)
