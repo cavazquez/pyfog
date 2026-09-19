@@ -19,6 +19,12 @@ IMAGE_FORMAT_VERSION = 2
 SUPPORTED_IMAGE_FORMAT_VERSIONS = (LEGACY_IMAGE_FORMAT_VERSION, IMAGE_FORMAT_VERSION)
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_ARTIFACT_BYTES = 2**63 - 1
+ASCII_CONTROL_MAX = 31
+ASCII_DELETE = 127
+LEGACY_SECTOR_SIZE_BYTES = 512
+MBR_BOOT_SECTOR_BYTES = 446
+MIN_GPT_PARTITIONS = 2
+MIN_RAID_DISKS = 2
 
 NonNegativeInt = Annotated[int, Field(ge=0, le=MAX_ARTIFACT_BYTES, strict=True)]
 SectorSize = Literal[512, 4096]
@@ -98,7 +104,7 @@ def validate_relative_path(value: str) -> str:
         not value
         or not value.isascii()
         or "\\" in value
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        or any(ord(char) <= ASCII_CONTROL_MAX or ord(char) == ASCII_DELETE for char in value)
     ):
         raise ValueError("La ruta del artefacto debe ser ASCII relativa y no contener controles.")
     path = PurePosixPath(value)
@@ -267,7 +273,7 @@ class ImageDisk(Schema):
                 raise ValueError("El último sector GPT queda fuera de la capacidad del disco.")
             if self.boot_sector is not None:
                 raise ValueError("Un disco GPT no puede declarar un boot sector MBR.")
-            if len(self.partitions) < 2:
+            if len(self.partitions) < MIN_GPT_PARTITIONS:
                 raise ValueError("El GPT debe incluir al menos una ESP y una raíz.")
         else:
             if any(
@@ -275,12 +281,12 @@ class ImageDisk(Schema):
                 for value in (self.first_usable_sector, self.last_usable_sector, self.gpt_disk_guid)
             ):
                 raise ValueError("Un disco MBR no puede declarar geometría o GUID GPT.")
-            if self.logical_sector_bytes != 512:
+            if self.logical_sector_bytes != LEGACY_SECTOR_SIZE_BYTES:
                 raise ValueError("El arranque BIOS/MBR requiere sectores lógicos de 512 bytes.")
             if self.boot_sector is None:
                 raise ValueError("El disco MBR debe conservar un artefacto de boot sector.")
             if (
-                self.boot_sector.size_bytes != 446
+                self.boot_sector.size_bytes != MBR_BOOT_SECTOR_BYTES
                 or self.boot_sector.compression != "none"
                 or self.boot_sector.path != "boot-sector.bin"
             ):
@@ -563,7 +569,7 @@ def image_compatibility_errors(
         errors.append("el perfil LVM genérico no está soportado; use lvm-linear")
     if allow_extended and capabilities.volumes == "raid1" and len(manifest.raid_arrays) != 1:
         errors.append("el perfil RAID1 no declara arrays")
-    if allow_extended and capabilities.volumes == "raid1" and capabilities.disks < 2:
+    if allow_extended and capabilities.volumes == "raid1" and capabilities.disks < MIN_RAID_DISKS:
         errors.append("RAID1 requiere al menos dos discos")
     if allow_extended and capabilities.volumes == "lvm-linear" and capabilities.disks != 1:
         errors.append("LVM lineal requiere exactamente un disco")

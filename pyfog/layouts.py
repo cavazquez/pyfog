@@ -17,6 +17,10 @@ class LayoutError(ValueError):
     """A storage layout is incomplete, ambiguous, or outside the supported profile."""
 
 
+LUKS2_METADATA_VERSION = 2
+MIN_RAID_MEMBERS = 2
+
+
 def _safe_identifier(value: object, label: str, *, max_length: int = 128) -> str:
     text = str(value or "").strip()
     if not text or len(text) > max_length or not re.fullmatch(r"[A-Za-z0-9._:+@/-]+", text):
@@ -82,7 +86,7 @@ def raid1_layout_from_manifest(value: object) -> Raid1Layout:
     if metadata not in {"1.0", "1.1", "1.2"}:
         raise LayoutError("La metadata RAID1 no está soportada.")
     raw_members = value.get("member_ids")
-    if not isinstance(raw_members, list) or len(raw_members) < 2:
+    if not isinstance(raw_members, list) or len(raw_members) < MIN_RAID_MEMBERS:
         raise LayoutError("RAID1 debe declarar al menos dos miembros.")
     members = tuple(
         _safe_identifier(item, "La identidad del miembro RAID1") for item in raw_members
@@ -232,7 +236,7 @@ def parse_mdraid1_export(value: str) -> Raid1Layout:
         for key, value in sorted(values.items())
         if key.startswith("MD_DEVICE_") and key.endswith("_DEV")
     )
-    if len(member_ids) < 2 or len(set(member_ids)) != len(member_ids):
+    if len(member_ids) < MIN_RAID_MEMBERS or len(set(member_ids)) != len(member_ids):
         raise LayoutError("RAID1 debe declarar al menos dos miembros distintos.")
     raw_size = values.get("MD_ARRAY_SIZE")
     try:
@@ -254,7 +258,7 @@ def parse_luks2_metadata(value: object) -> Luks2Layout:
             raise LayoutError("La metadata LUKS2 no es JSON válido.") from None
     if not isinstance(value, dict):
         raise LayoutError("La metadata LUKS2 no es un objeto JSON.")
-    if value.get("version") != 2:
+    if value.get("version") != LUKS2_METADATA_VERSION:
         raise LayoutError("El contenedor no es LUKS2.")
     uuid = _safe_identifier(value.get("uuid"), "El UUID LUKS2")
     cipher = _safe_identifier(value.get("cipher", ""), "El cipher LUKS2")
