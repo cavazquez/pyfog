@@ -36,7 +36,8 @@ class DomainJoinRequest(Schema):
     @classmethod
     def validate_dns_servers(cls, value: list[str]) -> list[str]:
         if any(len(server) > MAX_DNS_NAME_LENGTH or not server for server in value):
-            raise ValueError("Los servidores DNS del dominio no son válidos.")
+            msg = "Los servidores DNS del dominio no son válidos."
+            raise ValueError(msg)
         return value
 
 
@@ -52,7 +53,8 @@ def domain_plugin_call(request: DomainJoinRequest, *, secret: bytes | None) -> P
     """Build a domain plugin call without placing the credential in JSON payload fields."""
 
     if secret is None:
-        raise DomainIntegrationError("El secreto de unión debe provenir del proveedor seguro.")
+        msg = "El secreto de unión debe provenir del proveedor seguro."
+        raise DomainIntegrationError(msg)
     return PluginCall(
         operation="domain.join",
         required_capability="domain.join",
