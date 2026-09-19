@@ -52,9 +52,11 @@ class RelayDescriptor(Schema):
     @classmethod
     def valid_expiry(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
-            raise ValueError("La expiración del relay debe tener zona horaria.")
+            msg = "La expiración del relay debe tener zona horaria."
+            raise ValueError(msg)
         if value <= datetime.now(UTC):
-            raise ValueError("El descriptor del relay ya venció.")
+            msg = "El descriptor del relay ya venció."
+            raise ValueError(msg)
         return value.astimezone(UTC)
 
 
@@ -69,7 +71,8 @@ def _valid_digest(value: str) -> str:
     if len(value) != SHA256_HEX_LENGTH or any(
         character not in "0123456789abcdef" for character in value
     ):
-        raise RelayError("El digest del relay no es un SHA-256 lowercase.")
+        msg = "El digest del relay no es un SHA-256 lowercase."
+        raise RelayError(msg)
     return value
 
 
@@ -82,7 +85,8 @@ def _digest_file(path: Path) -> tuple[int, str]:
                 size += len(chunk)
                 digest.update(chunk)
     except OSError as error:
-        raise RelayError(f"No se pudo leer el artefacto del relay: {error}") from None
+        msg = f"No se pudo leer el artefacto del relay: {error}"
+        raise RelayError(msg) from None
     return size, digest.hexdigest()
 
 
@@ -91,7 +95,8 @@ class RelayCache:
 
     def __init__(self, root: Path, *, max_bytes: int) -> None:
         if max_bytes <= 0:
-            raise RelayError("El tamaño máximo de cache debe ser positivo.")
+            msg = "El tamaño máximo de cache debe ser positivo."
+            raise RelayError(msg)
         self.root = root
         self.max_bytes = max_bytes
         self._leases: dict[str, dict[UUID, datetime]] = {}
@@ -115,10 +120,12 @@ class RelayCache:
 
         digest = _valid_digest(digest)
         if source.is_symlink() or not source.is_file():
-            raise RelayError("El origen del relay debe ser un archivo regular.")
+            msg = "El origen del relay debe ser un archivo regular."
+            raise RelayError(msg)
         actual_size, actual_digest = _digest_file(source)
         if actual_size != size_bytes or actual_digest != digest:
-            raise RelayError("El artefacto del relay no coincide con su tamaño o digest.")
+            msg = "El artefacto del relay no coincide con su tamaño o digest."
+            raise RelayError(msg)
         destination = self.path_for(digest)
         with self._lock:
             if self.has(digest, size_bytes=size_bytes):
@@ -129,7 +136,8 @@ class RelayCache:
                 shutil.copyfile(source, temporary)
                 temporary.replace(destination)
             except OSError as error:
-                raise RelayError(f"No se pudo publicar el relay: {error}") from None
+                msg = f"No se pudo publicar el relay: {error}"
+                raise RelayError(msg) from None
             finally:
                 with suppress(OSError):
                     temporary.unlink()
@@ -173,36 +181,44 @@ class RelayCache:
         try:
             verify_complete_transfer(staging, manifest)
         except (OSError, ValueError) as error:
-            raise RelayError(f"El staging del relay está incompleto: {error}") from None
+            msg = f"El staging del relay está incompleto: {error}"
+            raise RelayError(msg) from None
         actual_size, actual_digest = _digest_file(staging)
         if actual_size != manifest.size_bytes or actual_digest != digest:
-            raise RelayError("El staging del relay no coincide con el digest esperado.")
+            msg = "El staging del relay no coincide con el digest esperado."
+            raise RelayError(msg)
         destination = self.path_for(digest)
         with self._lock:
             destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
             try:
                 staging.replace(destination)
             except OSError as error:
-                raise RelayError(f"No se pudo publicar el staging del relay: {error}") from None
+                msg = f"No se pudo publicar el staging del relay: {error}"
+                raise RelayError(msg) from None
             self.evict()
         return destination
 
     def read_range(self, digest: str, *, offset: int, length: int) -> bytes:
         if offset < 0 or length <= 0 or length > MAX_RELAY_RANGE_BYTES:
-            raise RelayError("El rango solicitado al relay no es válido.")
+            msg = "El rango solicitado al relay no es válido."
+            raise RelayError(msg)
         path = self.path_for(digest)
         if path.is_symlink() or not path.is_file():
-            raise RelayError("El relay no tiene el artefacto solicitado.")
+            msg = "El relay no tiene el artefacto solicitado."
+            raise RelayError(msg)
         try:
             if offset + length > path.stat().st_size:
-                raise RelayError("El rango solicitado excede el artefacto.")
+                msg = "El rango solicitado excede el artefacto."
+                raise RelayError(msg)
             with path.open("rb") as source:
                 source.seek(offset)
                 value = source.read(length)
         except OSError as error:
-            raise RelayError(f"No se pudo leer el relay: {error}") from None
+            msg = f"No se pudo leer el relay: {error}"
+            raise RelayError(msg) from None
         if len(value) != length:
-            raise RelayError("El relay devolvió un rango incompleto.")
+            msg = "El relay devolvió un rango incompleto."
+            raise RelayError(msg)
         return value
 
     def acquire(
@@ -210,9 +226,11 @@ class RelayCache:
     ) -> RelayLease:
         digest = _valid_digest(digest)
         if not self.has(digest):
-            raise RelayError("No se puede crear una lease para un artefacto ausente.")
+            msg = "No se puede crear una lease para un artefacto ausente."
+            raise RelayError(msg)
         if seconds <= 0 or seconds > MAX_RELAY_LEASE_SECONDS:
-            raise RelayError("La duración de la lease del relay no es válida.")
+            msg = "La duración de la lease del relay no es válida."
+            raise RelayError(msg)
         current = current or datetime.now(UTC)
         current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
         lease = RelayLease(uuid4(), digest, current + timedelta(seconds=seconds))
@@ -295,7 +313,8 @@ def relay_descriptor(
     """Build the control-plane descriptor without embedding a bearer token."""
 
     if ttl_seconds <= 0 or ttl_seconds > MAX_RELAY_LEASE_SECONDS:
-        raise RelayError("El TTL del descriptor del relay no es válido.")
+        msg = "El TTL del descriptor del relay no es válido."
+        raise RelayError(msg)
     return RelayDescriptor(
         session_id=session_id,
         relay_id=relay_id,
@@ -312,5 +331,6 @@ def relay_candidates(relay_ids: list[str], *, seed_id: str) -> tuple[str, ...]:
 
     values = [item for item in [*relay_ids, seed_id] if item]
     if len(set(values)) != len(values):
-        raise RelayError("Los candidatos del relay no son únicos.")
+        msg = "Los candidatos del relay no son únicos."
+        raise RelayError(msg)
     return tuple(values)
