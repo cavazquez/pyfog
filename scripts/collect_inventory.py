@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,15 @@ MAX_PAIR_INTERVAL_SECONDS = 60
 MAX_PAIR_TIMEOUT_SECONDS = 3600
 MAX_TCP_PORT = 65535
 MAX_TOKEN_LENGTH = 256
+
+
+@dataclass(frozen=True)
+class JsonRequest:
+    method: str
+    payload: bytes | None
+    token: str | None
+    ca_file: str | None
+    expected_status: set[int]
 
 
 def _validate_payload_size(payload: bytes) -> None:
@@ -227,25 +237,17 @@ def validate_token(token: str, *, message: str) -> str:
     return token
 
 
-def json_request(
-    endpoint: str,
-    *,
-    method: str,
-    payload: bytes | None,
-    token: str | None,
-    ca_file: str | None,
-    expected_status: set[int],
-) -> dict[str, Any]:
+def json_request(endpoint: str, request_spec: JsonRequest) -> dict[str, Any]:
     headers = {"Accept": "application/json"}
-    if payload is not None:
+    if request_spec.payload is not None:
         headers["Content-Type"] = "application/json"
-    if token is not None:
-        validate_token(token, message="La capacidad de emparejamiento no es válida.")
-        headers["Authorization"] = f"Bearer {token}"
+    if request_spec.token is not None:
+        validate_token(request_spec.token, message="La capacidad de emparejamiento no es válida.")
+        headers["Authorization"] = f"Bearer {request_spec.token}"
     request = urllib.request.Request(  # noqa: S310 - server URL was validated by the caller
-        endpoint, data=payload, headers=headers, method=method
+        endpoint, data=request_spec.payload, headers=headers, method=request_spec.method
     )
-    context = ssl.create_default_context(cafile=ca_file)
+    context = ssl.create_default_context(cafile=request_spec.ca_file)
     # Pairing credentials must never be sent through a proxy or followed to another host.
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
@@ -254,7 +256,7 @@ def json_request(
     )
     try:
         with opener.open(request, timeout=30) as response:
-            if response.status not in expected_status:
+            if response.status not in request_spec.expected_status:
                 raise ValueError(f"El servidor devolvió HTTP {response.status}.")
             body = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as error:
@@ -353,14 +355,16 @@ def pair_inventory(
     base = server.rstrip("/")
     created = json_request(
         f"{base}/api/v1/pairing/requests",
-        method="POST",
-        payload=json.dumps(
-            {"session_id": session_id, "mac_address": mac, "challenge": challenge},
-            separators=(",", ":"),
-        ).encode("utf-8"),
-        token=None,
-        ca_file=ca_file,
-        expected_status={202},
+        JsonRequest(
+            method="POST",
+            payload=json.dumps(
+                {"session_id": session_id, "mac_address": mac, "challenge": challenge},
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            token=None,
+            ca_file=ca_file,
+            expected_status={202},
+        ),
     )
     request_id = required_uuid(created.get("request_id"), field="request_id")
     poll_token = created.get("poll_token")
@@ -371,11 +375,13 @@ def pair_inventory(
     while True:
         status = json_request(
             f"{base}/api/v1/pairing/requests/{request_id}",
-            method="GET",
-            payload=None,
-            token=poll_token,
-            ca_file=ca_file,
-            expected_status={200},
+            JsonRequest(
+                method="GET",
+                payload=None,
+                token=poll_token,
+                ca_file=ca_file,
+                expected_status={200},
+            ),
         )
         state = status.get("status")
         if state == "approved":
@@ -386,11 +392,13 @@ def pair_inventory(
             validate_token(inventory_token, message="La capacidad de inventario no es válida.")
             result = json_request(
                 f"{base}/api/v1/pairing/requests/{request_id}/inventory",
-                method="POST",
-                payload=payload,
-                token=inventory_token,
-                ca_file=ca_file,
-                expected_status={200, 201},
+                JsonRequest(
+                    method="POST",
+                    payload=payload,
+                    token=inventory_token,
+                    ca_file=ca_file,
+                    expected_status={200, 201},
+                ),
             )
             if result.get("host_id") != host_id:
                 raise ValueError("El servidor asoció el inventario a otro equipo.")

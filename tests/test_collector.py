@@ -130,8 +130,8 @@ def test_pairing_waits_for_approval_and_submits_one_inventory(monkeypatch, inven
     )
     calls = []
 
-    def fake_request(endpoint, **kwargs):
-        calls.append((endpoint, kwargs))
+    def fake_request(endpoint, request_spec):
+        calls.append((endpoint, request_spec))
         return next(responses)
 
     monkeypatch.setattr(collector, "json_request", fake_request)
@@ -149,11 +149,11 @@ def test_pairing_waits_for_approval_and_submits_one_inventory(monkeypatch, inven
     assert "Solicitud PXE creada. Desafío:" in output
     assert "poll-capability" not in output
     assert calls[0][0] == "https://pyfog.example/api/v1/pairing/requests"
-    request_body = json.loads(calls[0][1]["payload"])
+    request_body = json.loads(calls[0][1].payload)
     assert request_body["mac_address"] == inventory["interfaces"][0]["mac_address"]
     assert calls[-1][0].endswith(f"/pairing/requests/{request_id}/inventory")
-    assert calls[-1][1]["token"] == "inventory-capability"
-    assert calls[-1][1]["payload"] == payload
+    assert calls[-1][1].token == "inventory-capability"
+    assert calls[-1][1].payload == payload
 
 
 @pytest.mark.parametrize(
