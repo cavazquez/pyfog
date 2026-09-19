@@ -20,14 +20,16 @@ def _decode(value: bytes | str | dict[str, Any]) -> object:
         try:
             value = json.loads(value)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise PlatformInventoryError("El inventario de plataforma no es JSON válido.") from None
+            msg = "El inventario de plataforma no es JSON válido."
+            raise PlatformInventoryError(msg) from None
     return value
 
 
 def _parse(value: bytes | str | dict[str, Any], platform: Literal["windows", "macos"]) -> Inventory:
     decoded = _decode(value)
     if not isinstance(decoded, dict):
-        raise PlatformInventoryError("El inventario de plataforma debe ser un objeto JSON.")
+        msg = "El inventario de plataforma debe ser un objeto JSON."
+        raise PlatformInventoryError(msg)
     raw_disks = decoded.get("disks")
     if isinstance(raw_disks, list) and any(
         isinstance(disk, dict)
@@ -35,21 +37,22 @@ def _parse(value: bytes | str | dict[str, Any], platform: Literal["windows", "ma
         and disk["stable_id"].startswith("path:")
         for disk in raw_disks
     ):
-        raise PlatformInventoryError(
-            "Cada disco multiplataforma debe tener identidad WWN o serial."
-        )
+        msg = "Cada disco multiplataforma debe tener identidad WWN o serial."
+        raise PlatformInventoryError(msg)
     try:
         inventory = Inventory.model_validate(decoded)
     except ValueError as error:
-        raise PlatformInventoryError(f"Inventario de {platform} inválido: {error}") from None
+        msg = f"Inventario de {platform} inválido: {error}"
+        raise PlatformInventoryError(msg) from None
     if inventory.os.id.casefold() != platform:
-        raise PlatformInventoryError(f"El inventario no declara la plataforma {platform}.")
+        msg = f"El inventario no declara la plataforma {platform}."
+        raise PlatformInventoryError(msg)
     if inventory.architecture.casefold() not in {"x86_64", "amd64", "aarch64", "arm64"}:
-        raise PlatformInventoryError("La arquitectura de plataforma no está soportada.")
+        msg = "La arquitectura de plataforma no está soportada."
+        raise PlatformInventoryError(msg)
     if any(not disk.stable_id or disk.stable_id.startswith("path:") for disk in inventory.disks):
-        raise PlatformInventoryError(
-            "Cada disco multiplataforma debe tener identidad WWN o serial."
-        )
+        msg = "Cada disco multiplataforma debe tener identidad WWN o serial."
+        raise PlatformInventoryError(msg)
     return inventory
 
 
@@ -58,9 +61,11 @@ def validate_windows_inventory(value: bytes | str | dict[str, Any]) -> Inventory
 
     inventory = _parse(value, "windows")
     if inventory.firmware is None:
-        raise PlatformInventoryError("Windows debe declarar firmware UEFI o BIOS.")
+        msg = "Windows debe declarar firmware UEFI o BIOS."
+        raise PlatformInventoryError(msg)
     if not inventory.os.version:
-        raise PlatformInventoryError("Windows debe declarar la versión del sistema.")
+        msg = "Windows debe declarar la versión del sistema."
+        raise PlatformInventoryError(msg)
     if not inventory.system.serial_number:
         inventory.warnings.append("system_serial_unavailable")
     return inventory
@@ -71,9 +76,11 @@ def validate_macos_evaluation_inventory(value: bytes | str | dict[str, Any]) -> 
 
     inventory = _parse(value, "macos")
     if inventory.firmware is not None and inventory.firmware not in {"uefi", "bios"}:
-        raise PlatformInventoryError("El firmware macOS no tiene un valor válido.")
+        msg = "El firmware macOS no tiene un valor válido."
+        raise PlatformInventoryError(msg)
     if not inventory.os.version:
-        raise PlatformInventoryError("macOS debe declarar la versión del sistema.")
+        msg = "macOS debe declarar la versión del sistema."
+        raise PlatformInventoryError(msg)
     return inventory
 
 
