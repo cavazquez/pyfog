@@ -24,7 +24,8 @@ MIN_RAID_MEMBERS = 2
 def _safe_identifier(value: object, label: str, *, max_length: int = 128) -> str:
     text = str(value or "").strip()
     if not text or len(text) > max_length or not re.fullmatch(r"[A-Za-z0-9._:+@/-]+", text):
-        raise LayoutError(f"{label} no tiene un identificador seguro.")
+        msg = f"{label} no tiene un identificador seguro."
+        raise LayoutError(msg)
     return text
 
 
@@ -63,10 +64,12 @@ def lvm_layout_from_manifest(value: object) -> LvmLinearLayout:
     """Convert one manifest volume into the same bounded layout used by LVM reports."""
 
     if not isinstance(value, dict) or value.get("type") != "lvm-linear":
-        raise LayoutError("El manifiesto no declara un volumen LVM lineal.")
+        msg = "El manifiesto no declara un volumen LVM lineal."
+        raise LayoutError(msg)
     size = value.get("size_bytes")
     if type(size) is not int or size <= 0:
-        raise LayoutError("El volumen LVM no declara un tamaño positivo.")
+        msg = "El volumen LVM no declara un tamaño positivo."
+        raise LayoutError(msg)
     return LvmLinearLayout(
         _safe_identifier(value.get("pv_uuid"), "El UUID del PV"),
         _safe_identifier(value.get("vg_name"), "El nombre del VG"),
@@ -81,21 +84,26 @@ def raid1_layout_from_manifest(value: object) -> Raid1Layout:
     """Convert one manifest RAID1 declaration without accepting device-node order as identity."""
 
     if not isinstance(value, dict) or value.get("level") != 1:
-        raise LayoutError("El manifiesto no declara un array RAID1.")
+        msg = "El manifiesto no declara un array RAID1."
+        raise LayoutError(msg)
     metadata = value.get("metadata")
     if metadata not in {"1.0", "1.1", "1.2"}:
-        raise LayoutError("La metadata RAID1 no está soportada.")
+        msg = "La metadata RAID1 no está soportada."
+        raise LayoutError(msg)
     raw_members = value.get("member_ids")
     if not isinstance(raw_members, list) or len(raw_members) < MIN_RAID_MEMBERS:
-        raise LayoutError("RAID1 debe declarar al menos dos miembros.")
+        msg = "RAID1 debe declarar al menos dos miembros."
+        raise LayoutError(msg)
     members = tuple(
         _safe_identifier(item, "La identidad del miembro RAID1") for item in raw_members
     )
     if len(set(members)) != len(members) or any(item.startswith("path:") for item in members):
-        raise LayoutError("Los miembros RAID1 deben tener identidades estables y únicas.")
+        msg = "Los miembros RAID1 deben tener identidades estables y únicas."
+        raise LayoutError(msg)
     size = value.get("size_bytes")
     if type(size) is not int or size <= 0:
-        raise LayoutError("RAID1 no declara un tamaño positivo.")
+        msg = "RAID1 no declara un tamaño positivo."
+        raise LayoutError(msg)
     return Raid1Layout(
         _safe_identifier(value.get("uuid"), "El UUID del array"), metadata, members, size
     )
@@ -105,10 +113,12 @@ def luks2_layout_from_manifest(value: object) -> Luks2Layout:
     """Convert non-secret LUKS2 manifest metadata into the unlock contract."""
 
     if not isinstance(value, dict) or value.get("type") != "luks2":
-        raise LayoutError("El manifiesto no declara un contenedor LUKS2.")
+        msg = "El manifiesto no declara un contenedor LUKS2."
+        raise LayoutError(msg)
     raw_sector = value.get("sector_size")
     if type(raw_sector) is not int or raw_sector not in {512, 4096}:
-        raise LayoutError("El sector LUKS2 del manifiesto no está soportado.")
+        msg = "El sector LUKS2 del manifiesto no está soportado."
+        raise LayoutError(msg)
     return Luks2Layout(
         _safe_identifier(value.get("uuid"), "El UUID LUKS2"),
         _safe_identifier(value.get("cipher"), "El cipher LUKS2"),
@@ -158,20 +168,25 @@ def _json_report(value: object, label: str) -> list[dict[str, Any]]:
         try:
             value = json.loads(value)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise LayoutError(f"El reporte {label} no es JSON válido.") from None
+            msg = f"El reporte {label} no es JSON válido."
+            raise LayoutError(msg) from None
     elif isinstance(value, str):
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
-            raise LayoutError(f"El reporte {label} no es JSON válido.") from None
+            msg = f"El reporte {label} no es JSON válido."
+            raise LayoutError(msg) from None
     if not isinstance(value, dict):
-        raise LayoutError(f"El reporte {label} no es un objeto JSON.")
+        msg = f"El reporte {label} no es un objeto JSON."
+        raise LayoutError(msg)
     report = value.get("report")
     if not isinstance(report, list) or len(report) != 1 or not isinstance(report[0], dict):
-        raise LayoutError(f"El reporte {label} no tiene una sección única.")
+        msg = f"El reporte {label} no tiene una sección única."
+        raise LayoutError(msg)
     rows = report[0].get(label)
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-        raise LayoutError(f"El reporte {label} no contiene filas válidas.")
+        msg = f"El reporte {label} no contiene filas válidas."
+        raise LayoutError(msg)
     return rows
 
 
@@ -193,7 +208,8 @@ def parse_lvm_linear_reports(pvs: object, vgs: object, lvs: object) -> LvmLinear
     vg_rows = _json_report(vgs, "vg")
     lv_rows = _json_report(lvs, "lv")
     if len(pv_rows) != 1 or len(vg_rows) != 1 or len(lv_rows) != 1:
-        raise LayoutError("Sólo se admite un PV, un VG y un LV lineales por perfil.")
+        msg = "Sólo se admite un PV, un VG y un LV lineales por perfil."
+        raise LayoutError(msg)
     pv, vg, lv = pv_rows[0], vg_rows[0], lv_rows[0]
     pv_uuid = _safe_identifier(pv.get("pv_uuid"), "El UUID del PV")
     vg_name = _safe_identifier(vg.get("vg_name"), "El nombre del VG")
@@ -201,16 +217,20 @@ def parse_lvm_linear_reports(pvs: object, vgs: object, lvs: object) -> LvmLinear
     lv_name = _safe_identifier(lv.get("lv_name"), "El nombre del LV")
     lv_uuid = _safe_identifier(lv.get("lv_uuid"), "El UUID del LV")
     if str(lv.get("vg_uuid") or "") != vg_uuid or str(lv.get("vg_name") or "") != vg_name:
-        raise LayoutError("El LV no pertenece al VG declarado.")
+        msg = "El LV no pertenece al VG declarado."
+        raise LayoutError(msg)
     if str(lv.get("lv_attr") or "").startswith("s") or str(lv.get("lv_attr") or "").startswith("V"):
-        raise LayoutError("Los snapshots y thin volumes no están soportados.")
+        msg = "Los snapshots y thin volumes no están soportados."
+        raise LayoutError(msg)
     layout = str(lv.get("lv_layout") or lv.get("segtype") or "linear").lower()
     if layout not in {"linear", "striped"} or layout == "striped":
-        raise LayoutError("Sólo se admite un LV lineal sin striping, snapshot ni RAID.")
+        msg = "Sólo se admite un LV lineal sin striping, snapshot ni RAID."
+        raise LayoutError(msg)
     raw_size = lv.get("lv_size_bytes", lv.get("lv_size"))
     size = _size_bytes(raw_size)
     if size <= 0:
-        raise LayoutError("El LV no declara un tamaño positivo en bytes.")
+        msg = "El LV no declara un tamaño positivo en bytes."
+        raise LayoutError(msg)
     return LvmLinearLayout(pv_uuid, vg_name, vg_uuid, lv_name, lv_uuid, size)
 
 
@@ -223,28 +243,33 @@ def parse_mdraid1_export(value: str) -> Raid1Layout:
         if separator and re.fullmatch(r"[A-Z0-9_]+", key):
             values[key] = item.strip()
     if values.get("MD_LEVEL") != "raid1":
-        raise LayoutError("Sólo se admite mdadm RAID1.")
+        msg = "Sólo se admite mdadm RAID1."
+        raise LayoutError(msg)
     state = {item.strip() for item in values.get("MD_STATE", "").lower().split(",") if item.strip()}
     if not state or not state.issubset({"clean", "active"}):
-        raise LayoutError("El array RAID1 está degradado o no tiene un estado seguro.")
+        msg = "El array RAID1 está degradado o no tiene un estado seguro."
+        raise LayoutError(msg)
     uuid = _safe_identifier(values.get("MD_UUID"), "El UUID del array")
     metadata = values.get("MD_METADATA", "")
     if metadata not in {"1.0", "1.1", "1.2"}:
-        raise LayoutError("La metadata mdadm no está soportada.")
+        msg = "La metadata mdadm no está soportada."
+        raise LayoutError(msg)
     member_ids = tuple(
         value
         for key, value in sorted(values.items())
         if key.startswith("MD_DEVICE_") and key.endswith("_DEV")
     )
     if len(member_ids) < MIN_RAID_MEMBERS or len(set(member_ids)) != len(member_ids):
-        raise LayoutError("RAID1 debe declarar al menos dos miembros distintos.")
+        msg = "RAID1 debe declarar al menos dos miembros distintos."
+        raise LayoutError(msg)
     raw_size = values.get("MD_ARRAY_SIZE")
     try:
         size = int(raw_size or "0")
     except ValueError:
         size = 0
     if size <= 0:
-        raise LayoutError("RAID1 no declara un tamaño válido.")
+        msg = "RAID1 no declara un tamaño válido."
+        raise LayoutError(msg)
     return Raid1Layout(uuid, metadata, member_ids, size)
 
 
@@ -255,11 +280,14 @@ def parse_luks2_metadata(value: object) -> Luks2Layout:
         try:
             value = json.loads(value)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise LayoutError("La metadata LUKS2 no es JSON válido.") from None
+            msg = "La metadata LUKS2 no es JSON válido."
+            raise LayoutError(msg) from None
     if not isinstance(value, dict):
-        raise LayoutError("La metadata LUKS2 no es un objeto JSON.")
+        msg = "La metadata LUKS2 no es un objeto JSON."
+        raise LayoutError(msg)
     if value.get("version") != LUKS2_METADATA_VERSION:
-        raise LayoutError("El contenedor no es LUKS2.")
+        msg = "El contenedor no es LUKS2."
+        raise LayoutError(msg)
     uuid = _safe_identifier(value.get("uuid"), "El UUID LUKS2")
     cipher = _safe_identifier(value.get("cipher", ""), "El cipher LUKS2")
     raw_sector_size = value.get("sector-size", value.get("sector_size", 0))
@@ -268,7 +296,8 @@ def parse_luks2_metadata(value: object) -> Luks2Layout:
     except (TypeError, ValueError):
         sector_size = 0
     if sector_size not in {512, 4096}:
-        raise LayoutError("El sector LUKS2 no está soportado.")
+        msg = "El sector LUKS2 no está soportado."
+        raise LayoutError(msg)
     return Luks2Layout(uuid, cipher, sector_size)
 
 
@@ -282,12 +311,15 @@ def parse_btrfs_subvolumes(value: str) -> list[BtrfsSubvolume]:
             continue
         path = match[2].strip()
         if not re.fullmatch(r"[A-Za-z0-9._/@+-]+", path) or "snapshot" in path.casefold():
-            raise LayoutError("El layout Btrfs contiene un snapshot o una ruta ambigua.")
+            msg = "El layout Btrfs contiene un snapshot o una ruta ambigua."
+            raise LayoutError(msg)
         result.append(BtrfsSubvolume(int(match[1]), path))
     if not result or len({item.subvolume_id for item in result}) != len(result):
-        raise LayoutError("No se pudo identificar un conjunto válido de subvolúmenes Btrfs.")
+        msg = "No se pudo identificar un conjunto válido de subvolúmenes Btrfs."
+        raise LayoutError(msg)
     if not any(item.path in {"@", "@/", "."} for item in result):
-        raise LayoutError("El layout Btrfs no declara un subvolumen raíz conocido.")
+        msg = "El layout Btrfs no declara un subvolumen raíz conocido."
+        raise LayoutError(msg)
     return result
 
 
@@ -302,14 +334,14 @@ def filesystem_tool(filesystem: str) -> str:
             "btrfs": "partclone.btrfs",
         }[filesystem]
     except KeyError:
-        raise LayoutError(
-            f"El filesystem {filesystem} no pertenece a la matriz soportada."
-        ) from None
+        msg = f"El filesystem {filesystem} no pertenece a la matriz soportada."
+        raise LayoutError(msg) from None
 
 
 def _safe_device(value: str) -> str:
     if not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", value):
-        raise LayoutError("El dispositivo de almacenamiento no es seguro.")
+        msg = "El dispositivo de almacenamiento no es seguro."
+        raise LayoutError(msg)
     return value
 
 
@@ -345,16 +377,19 @@ def raid1_restore_commands(
 
     expected_ids = member_ids or layout.member_ids
     if len(members) != len(expected_ids):
-        raise LayoutError("Los miembros destino no coinciden con el array RAID1.")
+        msg = "Los miembros destino no coinciden con el array RAID1."
+        raise LayoutError(msg)
     if member_ids is not None and tuple(member_ids) != layout.member_ids:
-        raise LayoutError("Las identidades de miembros no coinciden con el manifiesto RAID1.")
+        msg = "Las identidades de miembros no coinciden con el manifiesto RAID1."
+        raise LayoutError(msg)
     for member in members:
         _safe_device(member)
     if member_ids is None and any(
         not expected.startswith("/dev/") or _safe_device(member) != expected
         for member, expected in zip(members, expected_ids, strict=True)
     ):
-        raise LayoutError("Los miembros destino no coinciden con el array RAID1.")
+        msg = "Los miembros destino no coinciden con el array RAID1."
+        raise LayoutError(msg)
     return [
         "mdadm",
         "--create",
@@ -372,4 +407,5 @@ def validate_luks2_match(expected: Luks2Layout, actual: Luks2Layout) -> None:
     """Compare non-secret LUKS metadata before accepting a key from a provider."""
 
     if expected != actual:
-        raise LayoutError("La metadata LUKS2 del destino no coincide con la imagen.")
+        msg = "La metadata LUKS2 del destino no coincide con la imagen."
+        raise LayoutError(msg)
