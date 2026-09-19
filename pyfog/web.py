@@ -299,10 +299,12 @@ def task_disk_selectors(
     """Encode one or more stable selectors while preserving the v1 shape for one disk."""
 
     if not disks:
-        raise ValueError("La tarea debe contener al menos un disco.")
+        msg = "La tarea debe contener al menos un disco."
+        raise ValueError(msg)
     source_disks = manifest_disks(manifest) if manifest is not None else []
     if source_disks and len(source_disks) != len(disks):
-        raise ValueError("La cantidad de discos destino no coincide con la imagen.")
+        msg = "La cantidad de discos destino no coincide con la imagen."
+        raise ValueError(msg)
     selectors = [
         task_disk_selector(
             disk,
