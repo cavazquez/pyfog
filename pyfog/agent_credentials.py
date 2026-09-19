@@ -82,7 +82,8 @@ def issue_credential(db: Session, host: Host, settings: Settings) -> tuple[Agent
 
     locked_host = db.scalar(select(Host).where(Host.id == host.id).with_for_update())
     if locked_host is None:
-        raise ValueError("No se encontró el equipo para emitir la credencial.")
+        msg = "No se encontró el equipo para emitir la credencial."
+        raise ValueError(msg)
     host = locked_host
     current = now()
     _import_legacy_credential(db, host, current)
