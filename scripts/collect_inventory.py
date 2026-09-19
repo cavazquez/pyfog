@@ -42,6 +42,12 @@ class JsonRequest:
     expected_status: set[int]
 
 
+@dataclass(frozen=True)
+class PairingOptions:
+    timeout_seconds: int = 900
+    interval_seconds: float = 2.0
+
+
 def _validate_payload_size(payload: bytes) -> None:
     if len(payload) > MAX_PAYLOAD_BYTES:
         raise ValueError("El informe supera el límite permitido.")
@@ -339,14 +345,13 @@ def pair_inventory(
     document: object,
     server: str,
     ca_file: str | None,
-    *,
-    timeout_seconds: int = 900,
-    interval_seconds: float = 2.0,
+    options: PairingOptions | None = None,
 ) -> None:
     """Request administrator approval, then send one inventory report with its capability."""
 
+    options = options or PairingOptions()
     validate_server(server)
-    if timeout_seconds <= 0 or interval_seconds <= 0:
+    if options.timeout_seconds <= 0 or options.interval_seconds <= 0:
         raise ValueError("El timeout y el intervalo de emparejamiento deben ser positivos.")
     mac = inventory_mac(document)
     session_id = str(uuid.uuid4())
@@ -371,7 +376,7 @@ def pair_inventory(
     if not isinstance(poll_token, str):
         raise TypeError("La respuesta del servidor no incluye una capacidad de emparejamiento.")
     validate_token(poll_token, message="La capacidad de emparejamiento no es válida.")
-    deadline = time.monotonic() + timeout_seconds
+    deadline = time.monotonic() + options.timeout_seconds
     while True:
         status = json_request(
             f"{base}/api/v1/pairing/requests/{request_id}",
@@ -415,7 +420,7 @@ def pair_inventory(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ValueError("Se agotó el tiempo de espera para aprobar la solicitud PXE.")
-        time.sleep(min(interval_seconds, remaining))
+        time.sleep(min(options.interval_seconds, remaining))
 
 
 def main() -> None:
@@ -470,8 +475,10 @@ def main() -> None:
                 document,
                 args.server,
                 args.ca_file,
-                timeout_seconds=args.pair_timeout,
-                interval_seconds=args.pair_interval,
+                PairingOptions(
+                    timeout_seconds=args.pair_timeout,
+                    interval_seconds=args.pair_interval,
+                ),
             )
         elif args.server:
             send_inventory(
