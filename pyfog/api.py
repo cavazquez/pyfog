@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 
 from pyfog.agent_credentials import AgentAuthorization, credential_is_usable
 from pyfog.audit import record_audit
-from pyfog.coordinator import CoordinatorError, FencingLease, acquire_lease, assert_fenced
+from pyfog.coordinator import (
+    CoordinatorError,
+    FencingLease,
+    acquire_lease,
+    assert_fenced,
+    require_lease,
+)
 from pyfog.database import get_db
 from pyfog.health import operational_metrics, operational_snapshot
 from pyfog.image_manifest import (
@@ -77,13 +83,13 @@ def coordinator_fence(request: Request, db: Session) -> FencingLease | None:
     if not coordinator_id:
         return None
     try:
-        lease = acquire_lease(
-            db,
-            coordinator_id,
-            lease_seconds=request.app.state.settings.coordinator_lease_seconds,
+        lease = require_lease(
+            acquire_lease(
+                db,
+                coordinator_id,
+                lease_seconds=request.app.state.settings.coordinator_lease_seconds,
+            )
         )
-        if lease is None:
-            raise CoordinatorError("El coordinador activo no está disponible.")
         assert_fenced(db, lease)
         request.state.coordinator_lease = lease
     except CoordinatorError as error:
