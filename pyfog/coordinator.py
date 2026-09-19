@@ -32,19 +32,22 @@ def require_lease(lease: FencingLease | None) -> FencingLease:
     """Convert passive coordinator state into the domain error used by mutations."""
 
     if lease is None:
-        raise CoordinatorError("El coordinador activo no está disponible.")
+        msg = "El coordinador activo no está disponible."
+        raise CoordinatorError(msg)
     return lease
 
 
 def _validate_holder(holder_id: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", holder_id):
-        raise CoordinatorError("La identidad del coordinador no es válida.")
+        msg = "La identidad del coordinador no es válida."
+        raise CoordinatorError(msg)
     return holder_id
 
 
 def _lease_from_row(row: CoordinatorLeaseRecord) -> FencingLease:
     if row.lease_expires_at is None:
-        raise CoordinatorError("El coordinador no tiene una lease activa.")
+        msg = "El coordinador no tiene una lease activa."
+        raise CoordinatorError(msg)
     return FencingLease(row.holder_id, row.term, row.fencing_token, row.lease_expires_at)
 
 
@@ -64,7 +67,8 @@ def acquire_lease(
 
     holder_id = _validate_holder(holder_id)
     if lease_seconds <= 0 or lease_seconds > MAX_COORDINATOR_LEASE_SECONDS:
-        raise CoordinatorError("La duración de la lease debe estar entre 1 y 300 segundos.")
+        msg = "La duración de la lease debe estar entre 1 y 300 segundos."
+        raise CoordinatorError(msg)
     current = current or now()
     expires = current + timedelta(seconds=lease_seconds)
     row = db.scalar(
@@ -116,11 +120,14 @@ def renew_lease(
     current = current or now()
     row = db.get(CoordinatorLeaseRecord, COORDINATOR_LEASE_ID)
     if row is None or row.holder_id != lease.holder_id or row.fencing_token != lease.fencing_token:
-        raise CoordinatorError("La lease del coordinador perdió el fencing token.")
+        msg = "La lease del coordinador perdió el fencing token."
+        raise CoordinatorError(msg)
     if row.lease_expires_at is None or row.lease_expires_at <= current:
-        raise CoordinatorError("La lease del coordinador venció.")
+        msg = "La lease del coordinador venció."
+        raise CoordinatorError(msg)
     if lease_seconds <= 0 or lease_seconds > MAX_COORDINATOR_LEASE_SECONDS:
-        raise CoordinatorError("La duración de la lease debe estar entre 1 y 300 segundos.")
+        msg = "La duración de la lease debe estar entre 1 y 300 segundos."
+        raise CoordinatorError(msg)
     row.lease_expires_at = current + timedelta(seconds=lease_seconds)
     row.updated_at = current
     db.flush()
@@ -144,7 +151,8 @@ def assert_fenced(
         or row.lease_expires_at is None
         or row.lease_expires_at <= current
     ):
-        raise CoordinatorError("La operación fue bloqueada por fencing del coordinador.")
+        msg = "La operación fue bloqueada por fencing del coordinador."
+        raise CoordinatorError(msg)
 
 
 def release_lease(
@@ -158,7 +166,8 @@ def release_lease(
     current = current or now()
     row = db.get(CoordinatorLeaseRecord, COORDINATOR_LEASE_ID)
     if row is None or row.holder_id != lease.holder_id or row.fencing_token != lease.fencing_token:
-        raise CoordinatorError("No se puede liberar una lease que ya no pertenece al coordinador.")
+        msg = "No se puede liberar una lease que ya no pertenece al coordinador."
+        raise CoordinatorError(msg)
     row.holder_id = ""
     row.term += 1
     row.fencing_token += 1
