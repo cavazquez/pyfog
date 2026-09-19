@@ -595,7 +595,8 @@ def fail_agent_task(
     attempt.finished_at = current
     attempt.phase = "failed"
     attempt.failure_reason = reason[:500]
-    transition_task(db, task, "failed", phase="failed", message=reason, failure_reason=reason)
+    task.failure_reason = reason[:500]
+    transition_task(db, task, "failed", phase="failed", message=reason)
     image = db.get(Image, task.image_id)
     if image is not None and image.status == "capturing":
         image.status = "failed"
