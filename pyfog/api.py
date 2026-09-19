@@ -606,95 +606,114 @@ def fail_agent_task(
     )
 
 
-@router.post("/api/v1/tasks/{task_id}/result")
-def finish_agent_task(
-    task_id: UUID, payload: TaskResultInput, request: Request, db: Db
+def _finish_cancelled_agent_task(
+    request: Request,
+    db: Session,
+    task: Task,
+    attempt: TaskAttempt,
+    payload: TaskResultInput,
 ) -> JSONResponse:
-    coordinator_fence(request, db)
-    task, attempt = task_attempt_for_token(request, db, task_id)
-    if payload.cancelled or task.cancel_requested_at is not None:
-        reason = payload.error or "El agente confirmó la cancelación cooperativa."
-        try:
-            acknowledge_task_cancellation(db, task, attempt, reason=reason)
-        except TaskError as error:
-            raise HTTPException(409, str(error)) from None
-        record_audit(
-            db,
-            actor_host_id=task.host_id,
-            action="task.cancel",
-            resource_type="task",
-            resource_id=task.id,
-            detail="El agente reconoció la cancelación cooperativa.",
-        )
-        db.commit()
-        if task.operation == "capture":
-            # The agent has acknowledged the stop, so it is now safe to remove its
-            # unpublished upload without racing a still-running writer.
-            with contextlib.suppress(StorageError):
-                request.app.state.artifact_store.remove_task_staging(task.id)
-        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
-    if not payload.success:
-        reason = payload.error or f"El agente informó que la {task.operation} falló."
-        fail_agent_task(db, task, attempt, reason, payload.sequence)
-        db.commit()
-        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
-    if task.operation in {"restore", "clone"}:
-        if payload.manifest is not None:
-            raise HTTPException(422, "Una restauración exitosa no debe enviar un manifiesto.")
-        if payload.sequence <= attempt.last_sequence:
-            return JSONResponse(
-                {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
-            )
-        image = db.get(Image, task.image_id)
-        firmware_type = "uefi"
-        if image is not None and isinstance(image.manifest_json, dict):
-            firmware = image.manifest_json.get("firmware")
-            if isinstance(firmware, dict) and firmware.get("type") in {"uefi", "bios"}:
-                firmware_type = str(firmware["type"])
-        try:
-            record_progress(
-                db,
-                task,
-                attempt,
-                request.app.state.settings,
-                sequence=payload.sequence,
-                phase="verifying",
-                bytes_processed=attempt.bytes_processed,
-                total_bytes=attempt.total_bytes,
-                message=f"El agente verificó el destino y el arranque {firmware_type.upper()}.",
-            )
-            attempt.finished_at = now()
-            attempt.phase = "completed"
-            transition_task(
-                db,
-                task,
-                "succeeded",
-                phase="completed",
-                message=(
-                    "La clonación terminó con identidad nueva."
-                    if task.operation == "clone"
-                    else "La restauración terminó y el destino fue verificado."
-                ),
-            )
-            add_event(
-                db,
-                task,
-                event_type="completed",
-                attempt=attempt,
-                sequence=attempt.last_sequence + 1,
-                phase="completed",
-                bytes_processed=attempt.bytes_processed,
-                total_bytes=attempt.total_bytes,
-                message=task.message,
-            )
-            attempt.last_sequence += 1
-            db.commit()
-        except TaskError as error:
-            db.rollback()
-            raise HTTPException(409, str(error)) from None
+    reason = payload.error or "El agente confirmó la cancelación cooperativa."
+    try:
+        acknowledge_task_cancellation(db, task, attempt, reason=reason)
+    except TaskError as error:
+        raise HTTPException(409, str(error)) from None
+    record_audit(
+        db,
+        actor_host_id=task.host_id,
+        action="task.cancel",
+        resource_type="task",
+        resource_id=task.id,
+        detail="El agente reconoció la cancelación cooperativa.",
+    )
+    db.commit()
+    if task.operation == "capture":
+        with contextlib.suppress(StorageError):
+            request.app.state.artifact_store.remove_task_staging(task.id)
+    return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+
+
+def _finish_failed_agent_task(
+    db: Session, task: Task, attempt: TaskAttempt, payload: TaskResultInput
+) -> JSONResponse:
+    reason = payload.error or f"El agente informó que la {task.operation} falló."
+    fail_agent_task(db, task, attempt, reason, payload.sequence)
+    db.commit()
+    return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
+
+
+def _finish_restore_agent_task(
+    request: Request,
+    db: Session,
+    task: Task,
+    attempt: TaskAttempt,
+    payload: TaskResultInput,
+) -> JSONResponse:
+    if payload.manifest is not None:
+        raise HTTPException(422, "Una restauración exitosa no debe enviar un manifiesto.")
+    if payload.sequence <= attempt.last_sequence:
         return JSONResponse(
-            {"task_id": task.id, "status": task.status, "accepted": True}, status_code=200
+            {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
         )
+    image = db.get(Image, task.image_id)
+    firmware_type = "uefi"
+    if image is not None and isinstance(image.manifest_json, dict):
+        firmware = image.manifest_json.get("firmware")
+        if isinstance(firmware, dict) and firmware.get("type") in {"uefi", "bios"}:
+            firmware_type = str(firmware["type"])
+    try:
+        record_progress(
+            db,
+            task,
+            attempt,
+            request.app.state.settings,
+            sequence=payload.sequence,
+            phase="verifying",
+            bytes_processed=attempt.bytes_processed,
+            total_bytes=attempt.total_bytes,
+            message=f"El agente verificó el destino y el arranque {firmware_type.upper()}.",
+        )
+        attempt.finished_at = now()
+        attempt.phase = "completed"
+        transition_task(
+            db,
+            task,
+            "succeeded",
+            phase="completed",
+            message=(
+                "La clonación terminó con identidad nueva."
+                if task.operation == "clone"
+                else "La restauración terminó y el destino fue verificado."
+            ),
+        )
+        add_event(
+            db,
+            task,
+            event_type="completed",
+            attempt=attempt,
+            sequence=attempt.last_sequence + 1,
+            phase="completed",
+            bytes_processed=attempt.bytes_processed,
+            total_bytes=attempt.total_bytes,
+            message=task.message,
+        )
+        attempt.last_sequence += 1
+        db.commit()
+    except TaskError as error:
+        db.rollback()
+        raise HTTPException(409, str(error)) from None
+    return JSONResponse(
+        {"task_id": task.id, "status": task.status, "accepted": True}, status_code=200
+    )
+
+
+def _finish_capture_agent_task(
+    request: Request,
+    db: Session,
+    task: Task,
+    attempt: TaskAttempt,
+    payload: TaskResultInput,
+) -> JSONResponse:
     if payload.manifest is None:
         raise HTTPException(422, "Una captura exitosa debe incluir su manifiesto.")
     if payload.sequence <= attempt.last_sequence:
@@ -737,15 +756,11 @@ def finish_agent_task(
                 {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
             )
         request.app.state.artifact_store.verify_and_publish(task.id, task.image_id, manifest)
+        image = db.get(Image, task.image_id)
+        if image is None:
+            raise ValueError("La imagen de la tarea ya no existe.")
     except (StorageError, TaskError, ValueError) as error:
         fail_agent_task(db, task, attempt, str(error), payload.sequence + 1)
-        db.commit()
-        return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
-    image = db.get(Image, task.image_id)
-    if image is None:
-        fail_agent_task(
-            db, task, attempt, "La imagen de la tarea ya no existe.", payload.sequence + 1
-        )
         db.commit()
         return JSONResponse({"task_id": task.id, "status": task.status}, status_code=200)
     image.status = "ready"
@@ -796,6 +811,21 @@ def finish_agent_task(
     return JSONResponse(
         {"task_id": task.id, "status": task.status, "accepted": True}, status_code=200
     )
+
+
+@router.post("/api/v1/tasks/{task_id}/result")
+def finish_agent_task(
+    task_id: UUID, payload: TaskResultInput, request: Request, db: Db
+) -> JSONResponse:
+    coordinator_fence(request, db)
+    task, attempt = task_attempt_for_token(request, db, task_id)
+    if payload.cancelled or task.cancel_requested_at is not None:
+        return _finish_cancelled_agent_task(request, db, task, attempt, payload)
+    if not payload.success:
+        return _finish_failed_agent_task(db, task, attempt, payload)
+    if task.operation in {"restore", "clone"}:
+        return _finish_restore_agent_task(request, db, task, attempt, payload)
+    return _finish_capture_agent_task(request, db, task, attempt, payload)
 
 
 @router.post("/api/v1/hosts/{host_id}/inventory", status_code=201)
