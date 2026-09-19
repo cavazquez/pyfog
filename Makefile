@@ -58,10 +58,12 @@ coverage-module-check:
 		echo "Checking coverage floor 60% for $$module"; \
 		uv run coverage report --include="$$module" --fail-under=60; \
 	done
-	@for module in scripts/backup_server.py scripts/collect_inventory.py scripts/run_image_task.py scripts/secure_boot_artifacts.py scripts/secure_boot_policy.py; do \
+	@for module in scripts/backup_server.py scripts/collect_inventory.py scripts/secure_boot_artifacts.py scripts/secure_boot_policy.py; do \
 		echo "Checking coverage floor 35% for $$module"; \
 		uv run coverage report --include="$$module" --fail-under=35; \
 	done
+	@echo "Checking coverage floor 45% for scripts/run_image_task.py"; \
+	uv run coverage report --include="scripts/run_image_task.py" --fail-under=45
 
 audit-dependencies:
 	uv run pip-audit --local --strict --progress-spinner off

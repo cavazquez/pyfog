@@ -41,9 +41,9 @@ un wake-up equivalente con `os.write`; en CI y en un entorno normal no se modifi
 
 `make test-coverage` mantiene los umbrales agregados de 70% para `pyfog` y 40% para `scripts`, con
 cobertura de ramas. Además verifica un piso de 60% para los módulos críticos de API, web, layouts,
-dominio y claves, y un piso de 35% para los scripts operativos principales. Los wrappers de CLI que
-requieren integración de laboratorio no se cuentan como cobertura unitaria artificial; sus contratos
-se validan en los checks específicos.
+dominio y claves, un piso de 45% para el agente `run_image_task.py` y un piso de 35% para los demás
+scripts operativos principales. Los wrappers de CLI que requieren integración de laboratorio no se
+cuentan como cobertura unitaria artificial; sus contratos se validan en los checks específicos.
 
 La CI corta la suite de tests a los 120 segundos, la cobertura a los 180 y las migraciones a los 60;
 cada job también tiene un límite total de 10 a 20 minutos. Pytest emite un dump de threads a los 30
