@@ -51,7 +51,7 @@ select = [
   "E", "W", "F", "I", "UP", "B", "SIM", "C4", "PIE", "RUF", "N",
   "ASYNC", "S", "PTH", "DTZ", "PT", "A", "RET", "T20",
 ]
-extend-select = ["ANN204", "ARG", "BLE", "ERA", "G", "LOG", "PERF", "RSE"]
+extend-select = ["ANN204", "ARG", "BLE", "ERA", "G", "LOG", "PERF", "PLR0402", "RSE"]
 
 [tool.ruff.lint.per-file-ignores]
 # Pytest fixture parameters are dependency declarations even when a test does not use them.
