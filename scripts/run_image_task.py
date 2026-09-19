@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Protocol
 
 from pyfog.key_provider import external_luks2_key
 from pyfog.layouts import (
@@ -60,6 +60,10 @@ NO_TASK_EXIT = 3
 MAX_IMAGE_BYTES = 2**50
 
 
+class ReadableResponse(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+
 class TaskCancelledError(ValueError):
     """The coordinator asked the agent to stop before the next destructive step."""
 
@@ -70,10 +74,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(
         self,
         _req: urllib.request.Request,
-        _fp: Any,
+        _fp: object,
         _code: int,
         _msg: str,
-        _headers: Any,
+        _headers: object,
         _newurl: str,
     ) -> None:
         return None
@@ -122,7 +126,7 @@ def opener(ca_file: str | None) -> urllib.request.OpenerDirector:
     )
 
 
-def response_json(response: Any) -> dict[str, Any]:
+def response_json(response: ReadableResponse) -> dict[str, Any]:
     body = response.read(MAX_RESPONSE_BYTES + 1)
     if len(body) > MAX_RESPONSE_BYTES:
         raise ValueError("La respuesta del servidor supera el límite permitido.")
@@ -482,7 +486,7 @@ def unlock_luks2(
     device: str,
     mapping_name: str,
     expected: Luks2Layout,
-    key_provider: Callable[[], bytes] | Any,
+    key_provider: Callable[[], bytes],
 ) -> str:
     """Unlock LUKS2 with a short-lived provider key supplied on stdin only."""
 
@@ -878,13 +882,13 @@ def select_disk(document: dict[str, Any], selector: dict[str, Any]) -> dict[str,
     return selected
 
 
-def manifest_int(value: Any, label: str, *, minimum: int = 0) -> int:
+def manifest_int(value: object, label: str, *, minimum: int = 0) -> int:
     if type(value) is not int or value < minimum or value > MAX_IMAGE_BYTES:
         raise ValueError(f"{label} no es un entero seguro.")
     return value
 
 
-def manifest_uuid(value: Any, label: str) -> str:
+def manifest_uuid(value: object, label: str) -> str:
     try:
         return str(uuid.UUID(str(value)))
     except (ValueError, TypeError, AttributeError):
@@ -2038,7 +2042,7 @@ def download_artifact(
     expected_size: int,
     expected_sha256: str,
     chunk_bytes: int,
-    check_cancel: Any,
+    check_cancel: Callable[[], None],
     block_manifest: dict[str, Any] | None = None,
 ) -> None:
     """Stream one published artifact to staging and verify it without buffering the image."""
