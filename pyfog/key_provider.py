@@ -32,13 +32,16 @@ def decode_ephemeral_key(value: object) -> bytes:
     """Decode a bounded provider response without accepting a key from image metadata."""
 
     if not isinstance(value, str) or len(value) > MAX_KEY_PROVIDER_RESPONSE_LENGTH:
-        raise KeyProviderError("El proveedor no devolvió una clave codificada válida.")
+        msg = "El proveedor no devolvió una clave codificada válida."
+        raise KeyProviderError(msg)
     try:
         key = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError):
-        raise KeyProviderError("La clave del proveedor no es Base64 válido.") from None
+        msg = "La clave del proveedor no es Base64 válido."
+        raise KeyProviderError(msg) from None
     if not 1 <= len(key) <= MAX_EPHEMERAL_KEY_BYTES:
-        raise KeyProviderError("La clave del proveedor tiene un tamaño inválido.")
+        msg = "La clave del proveedor tiene un tamaño inválido."
+        raise KeyProviderError(msg)
     return key
 
 
