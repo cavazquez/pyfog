@@ -605,7 +605,7 @@ def parse_image_manifest(value: bytes | str | dict[str, object]) -> ImageManifes
     else:
         decoded = value
     if not isinstance(decoded, dict):
-        raise ValueError("El manifiesto debe ser un objeto JSON.")
+        raise TypeError("El manifiesto debe ser un objeto JSON.")
     try:
         return ImageManifest.model_validate(decoded)
     except ValueError as error:

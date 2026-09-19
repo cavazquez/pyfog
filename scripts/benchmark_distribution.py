@@ -32,7 +32,7 @@ def load_document(path: Path) -> tuple[list[DistributionMeasurement], Distributi
         records = None
         topology_value = {}
     if not isinstance(records, list):
-        raise ValueError("El benchmark debe contener una lista measurements.")
+        raise TypeError("El benchmark debe contener una lista measurements.")
     return (
         [DistributionMeasurement.model_validate(record) for record in records],
         DistributionTopology.model_validate(topology_value),
