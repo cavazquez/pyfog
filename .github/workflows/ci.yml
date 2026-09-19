@@ -13,6 +13,7 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python: ["3.12", "3.14"]
@@ -41,21 +42,19 @@ jobs:
       - name: Release metadata
         run: make release-check
       - name: Tests
-        run: uv run pytest -q
+        run: timeout --signal=TERM --kill-after=10s 120s uv run pytest -q
       - name: Coverage
-        run: |
-          uv run pytest --cov=pyfog --cov=scripts --cov-report=term-missing --cov-report=xml
-          uv run coverage report --include='pyfog/*' --fail-under=70
-          uv run coverage report --include='scripts/*' --fail-under=40
+        run: timeout --signal=TERM --kill-after=10s 180s make test-coverage
       - name: Migration consistency
         env:
           PYFOG_DATABASE_URL: sqlite:////tmp/pyfog-ci.db
         run: |
-          uv run python -m pyfog init-db
-          uv run alembic check
+          timeout --signal=TERM --kill-after=10s 60s uv run python -m pyfog init-db
+          timeout --signal=TERM --kill-after=10s 60s uv run alembic check
 
   compatibility-fixtures:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install QCOW2 tooling
@@ -73,6 +72,7 @@ jobs:
 
   secure-boot:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Secure Boot tooling
@@ -92,6 +92,7 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -107,6 +108,7 @@ jobs:
 
   windows-inventory:
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0

@@ -36,3 +36,15 @@ uv run ruff format --check .
 La suite usa `TestClient` y mantiene el lifespan real de la aplicación. En sandboxes locales que
 bloquean el `send()` del socket interno de `asyncio`, `tests/conftest.py` detecta el `EPERM` y aplica
 un wake-up equivalente con `os.write`; en CI y en un entorno normal no se modifica el event loop.
+
+## Cobertura y límites de CI
+
+`make test-coverage` mantiene los umbrales agregados de 70% para `pyfog` y 40% para `scripts`, con
+cobertura de ramas. Además verifica un piso de 60% para los módulos críticos de API, web, layouts,
+dominio y claves, y un piso de 35% para los scripts operativos principales. Los wrappers de CLI que
+requieren integración de laboratorio no se cuentan como cobertura unitaria artificial; sus contratos
+se validan en los checks específicos.
+
+La CI corta la suite de tests a los 120 segundos, la cobertura a los 180 y las migraciones a los 60;
+cada job también tiene un límite total de 10 a 20 minutos. Pytest emite un dump de threads a los 30
+segundos para que un timeout conserve diagnóstico útil.

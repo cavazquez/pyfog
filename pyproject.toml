@@ -30,6 +30,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+faulthandler_timeout = 30
 
 [tool.mypy]
 python_version = "3.12"
