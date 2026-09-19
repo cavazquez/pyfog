@@ -510,6 +510,7 @@ def download_task_artifact(task_id: UUID, artifact_path: str, request: Request, 
 async def upload_task_artifact(
     task_id: UUID,
     artifact_path: str,
+    *,
     request: Request,
     db: Db,
     chunk_index: Annotated[str | None, Header(alias="X-PyFog-Chunk-Index")] = None,
