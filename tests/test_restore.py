@@ -197,7 +197,7 @@ def test_restore_storage_plans_validate_lvm_luks_and_raid_profiles() -> None:
 
 
 def test_bios_target_requires_legacy_firmware(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(Path, "is_dir", lambda self: False)
+    monkeypatch.setattr(Path, "is_dir", lambda _self: False)
     manifest = valid_bios_manifest()
     selector = target_selector()
     task_agent.validate_restore_target(selected_disk(), selector, manifest)
@@ -290,7 +290,9 @@ def test_hot_capture_releases_freeze_when_body_fails(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         task_agent.Path,
         "read_text",
-        lambda self, **_kwargs: "Filename\tType\tSize\tUsed\tPriority\n/dev/vda partition 1 0 -2\n",
+        lambda _self, **_kwargs: (
+            "Filename\tType\tSize\tUsed\tPriority\n/dev/vda partition 1 0 -2\n"
+        ),
     )
     with pytest.raises(ValueError, match="swap activo"):
         task_agent.assert_target_is_quiescent(selected_disk())

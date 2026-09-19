@@ -206,7 +206,9 @@ class PluginRegistry:
 class PluginRunner:
     """Execute registered plugins through a bounded, non-shell subprocess boundary."""
 
-    def __init__(self, registry: PluginRegistry, *, environment: Mapping[str, str] | None = None):
+    def __init__(
+        self, registry: PluginRegistry, *, environment: Mapping[str, str] | None = None
+    ) -> None:
         self.registry = registry
         self.environment = dict(environment or {})
 

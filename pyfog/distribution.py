@@ -218,7 +218,7 @@ class ReliableMulticastSession:
         *,
         session_id: UUID | None = None,
         repair_secret: bytes | None = None,
-    ):
+    ) -> None:
         self.manifest = manifest
         self.session_id = session_id or uuid4()
         self._repair_secret = repair_secret or secrets.token_bytes(32)

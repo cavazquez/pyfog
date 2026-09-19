@@ -15,7 +15,7 @@ def make_engine(url: str) -> Engine:
     if url.startswith("sqlite"):
 
         @event.listens_for(engine, "connect")
-        def configure_sqlite(connection: object, record: object) -> None:
+        def configure_sqlite(connection: object, _record: object) -> None:
             # SQLAlchemy's event exposes the native DBAPI connection.
             from sqlite3 import Connection
 

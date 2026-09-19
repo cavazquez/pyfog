@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from pyfog.agent_credentials import AgentAuthorization, credential_is_usable
@@ -257,7 +257,7 @@ def health_live() -> dict[str, str]:
 def health_ready(request: Request, db: Db) -> JSONResponse:
     try:
         snapshot = operational_snapshot(db, request.app.state.artifact_store)
-    except Exception:  # pragma: no cover - exercised by deployment probes
+    except (OSError, RuntimeError, ValueError, SQLAlchemyError):
         db.rollback()
         return JSONResponse(
             {"status": "not_ready", "database": "unavailable", "storage": "unavailable"},
@@ -288,7 +288,7 @@ def health_metrics(db: Db) -> JSONResponse:
 
     try:
         metrics = operational_metrics(db)
-    except Exception:  # pragma: no cover - exercised by deployment probes
+    except (OSError, RuntimeError, ValueError, SQLAlchemyError):
         db.rollback()
         return JSONResponse(
             {"status": "not_ready", "metrics": "unavailable"},

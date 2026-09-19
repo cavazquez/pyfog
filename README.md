@@ -30,6 +30,7 @@ relay, P2P y multicast sólo se habilitan después de medir el laboratorio.
 [Observabilidad operativa](docs/observability.md) ·
 [Guía operativa en español](docs/guia-es.md) ·
 [Accesibilidad](docs/accessibility.md) ·
+[Calidad y lint](docs/quality.md) ·
 [Despliegue LAN](deploy/README.md) ·
 [Release v0.1.0](docs/release-0.1.0.md) ·
 [Procedencia](docs/provenance.md)

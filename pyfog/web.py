@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy import delete, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
@@ -448,7 +448,7 @@ def status_page(request: Request, db: Db) -> Response:
     snapshot: dict[str, Any] | None
     try:
         snapshot = operational_snapshot(db, request.app.state.artifact_store)
-    except Exception:  # pragma: no cover - deployment failure path
+    except (OSError, RuntimeError, ValueError, SQLAlchemyError):
         db.rollback()
         snapshot = None
     return render(

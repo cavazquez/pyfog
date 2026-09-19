@@ -1,4 +1,4 @@
-.PHONY: setup run lint format typecheck test audit-dependencies audit-secrets audit check migrate dev-up dev-migrate dev-admin dev-down dev-clean \
+.PHONY: setup run lint lint-advisory format typecheck test audit-dependencies audit-secrets audit check migrate dev-up dev-migrate dev-admin dev-down dev-clean \
 	lan-migrate lan-admin lab-check agent-check pxe-check \
 	image-manifest-check compatibility-check secure-boot-policy-check secure-boot-artifact-check release-check release-package e2e-plan e2e e2e-bios
 
@@ -34,6 +34,9 @@ lan-admin:
 
 lint:
 	uv run ruff check .
+
+lint-advisory:
+	uv run ruff check . --select ANN401,EM,PLR,TRY --statistics --exit-zero
 
 format:
 	uv run ruff format .

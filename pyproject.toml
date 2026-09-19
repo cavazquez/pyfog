@@ -45,9 +45,11 @@ select = [
   "E", "W", "F", "I", "UP", "B", "SIM", "C4", "PIE", "RUF", "N",
   "ASYNC", "S", "PTH", "DTZ", "PT", "A", "RET", "T20",
 ]
+extend-select = ["ANN204", "ARG", "BLE", "ERA", "G", "LOG", "PERF", "RSE"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "S105", "S106"]
+# Pytest fixture parameters are dependency declarations even when a test does not use them.
+"tests/**/*.py" = ["S101", "S105", "S106", "ARG001"]
 "pyfog/__main__.py" = ["T201"]
 "scripts/collect_inventory.py" = ["T201"]
 
