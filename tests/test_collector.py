@@ -24,7 +24,7 @@ def test_linux_collector_produces_valid_partial_inventory(tmp_path, monkeypatch)
     loopback.mkdir()
     (loopback / "address").write_text("00:00:00:00:00:00\n")
     monkeypatch.setattr(collector.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(collector.shutil, "which", lambda name: None)
+    monkeypatch.setattr(collector.shutil, "which", lambda _name: None)
     inventory = Inventory.model_validate(collector.collect(proc, sysfs))
     assert inventory.cpu.model == "Test CPU"
     assert inventory.memory.total_bytes == 8192000 * 1024
@@ -51,7 +51,7 @@ def test_disks_are_parsed_without_changing_devices(monkeypatch):
     }
     run = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps(data)))
     monkeypatch.setattr(collector.subprocess, "run", run)
-    monkeypatch.setattr(collector.shutil, "which", lambda name: "/usr/bin/lsblk")
+    monkeypatch.setattr(collector.shutil, "which", lambda _name: "/usr/bin/lsblk")
     result = collector.disk_inventory([])
     assert len(result) == 1
     assert result[0]["name"] == "/dev/vda"
@@ -108,7 +108,7 @@ def test_collector_keeps_hostname_and_certificate_validation_enabled(monkeypatch
     monkeypatch.setattr(
         collector.urllib.request,
         "build_opener",
-        lambda *handlers: Mock(open=Mock(return_value=response)),
+        lambda *_handlers: Mock(open=Mock(return_value=response)),
     )
 
     collector.send_inventory(b"{}", "https://pyfog.example", str(uuid.uuid4()), "test-token", None)
@@ -167,7 +167,7 @@ def test_pairing_stops_on_terminal_state(monkeypatch, inventory, state, message)
             {"status": state, "reason": "No reconocido"},
         ]
     )
-    monkeypatch.setattr(collector, "json_request", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(collector, "json_request", lambda *_args, **_kwargs: next(responses))
     with pytest.raises(ValueError, match=message):
         collector.pair_inventory(
             json.dumps(inventory).encode(), inventory, "https://pyfog.example", None

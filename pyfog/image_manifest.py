@@ -390,9 +390,11 @@ class ImageManifest(Schema):
             for partition in disk.partitions
             if partition.artifact is not None
         ]
-        for disk in all_disks:
-            if disk.boot_sector is not None:
-                partition_references.append((disk.boot_sector.path, "boot-sector"))
+        partition_references.extend(
+            (disk.boot_sector.path, "boot-sector")
+            for disk in all_disks
+            if disk.boot_sector is not None
+        )
         partition_paths = [path for path, _role in partition_references]
         if len(set(partition_paths)) != len(partition_paths):
             allow_shared_raid_root = (

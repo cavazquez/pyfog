@@ -147,13 +147,13 @@ def backup_database(source: Path, destination: Path) -> None:
 
 def file_records(root: Path) -> list[dict[str, str]]:
     records: list[dict[str, str]] = []
-    for path in iter_files(root):
-        records.append(
-            {
-                "path": path.relative_to(root).as_posix(),
-                "sha256": sha256_file(path),
-            }
-        )
+    records.extend(
+        {
+            "path": path.relative_to(root).as_posix(),
+            "sha256": sha256_file(path),
+        }
+        for path in iter_files(root)
+    )
     return records
 
 

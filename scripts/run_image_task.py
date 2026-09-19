@@ -69,12 +69,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(
         self,
-        req: urllib.request.Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
+        _req: urllib.request.Request,
+        _fp: Any,
+        _code: int,
+        _msg: str,
+        _headers: Any,
+        _newurl: str,
     ) -> None:
         return None
 
@@ -1968,7 +1968,9 @@ def post_progress(
 class LeaseHeartbeat:
     """Renew a claimed task while a block-reading command is running."""
 
-    def __init__(self, base: str, task_id: str, token: str, ca_file: str | None, interval: int):
+    def __init__(
+        self, base: str, task_id: str, token: str, ca_file: str | None, interval: int
+    ) -> None:
         self._endpoint = f"{base}/api/v1/tasks/{task_id}/heartbeat"
         self._token = token
         self._ca_file = ca_file

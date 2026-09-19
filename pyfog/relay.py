@@ -80,7 +80,7 @@ def _digest_file(path: Path) -> tuple[int, str]:
 class RelayCache:
     """Atomic, bounded, content-addressed cache used by unicast relays."""
 
-    def __init__(self, root: Path, *, max_bytes: int):
+    def __init__(self, root: Path, *, max_bytes: int) -> None:
         if max_bytes <= 0:
             raise RelayError("El tamaño máximo de cache debe ser positivo.")
         self.root = root

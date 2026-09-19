@@ -172,12 +172,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(
         self,
-        req: urllib.request.Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
+        _req: urllib.request.Request,
+        _fp: Any,
+        _code: int,
+        _msg: str,
+        _headers: Any,
+        _newurl: str,
     ) -> None:
         return None
 

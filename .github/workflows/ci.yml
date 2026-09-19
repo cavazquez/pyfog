@@ -25,7 +25,7 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - name: Ruff lint
-        run: uv run ruff check .
+        run: uv run ruff check . --output-format=github
       - name: Ruff format
         run: uv run ruff format --check .
       - name: Type checking
