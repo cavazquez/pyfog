@@ -40,7 +40,7 @@ un wake-up equivalente con `os.write`; en CI y en un entorno normal no se modifi
 ## Cobertura y límites de CI
 
 `make test-coverage` mantiene los umbrales agregados de 70% para `pyfog` y 40% para `scripts`, con
-cobertura de ramas. Además verifica un piso de 60% para los módulos críticos de API, web, layouts,
+cobertura de ramas. Además verifica un piso de 70% para API y web, un piso de 60% para layouts,
 dominio y claves, un piso de 45% para el agente `run_image_task.py` y un piso de 35% para los demás
 scripts operativos principales. Los wrappers de CLI que requieren integración de laboratorio no se
 cuentan como cobertura unitaria artificial; sus contratos se validan en los checks específicos.
