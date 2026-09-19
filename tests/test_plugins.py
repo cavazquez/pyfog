@@ -156,7 +156,7 @@ def test_plugin_descriptor_and_response_contracts_reject_inconsistent_values():
         PluginResponse(
             request_id=uuid4(),
             success=True,
-            result={"nested": [{"private_key": "secret"}]},
+            result={"nested": [{"private_key": "secret"}]},  # pragma: allowlist secret
         )
     with pytest.raises(PluginError, match="JSON"):
         plugins._json_bytes({"not_serializable": object()})
@@ -229,7 +229,14 @@ def test_plugin_runner_sends_bounded_wire_and_declared_environment(monkeypatch):
         "test-plugin",
         PluginCall(
             operation="run",
-            payload={"nested": [{"has_secret": True, "secret_ref": "vault/ref"}]},
+            payload={
+                "nested": [
+                    {
+                        "has_secret": True,  # pragma: allowlist secret
+                        "secret_ref": "vault/ref",  # pragma: allowlist secret
+                    }
+                ]
+            },
             secret=b"one-shot",
             request_id=request,
             required_capability="test.run",
