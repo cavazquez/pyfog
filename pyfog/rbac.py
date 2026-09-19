@@ -6,7 +6,6 @@ closed for unknown roles and permissions.
 """
 
 from collections.abc import Iterable
-from typing import Any
 
 ROLES = ("admin", "operator", "auditor")
 ROLE_LABELS = {
@@ -95,7 +94,7 @@ NAVIGATION_PERMISSIONS = {
 }
 
 
-def role_of(user_or_role: Any) -> str | None:
+def role_of(user_or_role: object) -> str | None:
     """Return a normalized role from a User-like object or a role string."""
 
     if user_or_role is None:
@@ -104,14 +103,14 @@ def role_of(user_or_role: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def permissions_for(user_or_role: Any) -> frozenset[str]:
+def permissions_for(user_or_role: object) -> frozenset[str]:
     """Return permissions, or an empty set for an unknown role."""
 
     role = role_of(user_or_role)
     return ROLE_PERMISSIONS.get(role, frozenset()) if role else frozenset()
 
 
-def has_permission(user_or_role: Any, permission: str) -> bool:
+def has_permission(user_or_role: object, permission: str) -> bool:
     """Check one permission with deny-by-default semantics."""
 
     return permission in PERMISSIONS and permission in permissions_for(user_or_role)
@@ -127,7 +126,7 @@ def is_role(value: object) -> bool:
     return isinstance(value, str) and value in ROLES
 
 
-def missing_permissions(user_or_role: Any, permissions: Iterable[str]) -> tuple[str, ...]:
+def missing_permissions(user_or_role: object, permissions: Iterable[str]) -> tuple[str, ...]:
     """Return requested permissions not granted to the principal."""
 
     granted = permissions_for(user_or_role)

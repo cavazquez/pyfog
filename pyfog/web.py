@@ -123,7 +123,7 @@ def take_flash(request: Request) -> Flash | None:
     return {"level": "success", "message": message}
 
 
-def render(request: Request, template: str, *, status: int = 200, **context: Any) -> Response:
+def render(request: Request, template: str, *, status: int = 200, **context: object) -> Response:
     user = context.get("user")
     section = context.pop("section", current_section(request.url.path))
     navigation = tuple(
