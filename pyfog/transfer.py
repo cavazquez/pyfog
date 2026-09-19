@@ -41,18 +41,23 @@ class TransferManifest(Schema):
     def validate_layout(self) -> TransferManifest:
         ordered = sorted(self.blocks, key=lambda block: block.index)
         if ordered != self.blocks:
-            raise ValueError("Los bloques deben estar ordenados por índice.")
+            msg = "Los bloques deben estar ordenados por índice."
+            raise ValueError(msg)
         expected_offset = 0
         for index, block in enumerate(self.blocks):
             if block.index != index:
-                raise ValueError("El índice de bloques debe comenzar en cero y ser contiguo.")
+                msg = "El índice de bloques debe comenzar en cero y ser contiguo."
+                raise ValueError(msg)
             if block.offset != expected_offset:
-                raise ValueError("Los bloques deben cubrir el artefacto sin huecos.")
+                msg = "Los bloques deben cubrir el artefacto sin huecos."
+                raise ValueError(msg)
             if block.size > self.block_size:
-                raise ValueError("Un bloque intermedio supera el tamaño negociado.")
+                msg = "Un bloque intermedio supera el tamaño negociado."
+                raise ValueError(msg)
             expected_offset += block.size
         if expected_offset != self.size_bytes:
-            raise ValueError("Los bloques no cubren exactamente el tamaño del artefacto.")
+            msg = "Los bloques no cubren exactamente el tamaño del artefacto."
+            raise ValueError(msg)
         return self
 
 
@@ -62,7 +67,8 @@ def _digest_stream(source: BinaryIO, size: int) -> str:
     while remaining:
         chunk = source.read(min(1024 * 1024, remaining))
         if not chunk:
-            raise ValueError("El archivo terminó antes del tamaño del bloque.")
+            msg = "El archivo terminó antes del tamaño del bloque."
+            raise ValueError(msg)
         digest.update(chunk)
         remaining -= len(chunk)
     return digest.hexdigest()
@@ -74,11 +80,13 @@ def build_transfer_manifest(
     """Build a deterministic block index without loading the artifact into memory."""
 
     if not 0 < block_size <= MAX_BLOCK_SIZE:
-        raise ValueError("El tamaño de bloque no está permitido.")
+        msg = "El tamaño de bloque no está permitido."
+        raise ValueError(msg)
     try:
         size = path.stat().st_size
         if size <= 0:
-            raise ValueError("El artefacto debe tener contenido.")
+            msg = "El artefacto debe tener contenido."
+            raise ValueError(msg)
         blocks: list[TransferBlock] = []
         with path.open("rb") as source:
             index = 0
@@ -97,7 +105,8 @@ def build_transfer_manifest(
                 index += 1
                 offset += current_size
     except OSError as error:
-        raise ValueError(f"No se pudo leer el artefacto: {error}") from None
+        msg = f"No se pudo leer el artefacto: {error}"
+        raise ValueError(msg) from None
     return TransferManifest(size_bytes=size, block_size=block_size, blocks=blocks)
 
 
@@ -120,7 +129,8 @@ def verified_block_indices(path: Path, manifest: TransferManifest) -> set[int]:
                 if _digest_stream(source, block.size) == block.sha256:
                     verified.add(block.index)
     except OSError as error:
-        raise ValueError(f"No se pudo verificar el staging: {error}") from None
+        msg = f"No se pudo verificar el staging: {error}"
+        raise ValueError(msg) from None
     return verified
 
 
@@ -142,15 +152,19 @@ def write_verified_block(
 
     expected = manifest.blocks[block.index] if block.index < len(manifest.blocks) else None
     if expected != block:
-        raise ValueError("El bloque no pertenece al manifiesto de transferencia.")
+        msg = "El bloque no pertenece al manifiesto de transferencia."
+        raise ValueError(msg)
     if len(payload) != block.size:
-        raise ValueError("El tamaño del bloque no coincide con el manifiesto.")
+        msg = "El tamaño del bloque no coincide con el manifiesto."
+        raise ValueError(msg)
     if hashlib.sha256(payload).hexdigest() != block.sha256:
-        raise ValueError("La suma del bloque no coincide con su contenido.")
+        msg = "La suma del bloque no coincide con su contenido."
+        raise ValueError(msg)
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     try:
         if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise ValueError("El staging de transferencia no es un archivo regular.")
+            msg = "El staging de transferencia no es un archivo regular."
+            raise ValueError(msg)
         if path.exists():
             with path.open("rb") as source:
                 source.seek(block.offset)
@@ -165,7 +179,8 @@ def write_verified_block(
             target.flush()
             os.fsync(target.fileno())
     except OSError as error:
-        raise ValueError(f"No se pudo escribir el bloque: {error}") from None
+        msg = f"No se pudo escribir el bloque: {error}"
+        raise ValueError(msg) from None
     return False
 
 
@@ -173,7 +188,8 @@ def verify_complete_transfer(path: Path, manifest: TransferManifest) -> None:
     """Raise unless every indexed block and the final file size are valid."""
 
     if path.stat().st_size != manifest.size_bytes:
-        raise ValueError("El tamaño final del artefacto no coincide.")
+        msg = "El tamaño final del artefacto no coincide."
+        raise ValueError(msg)
     missing = missing_block_indices(path, manifest)
     if missing:
         raise ValueError("Faltan bloques o hay bloques corruptos: " + ", ".join(map(str, missing)))
