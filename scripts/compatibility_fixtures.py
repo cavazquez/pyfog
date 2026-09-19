@@ -30,24 +30,30 @@ def load_matrix(path: Path = MATRIX_PATH) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise FixtureError(f"No se pudo leer la matriz de fixtures: {error}") from None
+        msg = f"No se pudo leer la matriz de fixtures: {error}"
+        raise FixtureError(msg) from None
     if not isinstance(value, dict):
-        raise FixtureError("La matriz de fixtures debe ser un objeto JSON.")
+        msg = "La matriz de fixtures debe ser un objeto JSON."
+        raise FixtureError(msg)
     if value.get("schema_version") != 1:
-        raise FixtureError("La matriz de fixtures requiere schema_version 1.")
+        msg = "La matriz de fixtures requiere schema_version 1."
+        raise FixtureError(msg)
     generator = value.get("generator")
     if not isinstance(generator, dict):
-        raise FixtureError("La matriz no declara opciones deterministas de generación.")
+        msg = "La matriz no declara opciones deterministas de generación."
+        raise FixtureError(msg)
     if (
         generator.get("format") != QCOW2_FORMAT
         or generator.get("compat") != QCOW2_COMPAT
         or generator.get("cluster_size") != QCOW2_CLUSTER_SIZE
         or generator.get("lazy_refcounts") is not False
     ):
-        raise FixtureError("La matriz no usa las opciones QCOW2 deterministas requeridas.")
+        msg = "La matriz no usa las opciones QCOW2 deterministas requeridas."
+        raise FixtureError(msg)
     fixtures = value.get("fixtures")
     if not isinstance(fixtures, list) or not fixtures:
-        raise FixtureError("La matriz debe declarar al menos un fixture.")
+        msg = "La matriz debe declarar al menos un fixture."
+        raise FixtureError(msg)
     ids: set[str] = set()
     files: set[str] = set()
     for fixture in fixtures:
@@ -55,7 +61,8 @@ def load_matrix(path: Path = MATRIX_PATH) -> dict[str, Any]:
         fixture_id = fixture["id"]
         filename = fixture["file"]
         if fixture_id in ids or filename in files:
-            raise FixtureError("La matriz contiene IDs o archivos repetidos.")
+            msg = "La matriz contiene IDs o archivos repetidos."
+            raise FixtureError(msg)
         ids.add(fixture_id)
         files.add(filename)
     return value
@@ -63,7 +70,8 @@ def load_matrix(path: Path = MATRIX_PATH) -> dict[str, Any]:
 
 def validate_spec(fixture: object) -> None:
     if not isinstance(fixture, dict):
-        raise FixtureError("Cada fixture debe ser un objeto JSON.")
+        msg = "Cada fixture debe ser un objeto JSON."
+        raise FixtureError(msg)
     required = {
         "id",
         "file",
@@ -76,7 +84,8 @@ def validate_spec(fixture: object) -> None:
     }
     if not required.issubset(fixture):
         missing = ", ".join(sorted(required - set(fixture)))
-        raise FixtureError(f"El fixture no declara campos requeridos: {missing}.")
+        msg = f"El fixture no declara campos requeridos: {missing}."
+        raise FixtureError(msg)
     fixture_id = fixture["id"]
     filename = fixture["file"]
     if (
@@ -85,10 +94,12 @@ def validate_spec(fixture: object) -> None:
         or not isinstance(filename, str)
         or filename != f"{fixture_id}.qcow2"
     ):
-        raise FixtureError("El ID o archivo del fixture no es seguro.")
+        msg = "El ID o archivo del fixture no es seguro."
+        raise FixtureError(msg)
     virtual_size = fixture["virtual_size_bytes"]
     if type(virtual_size) is not int or virtual_size <= 0 or virtual_size % FIXTURE_ALIGNMENT_BYTES:
-        raise FixtureError(f"El tamaño virtual de {fixture_id} no es válido.")
+        msg = f"El tamaño virtual de {fixture_id} no es válido."
+        raise FixtureError(msg)
     sha256_parts = fixture["sha256_parts"]
     if (
         not isinstance(sha256_parts, list)
@@ -100,9 +111,11 @@ def validate_spec(fixture: object) -> None:
             for part in sha256_parts
         )
     ):
-        raise FixtureError(f"Las partes SHA-256 de {fixture_id} no son válidas.")
+        msg = f"Las partes SHA-256 de {fixture_id} no son válidas."
+        raise FixtureError(msg)
     if fixture["status"] not in {"supported", "rejected"}:
-        raise FixtureError(f"El estado de {fixture_id} no es válido.")
+        msg = f"El estado de {fixture_id} no es válido."
+        raise FixtureError(msg)
     for field in ("checks", "restrictions"):
         value = fixture[field]
         if (
@@ -110,7 +123,8 @@ def validate_spec(fixture: object) -> None:
             or not value
             or any(not isinstance(item, str) or not item for item in value)
         ):
-            raise FixtureError(f"{field} de {fixture_id} no es una lista válida.")
+            msg = f"{field} de {fixture_id} no es una lista válida."
+            raise FixtureError(msg)
     if fixture["status"] == "rejected":
         errors = fixture.get("expected_errors")
         if (
@@ -118,10 +132,12 @@ def validate_spec(fixture: object) -> None:
             or not errors
             or any(not isinstance(item, str) or not item for item in errors)
         ):
-            raise FixtureError(f"{fixture_id} debe declarar errores esperados.")
+            msg = f"{fixture_id} debe declarar errores esperados."
+            raise FixtureError(msg)
     capabilities = fixture["capabilities"]
     if not isinstance(capabilities, dict):
-        raise FixtureError(f"{fixture_id} no declara capacidades.")
+        msg = f"{fixture_id} no declara capacidades."
+        raise FixtureError(msg)
     required_capabilities = {
         "firmware",
         "partition_table",
@@ -131,30 +147,35 @@ def validate_spec(fixture: object) -> None:
         "volumes",
     }
     if not required_capabilities.issubset(capabilities):
-        raise FixtureError(f"Las capacidades de {fixture_id} están incompletas.")
+        msg = f"Las capacidades de {fixture_id} están incompletas."
+        raise FixtureError(msg)
     if type(capabilities["disks"]) is not int or capabilities["disks"] < 1:
-        raise FixtureError(f"La cantidad de discos de {fixture_id} no es válida.")
+        msg = f"La cantidad de discos de {fixture_id} no es válida."
+        raise FixtureError(msg)
     filesystems = capabilities["filesystems"]
     if (
         not isinstance(filesystems, list)
         or not filesystems
         or any(not isinstance(item, str) or not item for item in filesystems)
     ):
-        raise FixtureError(f"Los filesystems de {fixture_id} no son válidos.")
+        msg = f"Los filesystems de {fixture_id} no son válidos."
+        raise FixtureError(msg)
 
 
 def fixture_specs(matrix: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     payload = matrix if matrix is not None else load_matrix()
     fixtures = payload["fixtures"]
     if not isinstance(fixtures, list):
-        raise FixtureError("La matriz no contiene una lista de fixtures.")
+        msg = "La matriz no contiene una lista de fixtures."
+        raise FixtureError(msg)
     return [fixture for fixture in fixtures if isinstance(fixture, dict)]
 
 
 def _qemu_img() -> str:
     path = shutil.which("qemu-img")
     if path is None:
-        raise FixtureError("Falta qemu-img; instalá el paquete qemu-utils.")
+        msg = "Falta qemu-img; instalá el paquete qemu-utils."
+        raise FixtureError(msg)
     return path
 
 
@@ -167,10 +188,12 @@ def _run_qemu(args: list[str]) -> str:
             text=True,
         )
     except FileNotFoundError:
-        raise FixtureError("Falta qemu-img; instalá el paquete qemu-utils.") from None
+        msg = "Falta qemu-img; instalá el paquete qemu-utils."
+        raise FixtureError(msg) from None
     except subprocess.CalledProcessError as error:
         detail = error.stderr.strip() or error.stdout.strip() or "sin diagnóstico"
-        raise FixtureError(f"qemu-img falló: {detail}") from None
+        msg = f"qemu-img falló: {detail}"
+        raise FixtureError(msg) from None
     return result.stdout
 
 
@@ -179,7 +202,8 @@ def generate_fixture(fixture: dict[str, Any], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / str(fixture["file"])
     if path.exists() or path.is_symlink():
-        raise FixtureError(f"No se sobrescribe el fixture existente: {path}")
+        msg = f"No se sobrescribe el fixture existente: {path}"
+        raise FixtureError(msg)
     if fixture["capabilities"]["partition_table"] == "mbr":
         raw_path = output_dir / f".{fixture['id']}.raw"
         _run_qemu(["create", "-f", "raw", str(raw_path), str(fixture["virtual_size_bytes"])])
@@ -238,25 +262,29 @@ def sha256_file(path: Path) -> str:
 def expected_sha256(fixture: dict[str, Any]) -> str:
     parts = fixture["sha256_parts"]
     if not isinstance(parts, list) or any(not isinstance(part, str) for part in parts):
-        raise FixtureError("El fixture no contiene partes SHA-256 válidas.")
+        msg = "El fixture no contiene partes SHA-256 válidas."
+        raise FixtureError(msg)
     return "".join(parts)
 
 
 def verify_fixture(fixture: dict[str, Any], path: Path) -> None:
     validate_spec(fixture)
     if not path.is_file() or path.is_symlink():
-        raise FixtureError(f"El fixture no es un archivo regular: {path}")
+        msg = f"El fixture no es un archivo regular: {path}"
+        raise FixtureError(msg)
     try:
         info = json.loads(_run_qemu(["info", "--output=json", str(path)]))
     except json.JSONDecodeError:
-        raise FixtureError(f"qemu-img no devolvió JSON para {path.name}.") from None
+        msg = f"qemu-img no devolvió JSON para {path.name}."
+        raise FixtureError(msg) from None
     if (
         not isinstance(info, dict)
         or info.get("format") != QCOW2_FORMAT
         or info.get("virtual-size") != fixture["virtual_size_bytes"]
         or info.get("cluster-size") != QCOW2_CLUSTER_SIZE
     ):
-        raise FixtureError(f"El formato o tamaño de {path.name} no coincide con la matriz.")
+        msg = f"El formato o tamaño de {path.name} no coincide con la matriz."
+        raise FixtureError(msg)
     format_specific = info.get("format-specific")
     data = format_specific.get("data") if isinstance(format_specific, dict) else None
     if (
@@ -264,11 +292,13 @@ def verify_fixture(fixture: dict[str, Any], path: Path) -> None:
         or data.get("compat") != QCOW2_COMPAT
         or data.get("lazy-refcounts") is not False
     ):
-        raise FixtureError(f"Las opciones QCOW2 de {path.name} no son deterministas.")
+        msg = f"Las opciones QCOW2 de {path.name} no son deterministas."
+        raise FixtureError(msg)
     actual_sha256 = sha256_file(path)
     expected = expected_sha256(fixture)
     if actual_sha256 != expected:
-        raise FixtureError(f"El SHA-256 de {path.name} no coincide: {actual_sha256} != {expected}")
+        msg = f"El SHA-256 de {path.name} no coincide: {actual_sha256} != {expected}"
+        raise FixtureError(msg)
 
 
 def generate_and_verify(output_dir: Path, matrix: dict[str, Any] | None = None) -> list[Path]:
