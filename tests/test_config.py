@@ -104,7 +104,7 @@ def production_settings(**overrides: object) -> Settings:
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"secret_key": "short"}, "PYFOG_SECRET_KEY"),
+        ({"secret_key": "short"}, "PYFOG_SECRET_KEY"),  # pragma: allowlist secret
         ({"allowed_hosts": []}, "PYFOG_ALLOWED_HOSTS"),
         ({"debug": True}, "PYFOG_DEBUG"),
         ({"allowed_hosts": ["*"]}, "no puede incluir"),
