@@ -268,7 +268,7 @@ def json_request(
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError("El servidor devolvió una respuesta JSON inválida.") from None
     if not isinstance(value, dict):
-        raise ValueError("El servidor devolvió una respuesta JSON inesperada.")
+        raise TypeError("El servidor devolvió una respuesta JSON inesperada.")
     return value
 
 
@@ -281,10 +281,10 @@ def required_uuid(value: object, *, field: str) -> str:
 
 def inventory_mac(document: object) -> str:
     if not isinstance(document, dict):
-        raise ValueError("El informe debe ser un objeto JSON.")
+        raise TypeError("El informe debe ser un objeto JSON.")
     interfaces = document.get("interfaces")
     if not isinstance(interfaces, list):
-        raise ValueError("El informe no incluye interfaces de red.")
+        raise TypeError("El informe no incluye interfaces de red.")
     for interface in interfaces:
         if not isinstance(interface, dict):
             continue
@@ -361,7 +361,7 @@ def pair_inventory(
     request_id = required_uuid(created.get("request_id"), field="request_id")
     poll_token = created.get("poll_token")
     if not isinstance(poll_token, str):
-        raise ValueError("La respuesta del servidor no incluye una capacidad de emparejamiento.")
+        raise TypeError("La respuesta del servidor no incluye una capacidad de emparejamiento.")
     validate_token(poll_token, message="La capacidad de emparejamiento no es válida.")
     deadline = time.monotonic() + timeout_seconds
     while True:

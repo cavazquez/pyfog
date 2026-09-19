@@ -139,7 +139,7 @@ def response_json(response: ReadableResponse) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError("El servidor devolvió una respuesta JSON inválida.") from None
     if not isinstance(value, dict):
-        raise ValueError("El servidor devolvió una respuesta JSON inesperada.")
+        raise TypeError("El servidor devolvió una respuesta JSON inesperada.")
     return value
 
 
@@ -359,7 +359,7 @@ def prepare_capture_storage(
             None,
         )
         if not isinstance(root, dict):
-            raise ValueError("El perfil LUKS2 no contiene una partición raíz cifrada.")
+            raise TypeError("El perfil LUKS2 no contiene una partición raíz cifrada.")
         mapping = unlock_luks2(str(root["device"]), mapping_name, expected, provider)
         opened_mappings.append(mapping_name)
         values = parse_export(run_command(["blkid", "-o", "export", mapping]))
@@ -602,7 +602,7 @@ def _layout_disks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 def _root_partition(disk: dict[str, Any]) -> dict[str, Any]:
     partitions = disk.get("partitions")
     if not isinstance(partitions, list):
-        raise ValueError("El layout no contiene particiones.")
+        raise TypeError("El layout no contiene particiones.")
     roots = [item for item in partitions if isinstance(item, dict) and item.get("role") == "root"]
     if len(roots) != 1:
         raise ValueError("Cada layout debe declarar una única partición raíz.")
@@ -626,7 +626,7 @@ def _root_artifact_paths(manifest: dict[str, Any], disks: list[dict[str, Any]]) 
         paths.append(artifact)
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
-        raise ValueError("El manifiesto no contiene artefactos.")
+        raise TypeError("El manifiesto no contiene artefactos.")
     by_path = {str(item.get("path")): item for item in artifacts if isinstance(item, dict)}
     if any(path not in by_path for path in paths):
         raise ValueError("El artefacto raíz no está publicado en el manifiesto.")
@@ -641,7 +641,7 @@ def build_restore_storage_plan(
 
     capabilities = manifest.get("capabilities")
     if not isinstance(capabilities, dict):
-        raise ValueError("La tarea no contiene capacidades de almacenamiento explícitas.")
+        raise TypeError("La tarea no contiene capacidades de almacenamiento explícitas.")
     disks = _layout_disks(manifest)
     if len(disks) != len(selected_pairs):
         raise ValueError("La cantidad de discos no coincide con el plan de almacenamiento.")
@@ -836,7 +836,7 @@ def block_inventory() -> dict[str, Any]:
     except json.JSONDecodeError:
         raise ValueError("lsblk devolvió un inventario inválido.") from None
     if not isinstance(document, dict) or not isinstance(document.get("blockdevices"), list):
-        raise ValueError("lsblk no devolvió discos.")
+        raise TypeError("lsblk no devolvió discos.")
     return document
 
 
@@ -907,7 +907,7 @@ def validate_manifest_capabilities(
     version = manifest.get("format_version")
     firmware = manifest.get("firmware")
     if not isinstance(firmware, dict):
-        raise ValueError("El manifiesto no contiene firmware válido.")
+        raise TypeError("El manifiesto no contiene firmware válido.")
     capabilities: dict[str, Any]
     if version == 1:
         if "capabilities" in manifest and manifest["capabilities"] is not None:
@@ -964,7 +964,7 @@ def validate_manifest_capabilities(
         )
     disks = manifest.get("disks") or [manifest["disk"]]
     if not isinstance(disks, list):
-        raise ValueError("El manifiesto no contiene una lista de discos válida.")
+        raise TypeError("El manifiesto no contiene una lista de discos válida.")
     actual = {
         str(partition.get("filesystem"))
         for disk in disks
@@ -1018,7 +1018,7 @@ def _validate_restore_disk_layout(
     """Validate one disk while keeping artifact and identity uniqueness global."""
 
     if not isinstance(disk, dict):
-        raise ValueError("El manifiesto contiene una geometría de disco inválida.")
+        raise TypeError("El manifiesto contiene una geometría de disco inválida.")
     size = manifest_int(disk.get("size_bytes"), "La capacidad de la imagen", minimum=1)
     sector = disk.get("logical_sector_bytes")
     if type(sector) is not int or sector not in {512, 4096}:
@@ -1058,7 +1058,7 @@ def _validate_restore_disk_layout(
 
     partitions = disk.get("partitions")
     if not isinstance(partitions, list):
-        raise ValueError("El manifiesto no contiene particiones.")
+        raise TypeError("El manifiesto no contiene particiones.")
     if len(partitions) < (2 if is_gpt else 1) or len(partitions) > 4:
         raise ValueError("La cantidad de particiones no es válida.")
     referenced: set[str] = set()
@@ -1084,7 +1084,7 @@ def _validate_restore_disk_layout(
     }
     for partition in partitions:
         if not isinstance(partition, dict):
-            raise ValueError("El manifiesto contiene una partición inválida.")
+            raise TypeError("El manifiesto contiene una partición inválida.")
         number = manifest_int(partition.get("number"), "El número de partición", minimum=1)
         if number > 128 or number in numbers:
             raise ValueError("La tabla contiene números de partición inválidos o repetidos.")
@@ -1107,7 +1107,7 @@ def _validate_restore_disk_layout(
             raise ValueError("La tabla MBR no puede declarar GUIDs de partición.")
         filesystem_uuid = partition.get("filesystem_uuid")
         if not isinstance(filesystem_uuid, str):
-            raise ValueError("El UUID de filesystem no es válido.")
+            raise TypeError("El UUID de filesystem no es válido.")
         if role == "esp":
             if not re.fullmatch(r"[0-9A-Fa-f]{8}", filesystem_uuid):
                 raise ValueError(
@@ -1181,7 +1181,7 @@ def validate_restore_manifest(
         raise ValueError("El manifiesto pertenece a otra imagen.")
     source = manifest.get("source")
     if not isinstance(source, dict):
-        raise ValueError("El manifiesto no identifica el origen de la imagen.")
+        raise TypeError("El manifiesto no identifica el origen de la imagen.")
     manifest_uuid(source.get("host_id"), "El equipo de origen")
     manifest_uuid(source.get("inventory_report_id"), "El inventario de origen")
     source_hostname = source.get("hostname")
@@ -1229,7 +1229,7 @@ def validate_restore_manifest(
         raise ValueError("El manifiesto no contiene los comandos Partclone requeridos.")
     disk = manifest.get("disk")
     if not isinstance(disk, dict):
-        raise ValueError("El manifiesto no contiene la geometría del disco.")
+        raise TypeError("El manifiesto no contiene la geometría del disco.")
     raw_disks = manifest.get("disks")
     if raw_disks is None:
         disks = [disk]
@@ -1257,17 +1257,17 @@ def validate_restore_manifest(
             raise ValueError("Los discos del manifiesto deben tener identidades únicas.")
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
-        raise ValueError("El manifiesto no contiene artefactos.")
+        raise TypeError("El manifiesto no contiene artefactos.")
     if len(artifacts) < 2 or len(artifacts) > 512:
         raise ValueError("La cantidad de artefactos no es válida.")
     artifact_paths: set[str] = set()
     artifact_metadata: dict[str, dict[str, Any]] = {}
     for artifact in artifacts:
         if not isinstance(artifact, dict):
-            raise ValueError("El manifiesto contiene un artefacto inválido.")
+            raise TypeError("El manifiesto contiene un artefacto inválido.")
         path = artifact.get("path")
         if not isinstance(path, str):
-            raise ValueError("La ruta de un artefacto no es válida.")
+            raise TypeError("La ruta de un artefacto no es válida.")
         safe_artifact_path(path, allow_boot_sector=firmware_type == "bios")
         if path in artifact_paths:
             raise ValueError("El manifiesto contiene artefactos repetidos.")
@@ -1360,7 +1360,7 @@ def validate_restore_target(
         raise ValueError("El disco removible no puede ser un destino de restauración.")
     children = selected.get("children") or []
     if not isinstance(children, list):
-        raise ValueError("El inventario del disco destino no es válido.")
+        raise TypeError("El inventario del disco destino no es válido.")
     if any(
         child.get("mountpoints") or child.get("mountpoint")
         for child in children
@@ -1573,7 +1573,7 @@ def parse_mbr(
     storage_metadata: dict[str, Any] | None = None
     for raw_partition in raw_partitions:
         if not isinstance(raw_partition, dict):
-            raise ValueError("sfdisk devolvió una partición MBR inválida.")
+            raise TypeError("sfdisk devolvió una partición MBR inválida.")
         node = raw_partition.get("node")
         number_match = re.search(r"(\d+)$", str(node or ""))
         if not number_match:
@@ -1767,7 +1767,7 @@ def mounted_filesystems(partitions: list[dict[str, Any]]) -> list[str]:
         raise ValueError("findmnt devolvió un inventario de montajes inválido.") from None
     filesystems = document.get("filesystems") if isinstance(document, dict) else None
     if not isinstance(filesystems, list):
-        raise ValueError("findmnt no devolvió filesystems montados.")
+        raise TypeError("findmnt no devolvió filesystems montados.")
     devices = {
         str(partition.get("capture_device") or partition.get("device"))
         for partition in partitions
@@ -1841,7 +1841,7 @@ def assert_target_is_quiescent(selected: dict[str, Any]) -> None:
 
     children = selected.get("children") or []
     if not isinstance(children, list):
-        raise ValueError("El inventario del disco destino no es válido.")
+        raise TypeError("El inventario del disco destino no es válido.")
     partition_paths: list[str] = []
     for child in children:
         if not isinstance(child, dict):
@@ -2225,7 +2225,7 @@ def validate_target_expansion(selected: dict[str, Any], disk: dict[str, Any]) ->
         raise ValueError("La expansión segura sólo está disponible para un destino GPT.")
     partitions = disk.get("partitions")
     if not isinstance(partitions, list):
-        raise ValueError("El manifiesto no contiene particiones para expandir.")
+        raise TypeError("El manifiesto no contiene particiones para expandir.")
     root = next((partition for partition in partitions if partition.get("role") == "root"), None)
     if not isinstance(root, dict) or root.get("filesystem") != "ext4":
         raise ValueError("La expansión sólo admite una raíz ext4.")
@@ -2747,7 +2747,7 @@ def _restore_claimed_task(
     image_id = str(uuid.UUID(str(claim.get("image_id"))))
     manifest_value = claim.get("manifest")
     if not isinstance(manifest_value, dict):
-        raise ValueError("La tarea no contiene el manifiesto de la imagen.")
+        raise TypeError("La tarea no contiene el manifiesto de la imagen.")
     # The initramfs advertises only tools that were staged by build-agent; the full profile is
     # therefore validated here before any target write.  Direct contract callers keep the
     # conservative MVP default of validate_restore_manifest().
@@ -2770,7 +2770,7 @@ def _restore_claimed_task(
     if len(layouts) > 1 and firmware_type == "bios":
         raise ValueError("La restauración multidisco BIOS requiere artefactos de boot separados.")
     if not isinstance(selector, dict):
-        raise ValueError("La tarea no contiene el selector del disco destino.")
+        raise TypeError("La tarea no contiene el selector del disco destino.")
     if operation == "clone":
         hostname = str(target_data.get("hostname", ""))
         hostname = validate_clone_hostname(hostname)
@@ -2782,7 +2782,7 @@ def _restore_claimed_task(
     selected_pairs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     for layout, disk_selector in zip(layouts, raw_selectors, strict=True):
         if not isinstance(layout, dict):
-            raise ValueError("La imagen contiene un layout de disco inválido.")
+            raise TypeError("La imagen contiene un layout de disco inválido.")
         if disk_selector.get("operation") != operation:
             raise ValueError("La operación del selector no coincide con la tarea.")
         if len(layouts) > 1 and str(disk_selector.get("stable_id", "")).startswith("path:"):
@@ -3088,7 +3088,7 @@ def capture_task(
     task_id = claim.get("task_id")
     task_token = claim.get("task_token")
     if not isinstance(task_id, str) or not isinstance(task_token, str):
-        raise ValueError("El servidor entregó una tarea incompleta.")
+        raise TypeError("El servidor entregó una tarea incompleta.")
     validate_token(task_token)
     lease_seconds = int(claim.get("lease_seconds") or 90)
     heartbeat_seconds = int(claim.get("heartbeat_seconds") or 20)
