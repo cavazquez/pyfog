@@ -6,6 +6,9 @@ from pyfog.models import AuditEvent
 
 AUDIT_OUTCOMES = frozenset({"success", "failure"})
 AUDIT_DECISIONS = frozenset({"allow", "deny"})
+MAX_AUDIT_ACTION_LENGTH = 64
+MAX_AUDIT_RESOURCE_ID_LENGTH = 100
+MAX_AUDIT_RESOURCE_TYPE_LENGTH = 32
 
 
 def record_audit(
@@ -31,9 +34,14 @@ def record_audit(
         raise ValueError("El resultado de auditoría no es válido.")
     if decision not in AUDIT_DECISIONS:
         raise ValueError("La decisión de auditoría no es válida.")
-    if not action or len(action) > 64 or not resource_type or len(resource_type) > 32:
+    if (
+        not action
+        or len(action) > MAX_AUDIT_ACTION_LENGTH
+        or not resource_type
+        or len(resource_type) > MAX_AUDIT_RESOURCE_TYPE_LENGTH
+    ):
         raise ValueError("La acción o el tipo de recurso de auditoría no es válido.")
-    if len(resource_id) > 100:
+    if len(resource_id) > MAX_AUDIT_RESOURCE_ID_LENGTH:
         raise ValueError("El identificador del recurso de auditoría es demasiado largo.")
     event = AuditEvent(
         actor_user_id=actor_user_id,

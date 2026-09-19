@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from pyfog.config import MAX_COORDINATOR_LEASE_SECONDS
 from pyfog.models import CoordinatorLeaseRecord, now
 
 COORDINATOR_LEASE_ID = "primary"
@@ -62,7 +63,7 @@ def acquire_lease(
     """
 
     holder_id = _validate_holder(holder_id)
-    if lease_seconds <= 0 or lease_seconds > 300:
+    if lease_seconds <= 0 or lease_seconds > MAX_COORDINATOR_LEASE_SECONDS:
         raise CoordinatorError("La duración de la lease debe estar entre 1 y 300 segundos.")
     current = current or now()
     expires = current + timedelta(seconds=lease_seconds)
@@ -118,7 +119,7 @@ def renew_lease(
         raise CoordinatorError("La lease del coordinador perdió el fencing token.")
     if row.lease_expires_at is None or row.lease_expires_at <= current:
         raise CoordinatorError("La lease del coordinador venció.")
-    if lease_seconds <= 0 or lease_seconds > 300:
+    if lease_seconds <= 0 or lease_seconds > MAX_COORDINATOR_LEASE_SECONDS:
         raise CoordinatorError("La duración de la lease debe estar entre 1 y 300 segundos.")
     row.lease_expires_at = current + timedelta(seconds=lease_seconds)
     row.updated_at = current
