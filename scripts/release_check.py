@@ -28,24 +28,28 @@ class ReleaseCheckError(ValueError):
 
 def _require_bundles(agent_exists: bool, pxe_exists: bool) -> None:
     if not agent_exists or not pxe_exists:
-        raise ReleaseCheckError("Se deben proporcionar ambos bundles: --agent-dir y --pxe-dir.")
+        msg = "Se deben proporcionar ambos bundles: --agent-dir y --pxe-dir."
+        raise ReleaseCheckError(msg)
 
 
 def _require_secure_boot_manifest(pxe_dir: Path) -> None:
     if not (pxe_dir / SECURE_MANIFEST_NAME).is_file():
-        raise ReleaseCheckError("El bundle PXE no contiene firmas Secure Boot requeridas.")
+        msg = "El bundle PXE no contiene firmas Secure Boot requeridas."
+        raise ReleaseCheckError(msg)
 
 
 def _reject_secure_boot_without_bundles(secure_boot_cert: Path | None) -> None:
     if secure_boot_cert is not None:
-        raise ReleaseCheckError("--secure-boot-cert requiere bundles de release.")
+        msg = "--secure-boot-cert requiere bundles de release."
+        raise ReleaseCheckError(msg)
 
 
 def read_project_version() -> str:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = data.get("project", {}).get("version")
     if not isinstance(version, str) or not version:
-        raise ReleaseCheckError("pyproject.toml no contiene una versión de proyecto válida.")
+        msg = "pyproject.toml no contiene una versión de proyecto válida."
+        raise ReleaseCheckError(msg)
     return version
 
 
@@ -53,14 +57,16 @@ def read_app_version() -> str:
     content = (ROOT / "pyfog/app.py").read_text(encoding="utf-8")
     match = VERSION_PATTERN.search(content)
     if match is None:
-        raise ReleaseCheckError("pyfog/app.py no declara la versión de la aplicación.")
+        msg = "pyfog/app.py no declara la versión de la aplicación."
+        raise ReleaseCheckError(msg)
     return match.group(1)
 
 
 def read_agent_version() -> str:
     version = (ROOT / "agent/VERSION").read_text(encoding="utf-8").strip()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
-        raise ReleaseCheckError("agent/VERSION no contiene una versión válida.")
+        msg = "agent/VERSION no contiene una versión válida."
+        raise ReleaseCheckError(msg)
     return version
 
 
@@ -72,10 +78,12 @@ def check_source(expected: str | None) -> str:
     }
     if len(set(versions.values())) != 1:
         values = ", ".join(f"{name}={version}" for name, version in versions.items())
-        raise ReleaseCheckError(f"Las versiones no coinciden: {values}.")
+        msg = f"Las versiones no coinciden: {values}."
+        raise ReleaseCheckError(msg)
     version = next(iter(versions.values()))
     if expected is not None and version != expected:
-        raise ReleaseCheckError(f"Se esperaba la versión {expected}, se encontró {version}.")
+        msg = f"Se esperaba la versión {expected}, se encontró {version}."
+        raise ReleaseCheckError(msg)
     required = (
         "LICENSE",
         "README.md",
@@ -90,7 +98,8 @@ def check_source(expected: str | None) -> str:
     )
     missing = [path for path in required if not (ROOT / path).is_file()]
     if missing:
-        raise ReleaseCheckError(f"Faltan archivos requeridos para release: {', '.join(missing)}.")
+        msg = f"Faltan archivos requeridos para release: {', '.join(missing)}."
+        raise ReleaseCheckError(msg)
     return version
 
 
@@ -99,7 +108,8 @@ def checksum_entries(path: Path) -> dict[str, str]:
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         match = CHECKSUM_PATTERN.fullmatch(line)
         if match is None:
-            raise ReleaseCheckError(f"Formato inválido en {path}:{line_number}.")
+            msg = f"Formato inválido en {path}:{line_number}."
+            raise ReleaseCheckError(msg)
         digest, relative = match.groups()
         candidate = PurePosixPath(relative)
         if (
@@ -108,12 +118,15 @@ def checksum_entries(path: Path) -> dict[str, str]:
             or "\\" in relative
             or any(part in {"", ".", ".."} for part in candidate.parts)
         ):
-            raise ReleaseCheckError(f"Ruta insegura en {path}:{line_number}.")
+            msg = f"Ruta insegura en {path}:{line_number}."
+            raise ReleaseCheckError(msg)
         if relative in entries:
-            raise ReleaseCheckError(f"Archivo repetido en {path}: {relative}.")
+            msg = f"Archivo repetido en {path}: {relative}."
+            raise ReleaseCheckError(msg)
         entries[relative] = digest
     if not entries:
-        raise ReleaseCheckError(f"El archivo de checksums está vacío: {path}.")
+        msg = f"El archivo de checksums está vacío: {path}."
+        raise ReleaseCheckError(msg)
     return entries
 
 
@@ -121,45 +134,53 @@ def verify_checksum_bundle(directory: Path) -> dict[str, Any]:
     manifest_path = directory / "manifest.json"
     sums_path = directory / "SHA256SUMS"
     if not directory.is_dir() or not manifest_path.is_file() or not sums_path.is_file():
-        raise ReleaseCheckError(f"El bundle está incompleto: {directory}.")
+        msg = f"El bundle está incompleto: {directory}."
+        raise ReleaseCheckError(msg)
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ReleaseCheckError(f"El manifiesto no es JSON válido: {manifest_path}.") from error
+        msg = f"El manifiesto no es JSON válido: {manifest_path}."
+        raise ReleaseCheckError(msg) from error
     if not isinstance(manifest, dict):
-        raise ReleaseCheckError(f"El manifiesto no es un objeto JSON: {manifest_path}.")
+        msg = f"El manifiesto no es un objeto JSON: {manifest_path}."
+        raise ReleaseCheckError(msg)
     entries = checksum_entries(sums_path)
     for relative, expected in entries.items():
         artifact = directory / PurePosixPath(relative)
         if artifact.is_symlink() or not artifact.is_file():
-            raise ReleaseCheckError(f"Falta el artefacto listado: {directory / relative}.")
+            msg = f"Falta el artefacto listado: {directory / relative}."
+            raise ReleaseCheckError(msg)
         actual = hashlib.sha256(artifact.read_bytes()).hexdigest()
         if actual != expected:
-            raise ReleaseCheckError(f"Checksum inválido: {directory / relative}.")
+            msg = f"Checksum inválido: {directory / relative}."
+            raise ReleaseCheckError(msg)
     return manifest
 
 
 def check_agent(directory: Path, version: str) -> None:
     manifest = verify_checksum_bundle(directory)
     if manifest.get("schema_version") != 1 or manifest.get("format") != "pyfog-agent-initramfs":
-        raise ReleaseCheckError("El bundle del agente tiene un formato incompatible.")
+        msg = "El bundle del agente tiene un formato incompatible."
+        raise ReleaseCheckError(msg)
     if manifest.get("agent_version") != version:
-        raise ReleaseCheckError("La versión del agente no coincide con el código fuente.")
+        msg = "La versión del agente no coincide con el código fuente."
+        raise ReleaseCheckError(msg)
     for relative in ("vmlinuz", "initramfs.img", "manifest.json"):
         if relative not in checksum_entries(directory / "SHA256SUMS"):
-            raise ReleaseCheckError(f"Falta {relative} en el bundle del agente.")
+            msg = f"Falta {relative} en el bundle del agente."
+            raise ReleaseCheckError(msg)
 
 
 def check_secure_boot_manifest(directory: Path) -> None:
     manifest_path = directory / SECURE_MANIFEST_NAME
     if not manifest_path.is_file() or manifest_path.is_symlink():
-        raise ReleaseCheckError(f"Falta el manifiesto Secure Boot: {manifest_path}.")
+        msg = f"Falta el manifiesto Secure Boot: {manifest_path}."
+        raise ReleaseCheckError(msg)
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ReleaseCheckError(
-            f"El manifiesto Secure Boot no es JSON válido: {manifest_path}."
-        ) from error
+        msg = f"El manifiesto Secure Boot no es JSON válido: {manifest_path}."
+        raise ReleaseCheckError(msg) from error
     if (
         not isinstance(manifest, dict)
         or manifest.get("schema_version") != 1
@@ -167,13 +188,16 @@ def check_secure_boot_manifest(directory: Path) -> None:
         or not isinstance(manifest.get("certificate_sha256"), str)
         or not re.fullmatch(r"[0-9a-f]{64}", manifest["certificate_sha256"])
     ):
-        raise ReleaseCheckError("El manifiesto Secure Boot es incompatible.")
+        msg = "El manifiesto Secure Boot es incompatible."
+        raise ReleaseCheckError(msg)
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
-        raise ReleaseCheckError("El manifiesto Secure Boot no declara artefactos.")
+        msg = "El manifiesto Secure Boot no declara artefactos."
+        raise ReleaseCheckError(msg)
     for item in artifacts:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-            raise ReleaseCheckError("El manifiesto Secure Boot contiene una entrada inválida.")
+            msg = "El manifiesto Secure Boot contiene una entrada inválida."
+            raise ReleaseCheckError(msg)
         relative = PurePosixPath(item["path"])
         if (
             relative.is_absolute()
@@ -183,24 +207,30 @@ def check_secure_boot_manifest(directory: Path) -> None:
             or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256", "")))
             or item.get("signature") != "embedded-pe-coff-authenticode"
         ):
-            raise ReleaseCheckError("El manifiesto Secure Boot contiene una ruta o firma inválida.")
+            msg = "El manifiesto Secure Boot contiene una ruta o firma inválida."
+            raise ReleaseCheckError(msg)
         artifact = directory / relative
         if artifact.is_symlink() or not artifact.is_file():
-            raise ReleaseCheckError(f"Falta el artefacto EFI firmado: {artifact}.")
+            msg = f"Falta el artefacto EFI firmado: {artifact}."
+            raise ReleaseCheckError(msg)
         if hashlib.sha256(artifact.read_bytes()).hexdigest() != item["sha256"]:
-            raise ReleaseCheckError(f"Checksum de firma inválido: {artifact}.")
+            msg = f"Checksum de firma inválido: {artifact}."
+            raise ReleaseCheckError(msg)
 
 
 def check_pxe(directory: Path, version: str, secure_boot_cert: Path | None = None) -> None:
     manifest = verify_checksum_bundle(directory)
     if manifest.get("schema_version") != 1 or manifest.get("format") != "pyfog-pxe-profile":
-        raise ReleaseCheckError("El bundle PXE tiene un formato incompatible.")
+        msg = "El bundle PXE tiene un formato incompatible."
+        raise ReleaseCheckError(msg)
     if manifest.get("profile_version") != version:
-        raise ReleaseCheckError("La versión del perfil PXE no coincide con el agente.")
+        msg = "La versión del perfil PXE no coincide con el agente."
+        raise ReleaseCheckError(msg)
     if not isinstance(manifest.get("base_url"), str) or not manifest["base_url"].startswith(
         "https://"
     ):
-        raise ReleaseCheckError("El perfil PXE no tiene una URL HTTPS válida.")
+        msg = "El perfil PXE no tiene una URL HTTPS válida."
+        raise ReleaseCheckError(msg)
     secure_manifest = directory / SECURE_MANIFEST_NAME
     if secure_manifest.exists():
         check_secure_boot_manifest(directory)
@@ -208,11 +238,11 @@ def check_pxe(directory: Path, version: str, secure_boot_cert: Path | None = Non
             try:
                 verify_artifacts(directory, secure_boot_cert)
             except (OSError, SecureBootArtifactError) as error:
-                raise ReleaseCheckError(f"Firmas Secure Boot inválidas: {error}") from error
+                msg = f"Firmas Secure Boot inválidas: {error}"
+                raise ReleaseCheckError(msg) from error
     elif secure_boot_cert is not None:
-        raise ReleaseCheckError(
-            "Se indicó un certificado Secure Boot pero el bundle no está firmado."
-        )
+        msg = "Se indicó un certificado Secure Boot pero el bundle no está firmado."
+        raise ReleaseCheckError(msg)
 
 
 def main() -> int:
