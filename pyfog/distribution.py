@@ -66,16 +66,20 @@ class DistributionMeasurement(Schema):
     @model_validator(mode="after")
     def validate_scenario(self) -> DistributionMeasurement:
         if self.failed_receivers > self.receiver_count:
-            raise ValueError("No pueden fallar más receptores que los participantes.")
+            msg = "No pueden fallar más receptores que los participantes."
+            raise ValueError(msg)
         if self.completed and self.failed_receivers and not self.isolated_failures:
-            raise ValueError(
+            msg = (
                 "Un benchmark completado no puede cancelar todos los receptores "
                 "por un fallo aislado."
             )
+            raise ValueError(msg)
         if self.repair_bytes > self.lan_bytes:
-            raise ValueError("Las reparaciones no pueden superar el tráfico total medido.")
+            msg = "Las reparaciones no pueden superar el tráfico total medido."
+            raise ValueError(msg)
         if self.strategy == "multicast" and self.completed and not self.isolated_failures:
-            raise ValueError("Una medición multicast exitosa debe aislar los fallos de receptores.")
+            msg = "Una medición multicast exitosa debe aislar los fallos de receptores."
+            raise ValueError(msg)
         return self
 
     @property
@@ -204,7 +208,8 @@ class RepairRequest(Schema):
         if any(index < 0 for index in self.missing_indices) or len(
             set(self.missing_indices)
         ) != len(self.missing_indices):
-            raise ValueError("La solicitud de reparación contiene índices inválidos.")
+            msg = "La solicitud de reparación contiene índices inválidos."
+            raise ValueError(msg)
         return self
 
 
@@ -233,14 +238,17 @@ class ReliableMulticastSession:
             not isinstance(self._repair_secret, bytes)
             or not MIN_REPAIR_SECRET_BYTES <= len(self._repair_secret) <= MAX_REPAIR_SECRET_BYTES
         ):
-            raise DistributionError("El secreto de reparación no tiene un tamaño seguro.")
+            msg = "El secreto de reparación no tiene un tamaño seguro."
+            raise DistributionError(msg)
         self._states: dict[str, _ReceiverState] = {}
 
     def add_receiver(self, receiver_id: str) -> None:
         if not receiver_id or len(receiver_id) > MAX_RECEIVER_ID_LENGTH:
-            raise DistributionError("La identidad del receptor no es válida.")
+            msg = "La identidad del receptor no es válida."
+            raise DistributionError(msg)
         if receiver_id in self._states:
-            raise DistributionError("El receptor ya pertenece a la sesión.")
+            msg = "El receptor ya pertenece a la sesión."
+            raise DistributionError(msg)
         self._states[receiver_id] = _ReceiverState()
 
     def receive(self, receiver_id: str, block: TransferBlock, payload: bytes) -> bool:
@@ -264,7 +272,8 @@ class ReliableMulticastSession:
         if not missing:
             return None
         if max_indices <= 0 or max_indices > MAX_REPAIR_INDICES:
-            raise DistributionError("El límite de reparación no es válido.")
+            msg = "El límite de reparación no es válido."
+            raise DistributionError(msg)
         indices = list(missing[:max_indices])
         return RepairRequest(
             session_id=self.session_id,
@@ -277,14 +286,17 @@ class ReliableMulticastSession:
         """Authenticate a receiver-local NACK before serving unicast repair bytes."""
 
         if request.session_id != self.session_id:
-            raise DistributionError("La solicitud de reparación pertenece a otra sesión.")
+            msg = "La solicitud de reparación pertenece a otra sesión."
+            raise DistributionError(msg)
         state = self._state(request.receiver_id)
         expected = self._repair_tag(request.receiver_id, request.missing_indices)
         if not request.auth_tag or not hmac.compare_digest(request.auth_tag, expected):
-            raise DistributionError("La solicitud de reparación no pasó autenticación.")
+            msg = "La solicitud de reparación no pasó autenticación."
+            raise DistributionError(msg)
         missing = set(self.missing(request.receiver_id))
         if any(index not in missing for index in request.missing_indices):
-            raise DistributionError("La solicitud de reparación contiene piezas ya recibidas.")
+            msg = "La solicitud de reparación contiene piezas ya recibidas."
+            raise DistributionError(msg)
         state.repair_requests += 1
         return tuple(request.missing_indices)
 
@@ -317,13 +329,16 @@ class ReliableMulticastSession:
         try:
             return self._states[receiver_id]
         except KeyError:
-            raise DistributionError("El receptor no pertenece a la sesión.") from None
+            msg = "El receptor no pertenece a la sesión."
+            raise DistributionError(msg) from None
 
     def _validate_piece(self, block: TransferBlock, payload: bytes) -> None:
         if block.index >= len(self.manifest.blocks) or self.manifest.blocks[block.index] != block:
-            raise DistributionError("La pieza no pertenece al manifiesto de la sesión.")
+            msg = "La pieza no pertenece al manifiesto de la sesión."
+            raise DistributionError(msg)
         if len(payload) != block.size or hashlib.sha256(payload).hexdigest() != block.sha256:
-            raise DistributionError("La pieza multicast no pasó la verificación SHA-256.")
+            msg = "La pieza multicast no pasó la verificación SHA-256."
+            raise DistributionError(msg)
 
     def _repair_tag(self, receiver_id: str, indices: Sequence[int]) -> str:
         encoded = ",".join(str(index) for index in indices).encode("ascii")
@@ -348,21 +363,26 @@ def iter_multicast_pieces(
                     len(payload) != block.size
                     or hashlib.sha256(payload).hexdigest() != block.sha256
                 ):
-                    raise DistributionError("El artefacto no coincide con el manifiesto de piezas.")
+                    msg = "El artefacto no coincide con el manifiesto de piezas."
+                    raise DistributionError(msg)
                 yield MulticastPiece(session_id, block, payload)
     except OSError as error:
-        raise DistributionError(f"No se pudo leer el artefacto multicast: {error}") from None
+        msg = f"No se pudo leer el artefacto multicast: {error}"
+        raise DistributionError(msg) from None
 
 
 def validate_multicast_topology(topology: DistributionTopology) -> None:
     """Fail closed before a multicast socket is opened."""
 
     if not topology.igmp_snooping:
-        raise DistributionError("La red no declara IGMP snooping administrado.")
+        msg = "La red no declara IGMP snooping administrado."
+        raise DistributionError(msg)
     if not topology.multicast_acl_isolated:
-        raise DistributionError("La red multicast no está aislada por ACL.")
+        msg = "La red multicast no está aislada por ACL."
+        raise DistributionError(msg)
     if not topology.unicast_repair_endpoint:
-        raise DistributionError("Multicast requiere un endpoint de reparación unicast.")
+        msg = "Multicast requiere un endpoint de reparación unicast."
+        raise DistributionError(msg)
 
 
 def multicast_can_start(topology: DistributionTopology) -> bool:
@@ -378,7 +398,8 @@ def benchmark_summary(measurements: Sequence[DistributionMeasurement]) -> dict[s
     """Produce a stable, secret-free report suitable for the ADR review."""
 
     if not measurements:
-        raise DistributionError("El benchmark no contiene mediciones.")
+        msg = "El benchmark no contiene mediciones."
+        raise DistributionError(msg)
     by_strategy: dict[str, dict[str, object]] = {}
     for strategy in ("unicast", "relay", "p2p", "multicast"):
         values = [item for item in measurements if item.strategy == strategy]
