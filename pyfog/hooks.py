@@ -41,7 +41,8 @@ class HookStep(Schema):
         if any(value is not None for value in values) and not all(
             value is not None for value in values
         ):
-            raise ValueError("El rollback debe declarar plugin, operación y capacidad.")
+            msg = "El rollback debe declarar plugin, operación y capacidad."
+            raise ValueError(msg)
         return self
 
 
@@ -57,7 +58,8 @@ class HookPlan(Schema):
         names = [step.name for step in self.steps]
         keys = [step.idempotency_key for step in self.steps]
         if len(set(names)) != len(names) or len(set(keys)) != len(keys):
-            raise ValueError("Los hooks deben tener nombres y claves de idempotencia únicos.")
+            msg = "Los hooks deben tener nombres y claves de idempotencia únicos."
+            raise ValueError(msg)
         return self
 
 
@@ -66,10 +68,11 @@ def _raise_plugin_error(message: str) -> NoReturn:
 
 
 def _raise_hook_failure(step: HookStep, attempts: int, last_error: PluginError | None) -> NoReturn:
-    raise HookError(
+    msg = (
         f"El hook {step.name} falló tras {attempts} intento(s): "
         f"{redact_plugin_message(str(last_error or 'error desconocido'))}"
     )
+    raise HookError(msg)
 
 
 @dataclass(frozen=True)
