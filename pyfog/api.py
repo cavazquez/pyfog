@@ -707,6 +707,13 @@ def _finish_restore_agent_task(
     )
 
 
+def _get_capture_image(db: Session, image_id: str) -> Image:
+    image = db.get(Image, image_id)
+    if image is None:
+        raise ValueError("La imagen de la tarea ya no existe.")
+    return image
+
+
 def _finish_capture_agent_task(
     request: Request,
     db: Session,
@@ -756,9 +763,7 @@ def _finish_capture_agent_task(
                 {"task_id": task.id, "status": task.status, "accepted": False}, status_code=200
             )
         request.app.state.artifact_store.verify_and_publish(task.id, task.image_id, manifest)
-        image = db.get(Image, task.image_id)
-        if image is None:
-            raise ValueError("La imagen de la tarea ya no existe.")
+        image = _get_capture_image(db, task.image_id)
     except (StorageError, TaskError, ValueError) as error:
         fail_agent_task(db, task, attempt, str(error), payload.sequence + 1)
         db.commit()
