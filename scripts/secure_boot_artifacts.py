@@ -30,24 +30,22 @@ def _tool(name: str) -> str:
     executable = shutil.which(name)
     if executable is None:
         package = "sbsigntool" if name == "sbverify" else "osslsigncode"
-        raise SecureBootArtifactError(
-            f"Falta {name}; instalá {package} (en Ubuntu: sudo apt-get install {package})."
-        )
+        msg = f"Falta {name}; instalá {package} (en Ubuntu: sudo apt-get install {package})."
+        raise SecureBootArtifactError(msg)
     return executable
 
 
 def _safe_file(path: Path, label: str, *, private: bool = False) -> Path:
     if path.is_symlink() or not path.is_file():
-        raise SecureBootArtifactError(f"{label} no es un archivo regular: {path}")
+        msg = f"{label} no es un archivo regular: {path}"
+        raise SecureBootArtifactError(msg)
     resolved = path.resolve()
     if private and (resolved == ROOT or ROOT in resolved.parents):
-        raise SecureBootArtifactError(
-            "La clave privada debe permanecer fuera del checkout de PyFog."
-        )
+        msg = "La clave privada debe permanecer fuera del checkout de PyFog."
+        raise SecureBootArtifactError(msg)
     if private and stat.S_IMODE(path.stat().st_mode) & 0o077:
-        raise SecureBootArtifactError(
-            f"La clave privada debe tener permisos 0600 o más restrictivos: {path}"
-        )
+        msg = f"La clave privada debe tener permisos 0600 o más restrictivos: {path}"
+        raise SecureBootArtifactError(msg)
     return resolved
 
 
@@ -68,7 +66,8 @@ def _run(
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "sin diagnóstico"
-        raise SecureBootArtifactError(f"{Path(executable).name} falló: {detail}")
+        msg = f"{Path(executable).name} falló: {detail}"
+        raise SecureBootArtifactError(msg)
     return result
 
 
@@ -102,19 +101,20 @@ def _relative(root: Path, path: Path) -> str:
         or any(part in {"", ".", ".."} for part in relative.parts)
         or not str(relative).isascii()
     ):
-        raise SecureBootArtifactError(f"Ruta de artefacto insegura: {relative}")
+        msg = f"Ruta de artefacto insegura: {relative}"
+        raise SecureBootArtifactError(msg)
     return str(relative)
 
 
 def _pe_images(root: Path) -> list[Path]:
     if not root.is_dir() or root.is_symlink():
-        raise SecureBootArtifactError(f"No existe un directorio de artefactos seguro: {root}")
+        msg = f"No existe un directorio de artefactos seguro: {root}"
+        raise SecureBootArtifactError(msg)
     images: list[Path] = []
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
         if path.is_symlink():
-            raise SecureBootArtifactError(
-                f"La publicación no puede contener enlaces simbólicos: {path}"
-            )
+            msg = f"La publicación no puede contener enlaces simbólicos: {path}"
+            raise SecureBootArtifactError(msg)
         if path.is_file() and path.suffix.lower() == ".efi" and _is_pe_image(path):
             images.append(path)
     return images
@@ -124,23 +124,23 @@ def _copy_tree(source: Path, destination: Path) -> None:
     source = source.resolve()
     destination = destination.resolve()
     if not source.is_dir() or source.is_symlink():
-        raise SecureBootArtifactError(f"No existe un directorio fuente seguro: {source}")
+        msg = f"No existe un directorio fuente seguro: {source}"
+        raise SecureBootArtifactError(msg)
     if destination == source or source in destination.parents:
-        raise SecureBootArtifactError(
-            "El directorio de salida no puede estar dentro del de entrada."
-        )
+        msg = "El directorio de salida no puede estar dentro del de entrada."
+        raise SecureBootArtifactError(msg)
     if destination.exists():
         if destination.is_symlink() or not destination.is_dir() or any(destination.iterdir()):
-            raise SecureBootArtifactError(f"El directorio de salida no está vacío: {destination}")
+            msg = f"El directorio de salida no está vacío: {destination}"
+            raise SecureBootArtifactError(msg)
     else:
         destination.mkdir(parents=True)
     for path in sorted(source.rglob("*"), key=lambda item: item.as_posix()):
         relative = path.relative_to(source)
         target = destination / relative
         if path.is_symlink():
-            raise SecureBootArtifactError(
-                f"La publicación no puede contener enlaces simbólicos: {path}"
-            )
+            msg = f"La publicación no puede contener enlaces simbólicos: {path}"
+            raise SecureBootArtifactError(msg)
         if path.is_dir():
             target.mkdir(parents=True, exist_ok=True)
         elif path.is_file():
@@ -170,9 +170,8 @@ def _secure_manifest(root: Path, certificate: Path, source_date_epoch: int) -> d
         for path in _pe_images(root)
     ]
     if not artifacts:
-        raise SecureBootArtifactError(
-            "La publicación no contiene ningún artefacto PE/COFF para firmar."
-        )
+        msg = "La publicación no contiene ningún artefacto PE/COFF para firmar."
+        raise SecureBootArtifactError(msg)
     return {
         "schema_version": 1,
         "format": "pyfog-secure-boot-artifacts",
@@ -193,16 +192,16 @@ def sign_artifacts(
     """Copy a publication and sign every `.efi` PE/COFF image in the copy."""
 
     if source_date_epoch < 0:
-        raise SecureBootArtifactError("source_date_epoch debe ser no negativo.")
+        msg = "source_date_epoch debe ser no negativo."
+        raise SecureBootArtifactError(msg)
     key = _safe_file(key, "La clave privada", private=True)
     certificate = _safe_file(certificate, "El certificado público")
     _copy_tree(input_dir, output_dir)
     signer = _tool("osslsigncode")
     images = _pe_images(output_dir)
     if not images:
-        raise SecureBootArtifactError(
-            "La publicación no contiene ningún artefacto PE/COFF para firmar."
-        )
+        msg = "La publicación no contiene ningún artefacto PE/COFF para firmar."
+        raise SecureBootArtifactError(msg)
     for image in images:
         temporary = image.with_name(f".{image.name}.signed")
         _run(
@@ -236,19 +235,22 @@ def sign_artifacts(
 def _load_manifest(root: Path) -> dict[str, Any]:
     path = root / SECURE_MANIFEST_NAME
     if not path.is_file() or path.is_symlink():
-        raise SecureBootArtifactError(f"Falta {path}; el bundle no está firmado.")
+        msg = f"Falta {path}; el bundle no está firmado."
+        raise SecureBootArtifactError(msg)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise SecureBootArtifactError(
-            f"El manifiesto Secure Boot no es JSON válido: {path}"
-        ) from error
+        msg = f"El manifiesto Secure Boot no es JSON válido: {path}"
+        raise SecureBootArtifactError(msg) from error
     if not isinstance(value, dict) or value.get("schema_version") != 1:
-        raise SecureBootArtifactError("El manifiesto Secure Boot tiene un schema incompatible.")
+        msg = "El manifiesto Secure Boot tiene un schema incompatible."
+        raise SecureBootArtifactError(msg)
     if value.get("format") != "pyfog-secure-boot-artifacts":
-        raise SecureBootArtifactError("El manifiesto Secure Boot tiene un formato incompatible.")
+        msg = "El manifiesto Secure Boot tiene un formato incompatible."
+        raise SecureBootArtifactError(msg)
     if not isinstance(value.get("artifacts"), list) or not value["artifacts"]:
-        raise SecureBootArtifactError("El manifiesto Secure Boot no declara artefactos.")
+        msg = "El manifiesto Secure Boot no declara artefactos."
+        raise SecureBootArtifactError(msg)
     return value
 
 
@@ -259,29 +261,28 @@ def verify_artifacts(root: Path, certificate: Path) -> dict[str, Any]:
     manifest = _load_manifest(root)
     expected_certificate = manifest.get("certificate_sha256")
     if expected_certificate != _certificate_digest(certificate):
-        raise SecureBootArtifactError(
-            "El certificado no coincide con el fingerprint del manifiesto."
-        )
+        msg = "El certificado no coincide con el fingerprint del manifiesto."
+        raise SecureBootArtifactError(msg)
     entries: list[dict[str, Any]] = []
     for item in manifest["artifacts"]:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-            raise SecureBootArtifactError(
-                "El manifiesto Secure Boot contiene una entrada inválida."
-            )
+            msg = "El manifiesto Secure Boot contiene una entrada inválida."
+            raise SecureBootArtifactError(msg)
         relative = PurePosixPath(item["path"])
         if (
             relative.is_absolute()
             or not str(relative).isascii()
             or any(part in {"", ".", ".."} for part in relative.parts)
         ):
-            raise SecureBootArtifactError("El manifiesto Secure Boot contiene una ruta insegura.")
+            msg = "El manifiesto Secure Boot contiene una ruta insegura."
+            raise SecureBootArtifactError(msg)
         artifact = root / relative
         if artifact.is_symlink() or not artifact.is_file() or not _is_pe_image(artifact):
-            raise SecureBootArtifactError(
-                f"Artefacto Secure Boot faltante o no PE/COFF: {relative}"
-            )
+            msg = f"Artefacto Secure Boot faltante o no PE/COFF: {relative}"
+            raise SecureBootArtifactError(msg)
         if item.get("sha256") != _digest(artifact):
-            raise SecureBootArtifactError(f"Checksum de firma inválido: {relative}")
+            msg = f"Checksum de firma inválido: {relative}"
+            raise SecureBootArtifactError(msg)
         entries.append({"path": str(relative), "artifact": artifact})
 
     listed = {entry["path"] for entry in entries}
@@ -294,7 +295,8 @@ def verify_artifacts(root: Path, certificate: Path) -> dict[str, Any]:
             detail = (
                 f"{detail}; sobran: {', '.join(extra)}" if detail else f"sobran: {', '.join(extra)}"
             )
-        raise SecureBootArtifactError(f"El manifiesto no cubre todos los PE/COFF ({detail}).")
+        msg = f"El manifiesto no cubre todos los PE/COFF ({detail})."
+        raise SecureBootArtifactError(msg)
 
     verifier = _tool("sbverify")
     for entry in entries:
@@ -305,7 +307,8 @@ def verify_artifacts(root: Path, certificate: Path) -> dict[str, Any]:
 def _create_keypair(directory: Path, name: str) -> tuple[Path, Path]:
     openssl = shutil.which("openssl")
     if openssl is None:
-        raise SecureBootArtifactError("Falta openssl para la prueba de firma Secure Boot.")
+        msg = "Falta openssl para la prueba de firma Secure Boot."
+        raise SecureBootArtifactError(msg)
     key = directory / f"{name}.key.pem"
     certificate = directory / f"{name}.cert.pem"
     _run(
@@ -346,10 +349,11 @@ def _fixture_path(value: Path | None) -> Path:
             and _is_pe_image(candidate)
         ):
             return candidate
-    raise SecureBootArtifactError(
+    msg = (
         "No se encontró un EFI PE/COFF para el fixture; instalá shim-signed o "
         "indicá --fixture PATH."
     )
+    raise SecureBootArtifactError(msg)
 
 
 def run_artifact_checks(work_dir: Path, fixture: Path | None = None) -> dict[str, bool]:
@@ -419,7 +423,8 @@ def run_artifact_checks(work_dir: Path, fixture: Path | None = None) -> dict[str
 
 def _source_date_epoch(value: str) -> int:
     if not value.isdigit():
-        raise argparse.ArgumentTypeError("source-date-epoch debe ser un entero no negativo")
+        msg = "source-date-epoch debe ser un entero no negativo"
+        raise argparse.ArgumentTypeError(msg)
     return int(value)
 
 
