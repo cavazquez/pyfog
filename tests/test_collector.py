@@ -142,8 +142,7 @@ def test_pairing_waits_for_approval_and_submits_one_inventory(monkeypatch, inven
         inventory,
         "https://pyfog.example",
         None,
-        timeout_seconds=10,
-        interval_seconds=0.01,
+        collector.PairingOptions(timeout_seconds=10, interval_seconds=0.01),
     )
     output = capsys.readouterr().err
     assert "Solicitud PXE creada. Desafío:" in output
