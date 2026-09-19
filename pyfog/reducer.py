@@ -140,9 +140,10 @@ def reduce_ext4_image(
         else:
             _reduce_with_loop(plan, temporary)
         temporary.replace(plan.destination)
-        return plan.destination
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         raise ReductionError(f"La reducción no se publicó: {error}") from None
+    else:
+        return plan.destination
     finally:
         if temporary is not None:
             with contextlib.suppress(OSError):

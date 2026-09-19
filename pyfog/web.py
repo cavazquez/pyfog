@@ -331,9 +331,10 @@ def selectable_manifest(request: Request, image: Image) -> ImageManifest | None:
             path = request.app.state.artifact_store.published_artifact(image.id, artifact.path)
             if not path.is_file() or path.is_symlink():
                 return None
-        return manifest
     except (StorageError, ValueError, OSError):
         return None
+    else:
+        return manifest
 
 
 def deployment_validation(

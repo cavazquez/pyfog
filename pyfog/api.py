@@ -86,10 +86,11 @@ def coordinator_fence(request: Request, db: Session) -> FencingLease | None:
             raise CoordinatorError("El coordinador activo no está disponible.")
         assert_fenced(db, lease)
         request.state.coordinator_lease = lease
-        return lease
     except CoordinatorError as error:
         db.rollback()
         raise HTTPException(503, str(error)) from None
+    else:
+        return lease
 
 
 def get_pairing(db: Session, pairing_id: UUID) -> PairingRequest:
