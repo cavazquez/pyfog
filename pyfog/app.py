@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette import status
 from starlette.exceptions import HTTPException
 from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -53,8 +54,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def http_error(request: Request, exc: Exception) -> Response:
         if not isinstance(exc, HTTPException):
             raise exc
-        if exc.status_code == 303:
-            return RedirectResponse((exc.headers or {}).get("Location", "/login"), 303)
+        if exc.status_code == status.HTTP_303_SEE_OTHER:
+            return RedirectResponse(
+                (exc.headers or {}).get("Location", "/login"), status.HTTP_303_SEE_OTHER
+            )
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": exc.detail}, exc.status_code, headers=exc.headers)
         return web.render(request, "error.html", status=exc.status_code, error=str(exc.detail))
