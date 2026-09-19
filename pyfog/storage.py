@@ -30,6 +30,9 @@ class StorageError(ValueError):
     """A storage request cannot be completed safely."""
 
 
+SHA256_HEX_LENGTH = 64
+
+
 def _uuid_text(value: str) -> str:
     try:
         return str(uuid.UUID(value))
@@ -150,7 +153,9 @@ class ArtifactStore:
             raise StorageError("El tamaño declarado del artefacto no es válido.")
         if total_size and offset + len(payload) > total_size:
             raise StorageError("El fragmento supera el tamaño declarado del artefacto.")
-        if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+        if len(sha256) != SHA256_HEX_LENGTH or any(
+            character not in "0123456789abcdef" for character in sha256
+        ):
             raise StorageError("La suma del fragmento no es un SHA-256 hexadecimal.")
         if hashlib.sha256(payload).hexdigest() != sha256:
             raise StorageError("La suma del fragmento no coincide con su contenido.")
