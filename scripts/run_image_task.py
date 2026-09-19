@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn, Protocol
 
-from pyfog.key_provider import external_luks2_key
+from pyfog.key_provider import MAX_EPHEMERAL_KEY_BYTES, external_luks2_key
 from pyfog.layouts import (
     LayoutError,
     Luks2Layout,
@@ -55,7 +55,10 @@ from pyfog.transfer import (
 )
 
 MAX_RESPONSE_BYTES = 1_000_000
+MAX_AGENT_TCP_PORT = 65535
+MAX_AGENT_TOKEN_LENGTH = 256
 DEFAULT_CHUNK_BYTES = 512 * 1024
+MIN_RAID_DISKS = 2
 NO_TASK_EXIT = 3
 MAX_IMAGE_BYTES = 2**50
 
@@ -107,7 +110,7 @@ def validate_server(server: str) -> urllib.parse.SplitResult:
         or url.fragment
         or url.path not in {"", "/"}
         or (url.scheme == "http" and not loopback)
-        or (port is not None and not 1 <= port <= 65535)
+        or (port is not None and not 1 <= port <= MAX_AGENT_TCP_PORT)
     ):
         raise ValueError(
             "Usá una URL base HTTPS sin credenciales. HTTP solo se admite en loopback."
@@ -116,7 +119,7 @@ def validate_server(server: str) -> urllib.parse.SplitResult:
 
 
 def validate_token(token: str) -> str:
-    if not token or len(token) > 256 or "\n" in token or "\r" in token:
+    if not token or len(token) > MAX_AGENT_TOKEN_LENGTH or "\n" in token or "\r" in token:
         raise ValueError("La capacidad del agente no es válida.")
     return token
 
@@ -510,7 +513,7 @@ def _unlock_luks2_with_key(device: str, mapping_name: str, key: object) -> str:
         raise ValueError("El contenedor LUKS2 no es un dispositivo seguro.")
     if not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", mapping_name):
         raise ValueError("El nombre del mapping LUKS2 no es seguro.")
-    if not isinstance(key, bytes) or not 1 <= len(key) <= 4096:
+    if not isinstance(key, bytes) or not 1 <= len(key) <= MAX_EPHEMERAL_KEY_BYTES:
         raise ValueError("El proveedor LUKS2 no entregó una clave válida.")
     executable = shutil.which("cryptsetup")
     if not executable:
@@ -537,7 +540,7 @@ def format_and_unlock_luks2(
     if not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", device):
         raise ValueError("El contenedor LUKS2 no es un dispositivo seguro.")
     key = key_provider()
-    if not isinstance(key, bytes) or not 1 <= len(key) <= 4096:
+    if not isinstance(key, bytes) or not 1 <= len(key) <= MAX_EPHEMERAL_KEY_BYTES:
         raise ValueError("El proveedor LUKS2 no entregó una clave válida.")
     executable = shutil.which("cryptsetup")
     if not executable:
@@ -671,7 +674,7 @@ def build_restore_storage_plan(
         return RestoreStoragePlan("lvm-linear", lvm=lvm_layout, root_artifacts=root_artifacts)
 
     if profile == "raid1":
-        if encryption != "none" or len(disks) < 2:
+        if encryption != "none" or len(disks) < MIN_RAID_DISKS:
             raise ValueError("RAID1 requiere dos o más discos sin cifrado.")
         arrays = manifest.get("raid_arrays")
         if not isinstance(arrays, list) or len(arrays) != 1:
