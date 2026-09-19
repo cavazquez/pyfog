@@ -24,6 +24,7 @@ from pyfog.image_manifest import ImageManifest, parse_image_manifest, verify_ima
 
 BACKUP_FORMAT = "pyfog-backup"
 BACKUP_VERSION = 1
+SHA256_HEX_LENGTH = 64
 CONFIG_REFERENCE = {
     "database": "Restaurar la base SQLite desde database.sqlite3 y apuntar PYFOG_DATABASE_URL.",
     "image_store": "Restaurar image-store y apuntar PYFOG_IMAGE_STORE al directorio.",
@@ -213,7 +214,7 @@ def verify_file_records(backup: Path, manifest: dict[str, Any]) -> None:
         if relative.is_absolute() or ".." in relative.parts:
             raise BackupError("El manifiesto de backup contiene una ruta insegura.")
         checksum = item.get("sha256")
-        if not isinstance(checksum, str) or len(checksum) != 64:
+        if not isinstance(checksum, str) or len(checksum) != SHA256_HEX_LENGTH:
             raise BackupError("El manifiesto de backup contiene una suma inválida.")
         expected.add(relative.as_posix())
         path = backup / relative

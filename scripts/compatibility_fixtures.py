@@ -17,6 +17,9 @@ QCOW2_FORMAT = "qcow2"
 QCOW2_CLUSTER_SIZE = 65536
 QCOW2_COMPAT = "1.1"
 QCOW2_LAZY_REFCOUNTS = "off"
+FIXTURE_ALIGNMENT_BYTES = 4096
+SHA256_PART_COUNT = 8
+SHA256_PART_LENGTH = 8
 
 
 class FixtureError(ValueError):
@@ -84,14 +87,16 @@ def validate_spec(fixture: object) -> None:
     ):
         raise FixtureError("El ID o archivo del fixture no es seguro.")
     virtual_size = fixture["virtual_size_bytes"]
-    if type(virtual_size) is not int or virtual_size <= 0 or virtual_size % 4096:
+    if type(virtual_size) is not int or virtual_size <= 0 or virtual_size % FIXTURE_ALIGNMENT_BYTES:
         raise FixtureError(f"El tamaño virtual de {fixture_id} no es válido.")
     sha256_parts = fixture["sha256_parts"]
     if (
         not isinstance(sha256_parts, list)
-        or len(sha256_parts) != 8
+        or len(sha256_parts) != SHA256_PART_COUNT
         or any(
-            not isinstance(part, str) or len(part) != 8 or not re.fullmatch(r"[0-9a-f]{8}", part)
+            not isinstance(part, str)
+            or len(part) != SHA256_PART_LENGTH
+            or not re.fullmatch(r"[0-9a-f]{8}", part)
             for part in sha256_parts
         )
     ):

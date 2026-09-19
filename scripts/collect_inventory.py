@@ -26,6 +26,10 @@ from typing import Any
 
 MAX_PAYLOAD_BYTES = 1_000_000
 MAX_RESPONSE_BYTES = 1_000_000
+MAX_PAIR_INTERVAL_SECONDS = 60
+MAX_PAIR_TIMEOUT_SECONDS = 3600
+MAX_TCP_PORT = 65535
+MAX_TOKEN_LENGTH = 256
 
 
 def _validate_payload_size(payload: bytes) -> None:
@@ -209,7 +213,7 @@ def validate_server(server: str) -> urllib.parse.SplitResult:
         or url.fragment
         or url.path not in {"", "/"}
         or (url.scheme == "http" and not loopback)
-        or (port is not None and not 1 <= port <= 65535)
+        or (port is not None and not 1 <= port <= MAX_TCP_PORT)
     ):
         raise ValueError(
             "Usá una URL base HTTPS sin credenciales. HTTP solo se admite en loopback."
@@ -218,7 +222,7 @@ def validate_server(server: str) -> urllib.parse.SplitResult:
 
 
 def validate_token(token: str, *, message: str) -> str:
-    if not token or len(token) > 256 or "\n" in token or "\r" in token:
+    if not token or len(token) > MAX_TOKEN_LENGTH or "\n" in token or "\r" in token:
         raise ValueError(message)
     return token
 
@@ -430,9 +434,9 @@ def main() -> None:
             parser.error("--pair requiere --server y no se combina con --host-id.")
         if args.input:
             parser.error("--pair recolecta un informe nuevo y no se combina con --input.")
-        if args.pair_timeout <= 0 or args.pair_timeout > 3600:
+        if args.pair_timeout <= 0 or args.pair_timeout > MAX_PAIR_TIMEOUT_SECONDS:
             parser.error("--pair-timeout debe estar entre 1 y 3600 segundos.")
-        if args.pair_interval <= 0 or args.pair_interval > 60:
+        if args.pair_interval <= 0 or args.pair_interval > MAX_PAIR_INTERVAL_SECONDS:
             parser.error("--pair-interval debe ser mayor que 0 y como máximo 60 segundos.")
     elif bool(args.server) != bool(args.host_id):
         parser.error("--server y --host-id deben indicarse juntos.")
