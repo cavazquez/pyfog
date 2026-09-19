@@ -32,3 +32,7 @@ make lint
 make lint-advisory
 uv run ruff format --check .
 ```
+
+La suite usa `TestClient` y mantiene el lifespan real de la aplicación. En sandboxes locales que
+bloquean el `send()` del socket interno de `asyncio`, `tests/conftest.py` detecta el `EPERM` y aplica
+un wake-up equivalente con `os.write`; en CI y en un entorno normal no se modifica el event loop.
