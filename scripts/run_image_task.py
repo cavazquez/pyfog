@@ -3479,7 +3479,6 @@ def capture_task(
             ca_file=ca_file,
             expected_status={200},
         )
-        return True
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         with contextlib.suppress(OSError, ValueError, urllib.error.URLError):
             json_request(
@@ -3496,6 +3495,8 @@ def capture_task(
                 expected_status={200},
             )
         raise
+    else:
+        return True
     finally:
         if frozen_mounts:
             with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
