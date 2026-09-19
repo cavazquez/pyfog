@@ -57,7 +57,19 @@ from pyfog.transfer import (
 MAX_RESPONSE_BYTES = 1_000_000
 MAX_AGENT_TCP_PORT = 65535
 MAX_AGENT_TOKEN_LENGTH = 256
+ASCII_CONTROL_MAX = 31
+ASCII_DELETE = 127
 DEFAULT_CHUNK_BYTES = 512 * 1024
+LEGACY_SECTOR_SIZE_BYTES = 512
+MANIFEST_VERSION_V2 = 2
+MAX_ARTIFACT_PARTITIONS = 4
+MAX_HOSTNAME_LENGTH = 253
+MAX_MANIFEST_ARTIFACTS = 512
+MAX_MANIFEST_DISKS = 128
+MAX_PARTITION_NUMBER = 128
+MBR_BOOT_SECTOR_BYTES = 446
+MIN_ARTIFACT_COUNT = 2
+MIN_GPT_PARTITIONS = 2
 MIN_RAID_DISKS = 2
 NO_TASK_EXIT = 3
 MAX_IMAGE_BYTES = 2**50
@@ -925,7 +937,7 @@ def validate_manifest_capabilities(
             "encryption": "none",
             "volumes": "partitions",
         }
-    elif version == 2:
+    elif version == MANIFEST_VERSION_V2:
         raw_capabilities = manifest.get("capabilities")
         if not isinstance(raw_capabilities, dict):
             raise ValueError("El manifiesto v2 debe declarar capacidades explícitas.")
@@ -1041,7 +1053,7 @@ def _validate_restore_disk_layout(
         last = sectors - 1
         if (
             size != sector * sectors
-            or sector != 512
+            or sector != LEGACY_SECTOR_SIZE_BYTES
             or not re.fullmatch(r"[0-9A-Fa-f]{8}", str(disk.get("mbr_disk_signature", "")))
         ):
             raise ValueError("La geometría MBR de la imagen no es segura.")
@@ -1054,7 +1066,7 @@ def _validate_restore_disk_layout(
         if (
             not isinstance(boot_sector, dict)
             or boot_sector.get("path") != "boot-sector.bin"
-            or boot_sector.get("size_bytes") != 446
+            or boot_sector.get("size_bytes") != MBR_BOOT_SECTOR_BYTES
             or boot_sector.get("compression") != "none"
         ):
             raise ValueError("El manifiesto MBR no contiene un boot sector de 446 bytes.")
@@ -1062,7 +1074,10 @@ def _validate_restore_disk_layout(
     partitions = disk.get("partitions")
     if not isinstance(partitions, list):
         raise TypeError("El manifiesto no contiene particiones.")
-    if len(partitions) < (2 if is_gpt else 1) or len(partitions) > 4:
+    if (
+        len(partitions) < (MIN_GPT_PARTITIONS if is_gpt else 1)
+        or len(partitions) > MAX_ARTIFACT_PARTITIONS
+    ):
         raise ValueError("La cantidad de particiones no es válida.")
     referenced: set[str] = set()
     numbers: set[int] = set()
@@ -1073,7 +1088,7 @@ def _validate_restore_disk_layout(
         boot_path = boot_sector["path"]
         if boot_path not in artifact_paths:
             raise ValueError("El manifiesto MBR no publica el artefacto de boot sector.")
-        if artifact_metadata[boot_path]["size_bytes"] != 446:
+        if artifact_metadata[boot_path]["size_bytes"] != MBR_BOOT_SECTOR_BYTES:
             raise ValueError("El artefacto de boot sector MBR debe medir 446 bytes.")
         referenced.add(boot_path)
     expected_filesystems = {
@@ -1089,7 +1104,7 @@ def _validate_restore_disk_layout(
         if not isinstance(partition, dict):
             raise TypeError("El manifiesto contiene una partición inválida.")
         number = manifest_int(partition.get("number"), "El número de partición", minimum=1)
-        if number > 128 or number in numbers:
+        if number > MAX_PARTITION_NUMBER or number in numbers:
             raise ValueError("La tabla contiene números de partición inválidos o repetidos.")
         numbers.add(number)
         role = partition.get("role")
@@ -1190,8 +1205,11 @@ def validate_restore_manifest(
     source_hostname = source.get("hostname")
     if (
         not isinstance(source_hostname, str)
-        or not 1 <= len(source_hostname) <= 253
-        or any(ord(character) < 32 or ord(character) == 127 for character in source_hostname)
+        or not 1 <= len(source_hostname) <= MAX_HOSTNAME_LENGTH
+        or any(
+            ord(character) <= ASCII_CONTROL_MAX or ord(character) == ASCII_DELETE
+            for character in source_hostname
+        )
     ):
         raise ValueError("El hostname de origen no es válido.")
     if manifest.get("architecture") != "x86_64":
@@ -1242,7 +1260,7 @@ def validate_restore_manifest(
             raise ValueError("El campo disk debe ser el primer disco del manifiesto.")
     else:
         raise ValueError("El manifiesto contiene una lista de discos inválida.")
-    if len(disks) > 128:
+    if len(disks) > MAX_MANIFEST_DISKS:
         raise ValueError("La imagen declara demasiados discos.")
     capabilities = manifest.get("capabilities")
     if isinstance(capabilities, dict) and capabilities.get("disks") != len(disks):
@@ -1261,7 +1279,7 @@ def validate_restore_manifest(
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
         raise TypeError("El manifiesto no contiene artefactos.")
-    if len(artifacts) < 2 or len(artifacts) > 512:
+    if len(artifacts) < MIN_ARTIFACT_COUNT or len(artifacts) > MAX_MANIFEST_ARTIFACTS:
         raise ValueError("La cantidad de artefactos no es válida.")
     artifact_paths: set[str] = set()
     artifact_metadata: dict[str, dict[str, Any]] = {}
@@ -1322,7 +1340,10 @@ def safe_artifact_path(value: str, *, allow_boot_sector: bool = False) -> str:
         or "\\" in value
         or value.startswith("/")
         or value.endswith("/")
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or any(
+            ord(character) <= ASCII_CONTROL_MAX or ord(character) == ASCII_DELETE
+            for character in value
+        )
         or any(part in {"", ".", ".."} for part in value.split("/"))
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value)
         or not (
