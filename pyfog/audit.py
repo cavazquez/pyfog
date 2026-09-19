@@ -31,18 +31,22 @@ def record_audit(
     """
 
     if outcome not in AUDIT_OUTCOMES:
-        raise ValueError("El resultado de auditoría no es válido.")
+        msg = "El resultado de auditoría no es válido."
+        raise ValueError(msg)
     if decision not in AUDIT_DECISIONS:
-        raise ValueError("La decisión de auditoría no es válida.")
+        msg = "La decisión de auditoría no es válida."
+        raise ValueError(msg)
     if (
         not action
         or len(action) > MAX_AUDIT_ACTION_LENGTH
         or not resource_type
         or len(resource_type) > MAX_AUDIT_RESOURCE_TYPE_LENGTH
     ):
-        raise ValueError("La acción o el tipo de recurso de auditoría no es válido.")
+        msg = "La acción o el tipo de recurso de auditoría no es válido."
+        raise ValueError(msg)
     if len(resource_id) > MAX_AUDIT_RESOURCE_ID_LENGTH:
-        raise ValueError("El identificador del recurso de auditoría es demasiado largo.")
+        msg = "El identificador del recurso de auditoría es demasiado largo."
+        raise ValueError(msg)
     event = AuditEvent(
         actor_user_id=actor_user_id,
         actor_host_id=actor_host_id,
