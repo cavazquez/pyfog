@@ -4,12 +4,21 @@ import pytest
 
 from pyfog.layouts import (
     LayoutError,
+    Luks2Layout,
+    LvmLinearLayout,
+    Raid1Layout,
     filesystem_tool,
+    luks2_layout_from_manifest,
+    luks2_layout_to_manifest,
+    lvm_layout_from_manifest,
+    lvm_layout_to_manifest,
     lvm_restore_commands,
     parse_btrfs_subvolumes,
     parse_luks2_metadata,
     parse_lvm_linear_reports,
     parse_mdraid1_export,
+    raid1_layout_from_manifest,
+    raid1_layout_to_manifest,
     raid1_restore_commands,
     validate_luks2_match,
 )
@@ -140,3 +149,48 @@ def test_raid_restore_requires_the_declared_stable_member_order():
             ["/dev/vda1", "/dev/vdb1"],
             member_ids=("wwn:disk-b", "wwn:disk-a"),
         )
+
+
+def test_layout_manifest_contracts_round_trip_and_reject_unsafe_values():
+    lvm = LvmLinearLayout("pv-1", "vg", "vg-1", "root", "lv-1", 100)
+    assert lvm_layout_from_manifest(lvm_layout_to_manifest(lvm)) == lvm
+    raid = Raid1Layout("raid-1", "1.2", ("wwn:a", "wwn:b"), 200)
+    assert raid1_layout_from_manifest(raid1_layout_to_manifest(raid)) == raid
+    luks = Luks2Layout("luks-1", "aes-xts-plain64", 4096)
+    assert luks2_layout_from_manifest(luks2_layout_to_manifest(luks)) == luks
+
+    with pytest.raises(LayoutError, match="LVM"):
+        lvm_layout_from_manifest({"type": "ext4", "size_bytes": 1})
+    with pytest.raises(LayoutError, match="identidades"):
+        raid1_layout_from_manifest(
+            {"level": 1, "metadata": "1.2", "member_ids": ["path:a", "path:b"], "size_bytes": 1}
+        )
+    with pytest.raises(LayoutError, match="sector"):
+        luks2_layout_from_manifest(
+            {"type": "luks2", "uuid": "luks-1", "cipher": "aes", "sector_size": 1024}
+        )
+
+
+def test_layout_parsers_fail_closed_for_malformed_reports_and_devices():
+    valid_pv = report("pv", [{"pv_uuid": "pv-1"}])
+    valid_vg = report("vg", [{"vg_name": "vg", "vg_uuid": "vg-1"}])
+    valid_lv = report(
+        "lv",
+        [{"lv_name": "root", "lv_uuid": "lv-1", "vg_name": "vg", "vg_uuid": "vg-1"}],
+    )
+    with pytest.raises(LayoutError, match="JSON"):
+        parse_lvm_linear_reports("not-json", valid_vg, valid_lv)
+    with pytest.raises(LayoutError, match="tamaño"):
+        parse_lvm_linear_reports(
+            valid_pv,
+            valid_vg,
+            valid_lv.replace('"lv_uuid": "lv-1"', '"lv_uuid": "lv-1", "lv_size": "0B"'),
+        )
+    with pytest.raises(LayoutError, match="dispositivo"):
+        lvm_restore_commands(LvmLinearLayout("pv", "vg", "vg", "lv", "lv", 1), "vda")
+    with pytest.raises(LayoutError, match="filesystem"):
+        filesystem_tool("zfs")
+    with pytest.raises(LayoutError, match="raíz"):
+        parse_btrfs_subvolumes("ID 256 gen 10 top level 5 path @home")
+    with pytest.raises(LayoutError, match="estado"):
+        parse_mdraid1_export("MD_LEVEL=raid1\nMD_STATE=degraded")
