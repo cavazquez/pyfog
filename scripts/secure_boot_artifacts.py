@@ -18,6 +18,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_DATE_EPOCH = 1_704_067_200
+PE_HEADER_BYTES = 0x40
 SECURE_MANIFEST_NAME = "secure-boot-manifest.json"
 
 
@@ -82,8 +83,8 @@ def _digest(path: Path) -> str:
 def _is_pe_image(path: Path) -> bool:
     try:
         with path.open("rb") as stream:
-            header = stream.read(0x40)
-            if len(header) < 0x40 or header[:2] != b"MZ":
+            header = stream.read(PE_HEADER_BYTES)
+            if len(header) < PE_HEADER_BYTES or header[:2] != b"MZ":
                 return False
             pe_offset = int.from_bytes(header[0x3C:0x40], "little")
             if pe_offset < 0 or pe_offset > 1024 * 1024:
