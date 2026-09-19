@@ -31,6 +31,11 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["."]
 faulthandler_timeout = 30
+# Starlette 1.6.0 still evaluates this deprecated AnyIO alias at import time. Remove this
+# narrowly scoped filter when the upstream fix from Starlette #3498 is released.
+filterwarnings = [
+  "ignore:^The anyio\\.abc\\.BlockingPortal alias is deprecated, use anyio\\.from_thread\\.BlockingPortal instead\\.$:DeprecationWarning:starlette\\.testclient",
+]
 
 [tool.mypy]
 python_version = "3.12"
