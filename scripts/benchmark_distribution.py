@@ -20,7 +20,8 @@ def load_document(path: Path) -> tuple[list[DistributionMeasurement], Distributi
     try:
         value: Any = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"No se pudo leer el benchmark: {error}") from None
+        msg = f"No se pudo leer el benchmark: {error}"
+        raise ValueError(msg) from None
     records: object
     if isinstance(value, list):
         records = value
@@ -32,7 +33,8 @@ def load_document(path: Path) -> tuple[list[DistributionMeasurement], Distributi
         records = None
         topology_value = {}
     if not isinstance(records, list):
-        raise TypeError("El benchmark debe contener una lista measurements.")
+        msg = "El benchmark debe contener una lista measurements."
+        raise TypeError(msg)
     return (
         [DistributionMeasurement.model_validate(record) for record in records],
         DistributionTopology.model_validate(topology_value),
