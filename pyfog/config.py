@@ -17,7 +17,8 @@ def environment_flag(name: str, *, default: bool = False) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise ValueError(f"{name} debe ser true o false.")
+    msg = f"{name} debe ser true o false."
+    raise ValueError(msg)
 
 
 def environment_list(name: str) -> list[str]:
@@ -32,20 +33,23 @@ def environment_int(name: str, *, default: int) -> int:
     try:
         return int(value)
     except ValueError:
-        raise ValueError(f"{name} debe ser un entero.") from None
+        msg = f"{name} debe ser un entero."
+        raise ValueError(msg) from None
 
 
 def session_secret() -> str:
     value = os.getenv("PYFOG_SECRET_KEY", "")
     secret_file = os.getenv("PYFOG_SECRET_KEY_FILE", "")
     if value and secret_file:
-        raise ValueError("Usá PYFOG_SECRET_KEY o PYFOG_SECRET_KEY_FILE, no ambos.")
+        msg = "Usá PYFOG_SECRET_KEY o PYFOG_SECRET_KEY_FILE, no ambos."
+        raise ValueError(msg)
     if not secret_file:
         return value
     try:
         return Path(secret_file).read_text(encoding="utf-8").strip()
     except OSError as error:
-        raise ValueError("No se pudo leer PYFOG_SECRET_KEY_FILE.") from error
+        msg = "No se pudo leer PYFOG_SECRET_KEY_FILE."
+        raise ValueError(msg) from error
 
 
 @dataclass(frozen=True)
@@ -84,38 +88,51 @@ class Settings:
         self, allowed_hosts: list[str], trusted_proxy_ips: list[str]
     ) -> None:
         if self.production and len(self.secret_key) < MIN_PRODUCTION_SECRET_LENGTH:
-            raise ValueError("PYFOG_SECRET_KEY debe tener al menos 32 caracteres en producción.")
+            msg = "PYFOG_SECRET_KEY debe tener al menos 32 caracteres en producción."
+            raise ValueError(msg)
         if not allowed_hosts:
             if self.production:
-                raise ValueError("PYFOG_ALLOWED_HOSTS debe configurarse en producción.")
+                msg = "PYFOG_ALLOWED_HOSTS debe configurarse en producción."
+                raise ValueError(msg)
             allowed_hosts.extend(DEVELOPMENT_ALLOWED_HOSTS)
         if self.production and self.debug:
-            raise ValueError("PYFOG_DEBUG no puede activarse en producción.")
+            msg = "PYFOG_DEBUG no puede activarse en producción."
+            raise ValueError(msg)
         if self.production and "*" in allowed_hosts:
-            raise ValueError("PYFOG_ALLOWED_HOSTS no puede incluir * en producción.")
+            msg = "PYFOG_ALLOWED_HOSTS no puede incluir * en producción."
+            raise ValueError(msg)
         if self.production and not trusted_proxy_ips:
-            raise ValueError("PYFOG_TRUSTED_PROXY_IPS debe configurarse en producción.")
+            msg = "PYFOG_TRUSTED_PROXY_IPS debe configurarse en producción."
+            raise ValueError(msg)
         if self.production and "*" in trusted_proxy_ips:
-            raise ValueError("PYFOG_TRUSTED_PROXY_IPS no puede incluir * en producción.")
+            msg = "PYFOG_TRUSTED_PROXY_IPS no puede incluir * en producción."
+            raise ValueError(msg)
 
     def _validate_limits(self) -> None:
         if self.max_body_bytes <= 0:
-            raise ValueError("max_body_bytes debe ser positivo.")
+            msg = "max_body_bytes debe ser positivo."
+            raise ValueError(msg)
         if self.token_seconds <= 0:
-            raise ValueError("token_seconds debe ser positivo.")
+            msg = "token_seconds debe ser positivo."
+            raise ValueError(msg)
         if self.token_rotation_grace_seconds <= 0:
-            raise ValueError("token_rotation_grace_seconds debe ser positivo.")
+            msg = "token_rotation_grace_seconds debe ser positivo."
+            raise ValueError(msg)
         if not 0 < self.max_chunk_bytes <= self.max_body_bytes:
-            raise ValueError("max_chunk_bytes debe ser positivo y caber en max_body_bytes.")
+            msg = "max_chunk_bytes debe ser positivo y caber en max_body_bytes."
+            raise ValueError(msg)
         if self.max_image_bytes <= 0:
-            raise ValueError("max_image_bytes debe ser positivo.")
+            msg = "max_image_bytes debe ser positivo."
+            raise ValueError(msg)
         if self.task_lease_seconds <= 0 or self.task_heartbeat_seconds <= 0:
-            raise ValueError("Los tiempos de tareas deben ser positivos.")
+            msg = "Los tiempos de tareas deben ser positivos."
+            raise ValueError(msg)
         if (
             self.coordinator_lease_seconds <= 0
             or self.coordinator_lease_seconds > MAX_COORDINATOR_LEASE_SECONDS
         ):
-            raise ValueError("coordinator_lease_seconds debe estar entre 1 y 300 segundos.")
+            msg = "coordinator_lease_seconds debe estar entre 1 y 300 segundos."
+            raise ValueError(msg)
 
     def __post_init__(self) -> None:
         allowed_hosts = [host.strip() for host in self.allowed_hosts if host.strip()]
@@ -123,7 +140,8 @@ class Settings:
         self._validate_production_settings(allowed_hosts, trusted_proxy_ips)
         self._validate_limits()
         if self.min_storage_free_bytes < 0:
-            raise ValueError("min_storage_free_bytes no puede ser negativo.")
+            msg = "min_storage_free_bytes no puede ser negativo."
+            raise ValueError(msg)
         if not self.secret_key:
             # A restart invalidates development sessions; no shared default secret.
             object.__setattr__(self, "secret_key", secrets.token_urlsafe(48))
