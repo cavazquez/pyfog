@@ -14,6 +14,9 @@ from pyfog.models import LoginSession, User
 from pyfog.rbac import ROLES
 from pyfog.security import passwords
 
+MAX_PASSWORD_LENGTH = 1024
+MIN_PASSWORD_LENGTH = 12
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Administración local de PyFog")
@@ -42,10 +45,17 @@ def main() -> None:
             parser.error("El usuario ya existe. Usá change-password para recuperar acceso.")
         if args.command == "change-password" and not user:
             parser.error("El usuario no existe.")
-        password = getpass.getpass("Contraseña (mínimo 12 caracteres): ")
+        password = getpass.getpass(f"Contraseña (mínimo {MIN_PASSWORD_LENGTH} caracteres): ")
         confirmation = getpass.getpass("Repetir contraseña: ")
-        if len(password) < 12 or len(password) > 1024 or password != confirmation:
-            parser.error("Las contraseñas deben coincidir y tener entre 12 y 1024 caracteres.")
+        if (
+            len(password) < MIN_PASSWORD_LENGTH
+            or len(password) > MAX_PASSWORD_LENGTH
+            or password != confirmation
+        ):
+            parser.error(
+                "Las contraseñas deben coincidir y tener entre "
+                f"{MIN_PASSWORD_LENGTH} y {MAX_PASSWORD_LENGTH} caracteres."
+            )
         if user:
             user.password_hash = passwords.hash(password)
             db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))

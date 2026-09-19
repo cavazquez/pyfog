@@ -12,6 +12,7 @@ from pyfog.coordinator import CoordinatorError, acquire_lease, assert_fenced, re
 from pyfog.models import LoginAttempt, LoginSession, User, now
 from pyfog.rbac import has_permission, role_of
 
+MAX_LOGIN_ATTEMPTS = 8
 passwords = PasswordHash.recommended()
 DUMMY_HASH = passwords.hash(secrets.token_urlsafe(32))
 
@@ -117,7 +118,7 @@ def authenticate(request: Request, db: Session, username: str, password: str) ->
         )
         or 0
     )
-    if attempts >= 8:
+    if attempts >= MAX_LOGIN_ATTEMPTS:
         db.commit()
         raise HTTPException(429, "Demasiados intentos. Volvé a intentar en 15 minutos.")
     user = db.scalar(select(User).where(User.username == username))
