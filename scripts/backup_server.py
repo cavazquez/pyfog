@@ -50,16 +50,19 @@ def utc_now() -> str:
 def sqlite_path(database_url: str) -> Path:
     prefix = "sqlite:///"
     if not database_url.startswith(prefix) or "?" in database_url:
-        raise BackupError("El backup/restore sólo admite una URL SQLite sin parámetros.")
+        msg = "El backup/restore sólo admite una URL SQLite sin parámetros."
+        raise BackupError(msg)
     value = database_url[len(prefix) :]
     if value in {":memory:", ""}:
-        raise BackupError("La base SQLite debe ser un archivo persistente.")
+        msg = "La base SQLite debe ser un archivo persistente."
+        raise BackupError(msg)
     return Path(value).resolve() if not value.startswith("/") else Path(value)
 
 
 def require_directory(path: Path, label: str) -> None:
     if path.is_symlink() or not path.exists() or not path.is_dir():
-        raise BackupError(f"{label} no es un directorio seguro: {path}")
+        msg = f"{label} no es un directorio seguro: {path}"
+        raise BackupError(msg)
 
 
 def iter_files(root: Path) -> Iterator[Path]:
@@ -70,19 +73,22 @@ def iter_files(root: Path) -> Iterator[Path]:
         return
     for entry in sorted(root.iterdir(), key=lambda item: item.name):
         if entry.is_symlink():
-            raise BackupError(f"No se permiten enlaces simbólicos en el backup: {entry}")
+            msg = f"No se permiten enlaces simbólicos en el backup: {entry}"
+            raise BackupError(msg)
         if entry.is_dir():
             yield from iter_files(entry)
         elif entry.is_file():
             yield entry
         else:
-            raise BackupError(f"Entrada no regular en el backup: {entry}")
+            msg = f"Entrada no regular en el backup: {entry}"
+            raise BackupError(msg)
 
 
 def copy_tree(source: Path, destination: Path, label: str) -> None:
     if not source.exists():
         if source.is_symlink():
-            raise BackupError(f"{label} no es un directorio seguro: {source}")
+            msg = f"{label} no es un directorio seguro: {source}"
+            raise BackupError(msg)
         destination.mkdir(parents=True, exist_ok=True, mode=0o750)
         return
     require_directory(source, label)
@@ -92,13 +98,15 @@ def copy_tree(source: Path, destination: Path, label: str) -> None:
     for entry in sorted(source.iterdir(), key=lambda item: item.name):
         target = destination / entry.name
         if entry.is_symlink():
-            raise BackupError(f"No se permiten enlaces simbólicos en {label}: {entry}")
+            msg = f"No se permiten enlaces simbólicos en {label}: {entry}"
+            raise BackupError(msg)
         if entry.is_dir():
             copy_tree(entry, target, label)
         elif entry.is_file():
             shutil.copy2(entry, target)
         else:
-            raise BackupError(f"Entrada no regular en {label}: {entry}")
+            msg = f"Entrada no regular en {label}: {entry}"
+            raise BackupError(msg)
 
 
 def sha256_file(path: Path) -> str:
@@ -108,7 +116,8 @@ def sha256_file(path: Path) -> str:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
     except OSError as error:
-        raise BackupError(f"No se pudo leer {path}: {error}") from None
+        msg = f"No se pudo leer {path}: {error}"
+        raise BackupError(msg) from None
     return digest.hexdigest()
 
 
@@ -126,15 +135,18 @@ def sqlite_revision(database: Path) -> str | None:
     except sqlite3.OperationalError as error:
         if "no such table: alembic_version" in str(error):
             return None
-        raise BackupError(f"No se pudo leer la versión de la base: {error}") from None
+        msg = f"No se pudo leer la versión de la base: {error}"
+        raise BackupError(msg) from None
     except sqlite3.Error as error:
-        raise BackupError(f"No se pudo leer la versión de la base: {error}") from None
+        msg = f"No se pudo leer la versión de la base: {error}"
+        raise BackupError(msg) from None
     return str(row[0]) if row else None
 
 
 def backup_database(source: Path, destination: Path) -> None:
     if source.is_symlink() or not source.is_file():
-        raise BackupError(f"No existe una base SQLite regular para respaldar: {source}")
+        msg = f"No existe una base SQLite regular para respaldar: {source}"
+        raise BackupError(msg)
     try:
         with (
             sqlite3.connect(f"file:{source}?mode=ro", uri=True) as source_connection,
@@ -143,7 +155,8 @@ def backup_database(source: Path, destination: Path) -> None:
             source_connection.backup(destination_connection)
         destination.chmod(0o600)
     except (OSError, sqlite3.Error) as error:
-        raise BackupError(f"No se pudo crear la copia consistente de SQLite: {error}") from None
+        msg = f"No se pudo crear la copia consistente de SQLite: {error}"
+        raise BackupError(msg) from None
 
 
 def file_records(root: Path) -> list[dict[str, str]]:
@@ -160,7 +173,8 @@ def file_records(root: Path) -> list[dict[str, str]]:
 
 def create_backup(database: Path, image_store: Path, output: Path) -> None:
     if output.exists() or output.is_symlink():
-        raise BackupError(f"El destino del backup ya existe: {output}")
+        msg = f"El destino del backup ya existe: {output}"
+        raise BackupError(msg)
     output.parent.mkdir(parents=True, exist_ok=True)
     partial = output.with_name(f".{output.name}.partial-{uuid.uuid4().hex}")
     try:
@@ -190,18 +204,21 @@ def create_backup(database: Path, image_store: Path, output: Path) -> None:
 def load_backup_manifest(backup: Path) -> dict[str, Any]:
     path = backup / "backup-manifest.json"
     if path.is_symlink() or not path.is_file():
-        raise BackupError("Falta backup-manifest.json.")
+        msg = "Falta backup-manifest.json."
+        raise BackupError(msg)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise BackupError(f"El manifiesto de backup no es JSON válido: {error}") from None
+        msg = f"El manifiesto de backup no es JSON válido: {error}"
+        raise BackupError(msg) from None
     if (
         not isinstance(payload, dict)
         or payload.get("format") != BACKUP_FORMAT
         or payload.get("version") != BACKUP_VERSION
         or not isinstance(payload.get("files"), list)
     ):
-        raise BackupError("El formato o versión del backup no es compatible.")
+        msg = "El formato o versión del backup no es compatible."
+        raise BackupError(msg)
     return payload
 
 
@@ -209,24 +226,29 @@ def verify_file_records(backup: Path, manifest: dict[str, Any]) -> None:
     expected: set[str] = set()
     for item in manifest["files"]:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-            raise BackupError("El manifiesto de backup contiene un archivo inválido.")
+            msg = "El manifiesto de backup contiene un archivo inválido."
+            raise BackupError(msg)
         relative = Path(item["path"])
         if relative.is_absolute() or ".." in relative.parts:
-            raise BackupError("El manifiesto de backup contiene una ruta insegura.")
+            msg = "El manifiesto de backup contiene una ruta insegura."
+            raise BackupError(msg)
         checksum = item.get("sha256")
         if not isinstance(checksum, str) or len(checksum) != SHA256_HEX_LENGTH:
-            raise BackupError("El manifiesto de backup contiene una suma inválida.")
+            msg = "El manifiesto de backup contiene una suma inválida."
+            raise BackupError(msg)
         expected.add(relative.as_posix())
         path = backup / relative
         if path.is_symlink() or not path.is_file() or sha256_file(path) != checksum:
-            raise BackupError(f"La suma del backup no coincide: {relative}")
+            msg = f"La suma del backup no coincide: {relative}"
+            raise BackupError(msg)
     actual = {
         path.relative_to(backup).as_posix()
         for path in iter_files(backup)
         if path.name != "backup-manifest.json"
     }
     if actual != expected:
-        raise BackupError("El backup contiene archivos faltantes o no declarados.")
+        msg = "El backup contiene archivos faltantes o no declarados."
+        raise BackupError(msg)
 
 
 def canonical_manifest_hash(manifest: ImageManifest) -> str:
@@ -246,61 +268,73 @@ def verify_catalog(backup: Path) -> None:
     require_directory(image_store, "El almacén respaldado")
     require_directory(published, "La publicación respaldada")
     if not database.is_file() or database.is_symlink():
-        raise BackupError("Falta database.sqlite3 en el backup.")
+        msg = "Falta database.sqlite3 en el backup."
+        raise BackupError(msg)
     try:
         with sqlite3.connect(database) as connection:
             connection.row_factory = sqlite3.Row
             foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
             if foreign_keys:
-                raise BackupError("La base del backup tiene referencias foráneas inválidas.")
+                msg = "La base del backup tiene referencias foráneas inválidas."
+                raise BackupError(msg)
             rows = connection.execute(
                 "SELECT id, status, deleted_at, manifest_json, manifest_sha256 FROM images"
             ).fetchall()
     except sqlite3.Error as error:
-        raise BackupError(f"No se pudo validar el catálogo del backup: {error}") from None
+        msg = f"No se pudo validar el catálogo del backup: {error}"
+        raise BackupError(msg) from None
     catalog = {str(row["id"]): row for row in rows}
     for row in rows:
         image_id = str(row["id"])
         try:
             uuid.UUID(image_id)
         except ValueError:
-            raise BackupError(f"La imagen tiene un UUID inválido: {image_id}") from None
+            msg = f"La imagen tiene un UUID inválido: {image_id}"
+            raise BackupError(msg) from None
         directory = published / image_id
         if row["deleted_at"] is not None:
             if directory.exists() or directory.is_symlink():
-                raise BackupError(f"La imagen eliminada todavía tiene publicación: {image_id}")
+                msg = f"La imagen eliminada todavía tiene publicación: {image_id}"
+                raise BackupError(msg)
             continue
         if row["status"] != "ready":
             if directory.exists() or directory.is_symlink():
-                raise BackupError(f"Una imagen no lista tiene publicación: {image_id}")
+                msg = f"Una imagen no lista tiene publicación: {image_id}"
+                raise BackupError(msg)
             continue
         if not directory.is_dir() or directory.is_symlink():
-            raise BackupError(f"Falta la publicación de la imagen lista: {image_id}")
+            msg = f"Falta la publicación de la imagen lista: {image_id}"
+            raise BackupError(msg)
         try:
             decoded = json.loads(row["manifest_json"])
             manifest = parse_image_manifest(decoded)
             if str(manifest.image_id) != image_id:
-                raise BackupError(f"El manifiesto no coincide con la imagen: {image_id}")
+                msg = f"El manifiesto no coincide con la imagen: {image_id}"
+                raise BackupError(msg)
             if row["manifest_sha256"] != canonical_manifest_hash(manifest):
-                raise BackupError(f"La suma del manifiesto no coincide: {image_id}")
+                msg = f"La suma del manifiesto no coincide: {image_id}"
+                raise BackupError(msg)
             verify_image_artifacts(manifest, directory)
         except (TypeError, json.JSONDecodeError, ValueError) as error:
-            raise BackupError(
-                f"La publicación de {image_id} no pasó la verificación: {error}"
-            ) from None
+            msg = f"La publicación de {image_id} no pasó la verificación: {error}"
+            raise BackupError(msg) from None
     try:
         for directory in sorted(published.iterdir(), key=lambda item: item.name):
             if directory.is_symlink() or not directory.is_dir():
-                raise BackupError(f"Entrada publicada insegura: {directory.name}")
+                msg = f"Entrada publicada insegura: {directory.name}"
+                raise BackupError(msg)
             if directory.name not in catalog:
-                raise BackupError(f"Publicación huérfana sin fila de catálogo: {directory.name}")
+                msg = f"Publicación huérfana sin fila de catálogo: {directory.name}"
+                raise BackupError(msg)
     except OSError as error:
-        raise BackupError(f"No se pudo inspeccionar las publicaciones: {error}") from None
+        msg = f"No se pudo inspeccionar las publicaciones: {error}"
+        raise BackupError(msg) from None
 
 
 def verify_backup(backup: Path) -> dict[str, Any]:
     if backup.is_symlink() or not backup.is_dir():
-        raise BackupError(f"El backup no es un directorio seguro: {backup}")
+        msg = f"El backup no es un directorio seguro: {backup}"
+        raise BackupError(msg)
     manifest = load_backup_manifest(backup)
     verify_file_records(backup, manifest)
     verify_catalog(backup)
@@ -309,9 +343,11 @@ def verify_backup(backup: Path) -> dict[str, Any]:
 
 def require_empty_target(path: Path, label: str) -> None:
     if path.is_symlink():
-        raise BackupError(f"El destino {label} es un enlace simbólico.")
+        msg = f"El destino {label} es un enlace simbólico."
+        raise BackupError(msg)
     if path.exists() and (not path.is_dir() or any(path.iterdir())):
-        raise BackupError(f"El destino {label} no está vacío: {path}")
+        msg = f"El destino {label} no está vacío: {path}"
+        raise BackupError(msg)
 
 
 def invalidate_after_restore(database: Path) -> None:
@@ -362,15 +398,18 @@ def invalidate_after_restore(database: Path) -> None:
             )
             connection.commit()
     except sqlite3.Error as error:
-        raise BackupError(f"No se pudo invalidar sesiones y leases recuperadas: {error}") from None
+        msg = f"No se pudo invalidar sesiones y leases recuperadas: {error}"
+        raise BackupError(msg) from None
 
 
 def restore_backup(backup: Path, database: Path, image_store: Path) -> None:
     verify_backup(backup)
     if database.exists() and database.is_symlink():
-        raise BackupError("La base de destino es un enlace simbólico.")
+        msg = "La base de destino es un enlace simbólico."
+        raise BackupError(msg)
     if database.exists() and (not database.is_file() or database.stat().st_size > 0):
-        raise BackupError("La base de destino debe pertenecer a una instalación vacía.")
+        msg = "La base de destino debe pertenecer a una instalación vacía."
+        raise BackupError(msg)
     require_empty_target(image_store, "almacén de imágenes")
     database.parent.mkdir(parents=True, exist_ok=True)
     image_store.mkdir(parents=True, exist_ok=True, mode=0o750)
