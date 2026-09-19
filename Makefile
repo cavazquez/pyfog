@@ -1,4 +1,4 @@
-.PHONY: setup run lint lint-advisory format typecheck test audit-dependencies audit-secrets audit check migrate dev-up dev-migrate dev-admin dev-down dev-clean \
+.PHONY: setup run lint lint-advisory format typecheck test test-coverage coverage-module-check audit-dependencies audit-secrets audit check migrate dev-up dev-migrate dev-admin dev-down dev-clean \
 	lan-migrate lan-admin lab-check agent-check pxe-check \
 	image-manifest-check compatibility-check secure-boot-policy-check secure-boot-artifact-check release-check release-package e2e-plan e2e e2e-bios
 
@@ -51,6 +51,17 @@ test-coverage:
 	uv run pytest --cov=pyfog --cov=scripts --cov-report=term-missing --cov-report=xml
 	uv run coverage report --include='pyfog/*' --fail-under=70
 	uv run coverage report --include='scripts/*' --fail-under=40
+	$(MAKE) coverage-module-check
+
+coverage-module-check:
+	@for module in pyfog/api.py pyfog/web.py pyfog/layouts.py pyfog/domain.py pyfog/key_provider.py; do \
+		echo "Checking coverage floor 60% for $$module"; \
+		uv run coverage report --include="$$module" --fail-under=60; \
+	done
+	@for module in scripts/backup_server.py scripts/collect_inventory.py scripts/run_image_task.py scripts/secure_boot_artifacts.py scripts/secure_boot_policy.py; do \
+		echo "Checking coverage floor 35% for $$module"; \
+		uv run coverage report --include="$$module" --fail-under=35; \
+	done
 
 audit-dependencies:
 	uv run pip-audit --local --strict --progress-spinner off
