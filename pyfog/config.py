@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEVELOPMENT_ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
+MAX_COORDINATOR_LEASE_SECONDS = 300
+MIN_PRODUCTION_SECRET_LENGTH = 32
 
 
 def environment_flag(name: str, *, default: bool = False) -> bool:
@@ -78,15 +80,15 @@ class Settings:
         default_factory=lambda: environment_int("PYFOG_COORDINATOR_LEASE_SECONDS", default=15)
     )
 
-    def __post_init__(self) -> None:
-        allowed_hosts = [host.strip() for host in self.allowed_hosts if host.strip()]
-        trusted_proxy_ips = [host.strip() for host in self.trusted_proxy_ips if host.strip()]
-        if self.production and len(self.secret_key) < 32:
+    def _validate_production_settings(
+        self, allowed_hosts: list[str], trusted_proxy_ips: list[str]
+    ) -> None:
+        if self.production and len(self.secret_key) < MIN_PRODUCTION_SECRET_LENGTH:
             raise ValueError("PYFOG_SECRET_KEY debe tener al menos 32 caracteres en producción.")
         if not allowed_hosts:
             if self.production:
                 raise ValueError("PYFOG_ALLOWED_HOSTS debe configurarse en producción.")
-            allowed_hosts = DEVELOPMENT_ALLOWED_HOSTS.copy()
+            allowed_hosts.extend(DEVELOPMENT_ALLOWED_HOSTS)
         if self.production and self.debug:
             raise ValueError("PYFOG_DEBUG no puede activarse en producción.")
         if self.production and "*" in allowed_hosts:
@@ -95,6 +97,8 @@ class Settings:
             raise ValueError("PYFOG_TRUSTED_PROXY_IPS debe configurarse en producción.")
         if self.production and "*" in trusted_proxy_ips:
             raise ValueError("PYFOG_TRUSTED_PROXY_IPS no puede incluir * en producción.")
+
+    def _validate_limits(self) -> None:
         if self.max_body_bytes <= 0:
             raise ValueError("max_body_bytes debe ser positivo.")
         if self.token_seconds <= 0:
@@ -107,10 +111,19 @@ class Settings:
             raise ValueError("max_image_bytes debe ser positivo.")
         if self.task_lease_seconds <= 0 or self.task_heartbeat_seconds <= 0:
             raise ValueError("Los tiempos de tareas deben ser positivos.")
+        if (
+            self.coordinator_lease_seconds <= 0
+            or self.coordinator_lease_seconds > MAX_COORDINATOR_LEASE_SECONDS
+        ):
+            raise ValueError("coordinator_lease_seconds debe estar entre 1 y 300 segundos.")
+
+    def __post_init__(self) -> None:
+        allowed_hosts = [host.strip() for host in self.allowed_hosts if host.strip()]
+        trusted_proxy_ips = [host.strip() for host in self.trusted_proxy_ips if host.strip()]
+        self._validate_production_settings(allowed_hosts, trusted_proxy_ips)
+        self._validate_limits()
         if self.min_storage_free_bytes < 0:
             raise ValueError("min_storage_free_bytes no puede ser negativo.")
-        if self.coordinator_lease_seconds <= 0 or self.coordinator_lease_seconds > 300:
-            raise ValueError("coordinator_lease_seconds debe estar entre 1 y 300 segundos.")
         if not self.secret_key:
             # A restart invalidates development sessions; no shared default secret.
             object.__setattr__(self, "secret_key", secrets.token_urlsafe(48))
