@@ -5,6 +5,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+MAX_HOSTNAME_LABEL_LENGTH = 63
+MAX_HOSTNAME_LENGTH = 253
+
 
 def normalize_mac(value: str) -> str:
     value = value.strip()
@@ -83,7 +86,7 @@ class Inventory(Schema):
     schema_version: Literal[1]
     report_id: UUID
     collected_at: datetime
-    hostname: str = Field(min_length=1, max_length=253)
+    hostname: str = Field(min_length=1, max_length=MAX_HOSTNAME_LENGTH)
     firmware: Literal["uefi", "bios"] | None = None
     os: OperatingSystem
     kernel: ShortText
@@ -135,13 +138,13 @@ class ImageInput(Schema):
 
 
 class CloneInput(Schema):
-    hostname: str = Field(min_length=1, max_length=253)
+    hostname: str = Field(min_length=1, max_length=MAX_HOSTNAME_LENGTH)
 
     @field_validator("hostname")
     @classmethod
     def valid_hostname(cls, value: str) -> str:
         if (
-            len(value) > 253
+            len(value) > MAX_HOSTNAME_LENGTH
             or value.startswith(".")
             or value.endswith(".")
             or ".." in value
@@ -149,7 +152,10 @@ class CloneInput(Schema):
         ):
             raise ValueError("Ingresá un hostname Linux válido para el clon.")
         labels = value.split(".")
-        if any(len(label) > 63 or label.startswith("-") or label.endswith("-") for label in labels):
+        if any(
+            len(label) > MAX_HOSTNAME_LABEL_LENGTH or label.startswith("-") or label.endswith("-")
+            for label in labels
+        ):
             raise ValueError("Cada segmento del hostname debe ser válido.")
         return value.lower()
 

@@ -10,6 +10,8 @@ from pydantic import Field, field_validator
 from pyfog.plugins import PluginCall, PluginResponse, PluginRunner
 from pyfog.schemas import Schema
 
+MAX_DNS_NAME_LENGTH = 253
+
 
 class DomainIntegrationError(ValueError):
     """A domain request is invalid or the selected integration is unavailable."""
@@ -19,9 +21,13 @@ class DomainJoinRequest(Schema):
     """Secret-free AD/LDAP join intent passed to a domain plugin."""
 
     host_id: UUID
-    domain: str = Field(min_length=1, max_length=253, pattern=r"^[A-Za-z0-9.-]+$")
+    domain: str = Field(min_length=1, max_length=MAX_DNS_NAME_LENGTH, pattern=r"^[A-Za-z0-9.-]+$")
     organizational_unit: str = Field(default="", max_length=255, pattern=r"^[A-Za-z0-9=, ._/-]*$")
-    hostname: str = Field(min_length=1, max_length=253, pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+    hostname: str = Field(
+        min_length=1,
+        max_length=MAX_DNS_NAME_LENGTH,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9.-]*$",
+    )
     dns_servers: list[str] = Field(default_factory=list, max_length=8)
     secret_ref: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._:/-]+$")
     idempotency_key: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._:/-]+$")
@@ -29,7 +35,7 @@ class DomainJoinRequest(Schema):
     @field_validator("dns_servers")
     @classmethod
     def validate_dns_servers(cls, value: list[str]) -> list[str]:
-        if any(len(server) > 253 or not server for server in value):
+        if any(len(server) > MAX_DNS_NAME_LENGTH or not server for server in value):
             raise ValueError("Los servidores DNS del dominio no son válidos.")
         return value
 
