@@ -91,9 +91,11 @@ class ImageRaidArray(Schema):
     @model_validator(mode="after")
     def validate_member_identities(self) -> "ImageRaidArray":
         if any(not member or member.startswith("path:") for member in self.member_ids):
-            raise ValueError("RAID1 debe usar identidades estables, nunca el orden /dev.")
+            msg = "RAID1 debe usar identidades estables, nunca el orden /dev."
+            raise ValueError(msg)
         if len(set(self.member_ids)) != len(self.member_ids):
-            raise ValueError("RAID1 no puede repetir identidades de miembros.")
+            msg = "RAID1 no puede repetir identidades de miembros."
+            raise ValueError(msg)
         return self
 
 
@@ -106,7 +108,8 @@ def validate_relative_path(value: str) -> str:
         or "\\" in value
         or any(ord(char) <= ASCII_CONTROL_MAX or ord(char) == ASCII_DELETE for char in value)
     ):
-        raise ValueError("La ruta del artefacto debe ser ASCII relativa y no contener controles.")
+        msg = "La ruta del artefacto debe ser ASCII relativa y no contener controles."
+        raise ValueError(msg)
     path = PurePosixPath(value)
     parts = value.split("/")
     if (
@@ -115,9 +118,11 @@ def validate_relative_path(value: str) -> str:
         or any(part in {"", ".", ".."} for part in parts)
         or value.endswith("/")
     ):
-        raise ValueError("La ruta del artefacto no puede salir del directorio de la imagen.")
+        msg = "La ruta del artefacto no puede salir del directorio de la imagen."
+        raise ValueError(msg)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", value):
-        raise ValueError("La ruta del artefacto contiene caracteres no permitidos.")
+        msg = "La ruta del artefacto contiene caracteres no permitidos."
+        raise ValueError(msg)
     return value
 
 
@@ -139,7 +144,8 @@ class ImageArtifact(Schema):
     @model_validator(mode="after")
     def validate_blocks(self) -> "ImageArtifact":
         if self.blocks is not None and self.blocks.size_bytes != self.size_bytes:
-            raise ValueError("El índice de bloques no coincide con el tamaño del artefacto.")
+            msg = "El índice de bloques no coincide con el tamaño del artefacto."
+            raise ValueError(msg)
         return self
 
 
@@ -168,15 +174,18 @@ class ImageCapabilities(Schema):
     @classmethod
     def unique_filesystems(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
-            raise ValueError("Las capacidades no pueden repetir sistemas de archivos.")
+            msg = "Las capacidades no pueden repetir sistemas de archivos."
+            raise ValueError(msg)
         return sorted(value)
 
     @model_validator(mode="after")
     def validate_profile_names(self) -> "ImageCapabilities":
         if self.encryption not in {"none", "luks2"}:
-            raise ValueError("El perfil de cifrado no es válido.")
+            msg = "El perfil de cifrado no es válido."
+            raise ValueError(msg)
         if self.volumes not in {"partitions", "lvm", "lvm-linear", "raid1"}:
-            raise ValueError("El perfil de volúmenes no es válido.")
+            msg = "El perfil de volúmenes no es válido."
+            raise ValueError(msg)
         return self
 
 
@@ -215,28 +224,35 @@ class ImagePartition(Schema):
             "swap": {"swap"},
         }[self.role]
         if self.filesystem not in expected_filesystems or self.mountpoint != expected_mountpoint:
-            raise ValueError(f"La partición {self.role} no coincide con su sistema de archivos.")
+            msg = f"La partición {self.role} no coincide con su sistema de archivos."
+            raise ValueError(msg)
         if self.role == "swap" and self.artifact is not None:
-            raise ValueError("La partición swap no puede tener un artefacto de datos.")
+            msg = "La partición swap no puede tener un artefacto de datos."
+            raise ValueError(msg)
         if self.role != "swap" and self.artifact is None:
-            raise ValueError(f"La partición {self.role} requiere un artefacto de datos.")
+            msg = f"La partición {self.role} requiere un artefacto de datos."
+            raise ValueError(msg)
         if self.role == "esp" and not re.fullmatch(r"[0-9A-Fa-f]{8}", self.filesystem_uuid):
-            raise ValueError("La ESP debe conservar un UUID FAT32 de ocho dígitos hexadecimales.")
+            msg = "La ESP debe conservar un UUID FAT32 de ocho dígitos hexadecimales."
+            raise ValueError(msg)
         if self.role in {"boot", "root", "swap"}:
             try:
                 UUID(self.filesystem_uuid)
             except ValueError:
-                raise ValueError(
-                    f"La partición {self.role} requiere un UUID de filesystem válido."
-                ) from None
+                msg = f"La partición {self.role} requiere un UUID de filesystem válido."
+                raise ValueError(msg) from None
         if self.filesystem == "btrfs" and not self.subvolume:
-            raise ValueError("Una raíz Btrfs debe declarar su subvolumen.")
+            msg = "Una raíz Btrfs debe declarar su subvolumen."
+            raise ValueError(msg)
         if self.filesystem != "btrfs" and self.subvolume is not None:
-            raise ValueError("Sólo Btrfs puede declarar un subvolumen.")
+            msg = "Sólo Btrfs puede declarar un subvolumen."
+            raise ValueError(msg)
         if self.filesystem != "btrfs" and self.mount_options:
-            raise ValueError("Sólo Btrfs puede declarar opciones de montaje.")
+            msg = "Sólo Btrfs puede declarar opciones de montaje."
+            raise ValueError(msg)
         if any(not re.fullmatch(r"[A-Za-z0-9._+=:@/-]+", option) for option in self.mount_options):
-            raise ValueError("Las opciones de montaje contienen caracteres no permitidos.")
+            msg = "Las opciones de montaje contienen caracteres no permitidos."
+            raise ValueError(msg)
         return self
 
 
@@ -259,80 +275,101 @@ class ImageDisk(Schema):
     @model_validator(mode="after")
     def validate_geometry(self) -> "ImageDisk":
         if self.size_bytes != self.logical_sector_bytes * self.sector_count:
-            raise ValueError("La capacidad del disco no coincide con sus sectores lógicos.")
+            msg = "La capacidad del disco no coincide con sus sectores lógicos."
+            raise ValueError(msg)
         is_gpt = self.gpt_disk_guid is not None
         is_mbr = self.mbr_disk_signature is not None
         if is_gpt == is_mbr:
-            raise ValueError("El disco debe declarar exactamente una tabla GPT o MBR.")
+            msg = "El disco debe declarar exactamente una tabla GPT o MBR."
+            raise ValueError(msg)
         if is_gpt:
             if self.first_usable_sector is None or self.last_usable_sector is None:
-                raise ValueError("El disco GPT debe declarar su rango utilizable.")
+                msg = "El disco GPT debe declarar su rango utilizable."
+                raise ValueError(msg)
             if self.first_usable_sector >= self.last_usable_sector:
-                raise ValueError("El rango GPT utilizable no es válido.")
+                msg = "El rango GPT utilizable no es válido."
+                raise ValueError(msg)
             if self.last_usable_sector >= self.sector_count:
-                raise ValueError("El último sector GPT queda fuera de la capacidad del disco.")
+                msg = "El último sector GPT queda fuera de la capacidad del disco."
+                raise ValueError(msg)
             if self.boot_sector is not None:
-                raise ValueError("Un disco GPT no puede declarar un boot sector MBR.")
+                msg = "Un disco GPT no puede declarar un boot sector MBR."
+                raise ValueError(msg)
             if len(self.partitions) < MIN_GPT_PARTITIONS:
-                raise ValueError("El GPT debe incluir al menos una ESP y una raíz.")
+                msg = "El GPT debe incluir al menos una ESP y una raíz."
+                raise ValueError(msg)
         else:
             if any(
                 value is not None
                 for value in (self.first_usable_sector, self.last_usable_sector, self.gpt_disk_guid)
             ):
-                raise ValueError("Un disco MBR no puede declarar geometría o GUID GPT.")
+                msg = "Un disco MBR no puede declarar geometría o GUID GPT."
+                raise ValueError(msg)
             if self.logical_sector_bytes != LEGACY_SECTOR_SIZE_BYTES:
-                raise ValueError("El arranque BIOS/MBR requiere sectores lógicos de 512 bytes.")
+                msg = "El arranque BIOS/MBR requiere sectores lógicos de 512 bytes."
+                raise ValueError(msg)
             if self.boot_sector is None:
-                raise ValueError("El disco MBR debe conservar un artefacto de boot sector.")
+                msg = "El disco MBR debe conservar un artefacto de boot sector."
+                raise ValueError(msg)
             if (
                 self.boot_sector.size_bytes != MBR_BOOT_SECTOR_BYTES
                 or self.boot_sector.compression != "none"
                 or self.boot_sector.path != "boot-sector.bin"
             ):
-                raise ValueError(
-                    "El boot sector MBR debe ser boot-sector.bin, sin compresión y de 446 bytes."
-                )
+                msg = "El boot sector MBR debe ser boot-sector.bin, sin compresión y de 446 bytes."
+                raise ValueError(msg)
         if len({part.number for part in self.partitions}) != len(self.partitions):
-            raise ValueError("La tabla contiene números de partición repetidos.")
+            msg = "La tabla contiene números de partición repetidos."
+            raise ValueError(msg)
         partition_guids = [part.partition_guid for part in self.partitions]
         if is_gpt:
             if any(guid is None for guid in partition_guids):
-                raise ValueError("El GPT requiere GUIDs de partición.")
+                msg = "El GPT requiere GUIDs de partición."
+                raise ValueError(msg)
             if len(set(partition_guids)) != len(partition_guids):
-                raise ValueError("El GPT contiene GUIDs de partición repetidos.")
+                msg = "El GPT contiene GUIDs de partición repetidos."
+                raise ValueError(msg)
         elif any(guid is not None for guid in partition_guids):
-            raise ValueError("La tabla MBR no puede declarar GUIDs de partición GPT.")
+            msg = "La tabla MBR no puede declarar GUIDs de partición GPT."
+            raise ValueError(msg)
         if len({part.filesystem_uuid.lower() for part in self.partitions}) != len(self.partitions):
-            raise ValueError("La tabla contiene UUIDs de filesystem repetidos.")
+            msg = "La tabla contiene UUIDs de filesystem repetidos."
+            raise ValueError(msg)
         roles = {part.role for part in self.partitions}
         expected_roles = ("esp", "root") if is_gpt else ("root",)
         if not roles.issuperset(expected_roles):
             label = "GPT" if is_gpt else "MBR"
-            raise ValueError(f"El {label} debe incluir una raíz{' y una ESP' if is_gpt else ''}.")
+            msg = f"El {label} debe incluir una raíz{' y una ESP' if is_gpt else ''}."
+            raise ValueError(msg)
         for role in expected_roles:
             if sum(part.role == role for part in self.partitions) != 1:
                 label = "GPT" if is_gpt else "MBR"
-                raise ValueError(f"El {label} debe incluir una sola partición {role}.")
+                msg = f"El {label} debe incluir una sola partición {role}."
+                raise ValueError(msg)
         for role in ("boot", "swap"):
             if sum(part.role == role for part in self.partitions) > 1:
                 label = "GPT" if is_gpt else "MBR"
-                raise ValueError(f"El {label} no puede incluir más de una partición {role}.")
+                msg = f"El {label} no puede incluir más de una partición {role}."
+                raise ValueError(msg)
         ordered = sorted(self.partitions, key=lambda part: part.start_sector)
         first_sector = self.first_usable_sector if is_gpt else 2_048
         last_sector = self.last_usable_sector if is_gpt else self.sector_count - 1
         if first_sector is None or last_sector is None:
-            raise ValueError("La geometría del disco no declara un rango utilizable.")
+            msg = "La geometría del disco no declara un rango utilizable."
+            raise ValueError(msg)
         previous_end = first_sector - 1
         for part in ordered:
             end = part.start_sector + part.size_sectors - 1
             if part.start_sector < first_sector or end > last_sector:
                 label = "GPT utilizable" if is_gpt else "MBR seguro"
-                raise ValueError(f"Una partición queda fuera del rango {label}.")
+                msg = f"Una partición queda fuera del rango {label}."
+                raise ValueError(msg)
             if part.role == "esp" and not is_gpt:
-                raise ValueError("La tabla MBR no puede incluir una ESP UEFI.")
+                msg = "La tabla MBR no puede incluir una ESP UEFI."
+                raise ValueError(msg)
             if part.start_sector <= previous_end:
-                raise ValueError("Las particiones se superponen.")
+                msg = "Las particiones se superponen."
+                raise ValueError(msg)
             previous_end = end
         return self
 
@@ -361,35 +398,43 @@ class ImageManifest(Schema):
     @classmethod
     def version_is_integer(cls, value: object) -> object:
         if type(value) is not int or value not in SUPPORTED_IMAGE_FORMAT_VERSIONS:
-            raise ValueError("format_version debe ser el entero 1 o 2.")
+            msg = "format_version debe ser el entero 1 o 2."
+            raise ValueError(msg)
         return value
 
     @field_validator("created_at")
     @classmethod
     def valid_date(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
-            raise ValueError("La fecha de creación debe incluir su zona horaria.")
+            msg = "La fecha de creación debe incluir su zona horaria."
+            raise ValueError(msg)
         if value > datetime.now(UTC) + timedelta(minutes=10):
-            raise ValueError("La fecha de creación está en el futuro.")
+            msg = "La fecha de creación está en el futuro."
+            raise ValueError(msg)
         return value.astimezone(UTC)
 
     @model_validator(mode="after")
     def validate_artifact_references(self) -> "ImageManifest":
         paths = [artifact.path for artifact in self.artifacts]
         if len(set(paths)) != len(paths):
-            raise ValueError("El manifiesto contiene rutas de artefacto repetidas.")
+            msg = "El manifiesto contiene rutas de artefacto repetidas."
+            raise ValueError(msg)
         all_disks = self.disks or [self.disk]
         if self.disks:
             if self.disks[0] != self.disk:
-                raise ValueError("El campo disk debe ser el primer disco del manifiesto.")
+                msg = "El campo disk debe ser el primer disco del manifiesto."
+                raise ValueError(msg)
             if len({disk.disk_id for disk in self.disks if disk.disk_id}) != len(
                 [disk for disk in self.disks if disk.disk_id]
             ):
-                raise ValueError("Los discos del manifiesto deben tener identidades únicas.")
+                msg = "Los discos del manifiesto deben tener identidades únicas."
+                raise ValueError(msg)
             if len(self.disks) > 1 and any(not disk.disk_id for disk in self.disks):
-                raise ValueError("Una imagen multidisco debe identificar cada disco de origen.")
+                msg = "Una imagen multidisco debe identificar cada disco de origen."
+                raise ValueError(msg)
             if len(self.disks) > 1 and any(disk.disk_id.startswith("path:") for disk in self.disks):
-                raise ValueError("Una imagen multidisco no puede depender del orden /dev.")
+                msg = "Una imagen multidisco no puede depender del orden /dev."
+                raise ValueError(msg)
         partition_references: list[tuple[str, str]] = [
             (partition.artifact, partition.role)
             for disk in all_disks
@@ -413,9 +458,11 @@ class ImageManifest(Schema):
                 )
             )
             if not allow_shared_raid_root:
-                raise ValueError("Dos particiones no pueden compartir un artefacto.")
+                msg = "Dos particiones no pueden compartir un artefacto."
+                raise ValueError(msg)
         if set(paths) != set(partition_paths):
-            raise ValueError("Cada artefacto debe corresponder a una partición de datos.")
+            msg = "Cada artefacto debe corresponder a una partición de datos."
+            raise ValueError(msg)
         expected_commands = {
             "fat32": "partclone.fat",
             "ext4": "partclone.ext4",
@@ -429,34 +476,43 @@ class ImageManifest(Schema):
                     partition.role != "swap"
                     and expected_commands[partition.filesystem] not in commands
                 ):
-                    raise ValueError(f"Falta la herramienta para la partición {partition.role}.")
+                    msg = f"Falta la herramienta para la partición {partition.role}."
+                    raise ValueError(msg)
             if disk.mbr_disk_signature is not None and "mbr" not in commands:
-                raise ValueError("Falta la herramienta para validar el boot sector MBR.")
+                msg = "Falta la herramienta para validar el boot sector MBR."
+                raise ValueError(msg)
             if disk.gpt_disk_guid is not None and "mbr" in commands:
-                raise ValueError("Un manifiesto GPT no puede declarar herramientas MBR.")
+                msg = "Un manifiesto GPT no puede declarar herramientas MBR."
+                raise ValueError(msg)
         if self.system.id.lower() != "ubuntu":
-            raise ValueError("El manifiesto v1 sólo admite una imagen Ubuntu Linux.")
+            msg = "El manifiesto v1 sólo admite una imagen Ubuntu Linux."
+            raise ValueError(msg)
         return self
 
     @model_validator(mode="after")
     def validate_capability_declaration(self) -> "ImageManifest":
         if self.format_version == LEGACY_IMAGE_FORMAT_VERSION:
             if self.capabilities is not None:
-                raise ValueError("El manifiesto v1 no puede declarar capacidades v2.")
+                msg = "El manifiesto v1 no puede declarar capacidades v2."
+                raise ValueError(msg)
             if self.firmware.type != "uefi" or self.firmware.secure_boot is not False:
-                raise ValueError("El manifiesto v1 sólo admite firmware UEFI sin Secure Boot.")
+                msg = "El manifiesto v1 sólo admite firmware UEFI sin Secure Boot."
+                raise ValueError(msg)
             return self
         if self.capabilities is None:
-            raise ValueError("El manifiesto v2 debe declarar capacidades explícitas.")
+            msg = "El manifiesto v2 debe declarar capacidades explícitas."
+            raise ValueError(msg)
         if self.capabilities.firmware != self.firmware:
-            raise ValueError("Las capacidades de firmware no coinciden con el campo firmware.")
+            msg = "Las capacidades de firmware no coinciden con el campo firmware."
+            raise ValueError(msg)
         if (
             self.format_version == IMAGE_FORMAT_VERSION
             and self.firmware.type == "bios"
             and self.disks
             and len(self.disks) > 1
         ):
-            raise ValueError("El perfil BIOS multidisco no tiene un boot sector por disco.")
+            msg = "El perfil BIOS multidisco no tiene un boot sector por disco."
+            raise ValueError(msg)
         return self
 
 
@@ -601,21 +657,26 @@ def parse_image_manifest(value: bytes | str | dict[str, object]) -> ImageManifes
 
     if isinstance(value, (bytes, str)):
         if isinstance(value, bytes) and len(value) > MAX_MANIFEST_BYTES:
-            raise ValueError("El manifiesto supera el límite permitido.")
+            msg = "El manifiesto supera el límite permitido."
+            raise ValueError(msg)
         if isinstance(value, str) and len(value.encode("utf-8")) > MAX_MANIFEST_BYTES:
-            raise ValueError("El manifiesto supera el límite permitido.")
+            msg = "El manifiesto supera el límite permitido."
+            raise ValueError(msg)
         try:
             decoded = json.loads(value)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise ValueError("El manifiesto no contiene JSON válido.") from None
+            msg = "El manifiesto no contiene JSON válido."
+            raise ValueError(msg) from None
     else:
         decoded = value
     if not isinstance(decoded, dict):
-        raise TypeError("El manifiesto debe ser un objeto JSON.")
+        msg = "El manifiesto debe ser un objeto JSON."
+        raise TypeError(msg)
     try:
         return ImageManifest.model_validate(decoded)
     except ValueError as error:
-        raise ValueError(f"Manifiesto inválido: {error}") from None
+        msg = f"Manifiesto inválido: {error}"
+        raise ValueError(msg) from None
 
 
 def upgrade_manifest(value: bytes | str | dict[str, object]) -> ImageManifest:
@@ -634,7 +695,8 @@ def load_image_manifest(path: Path) -> ImageManifest:
     try:
         payload = path.read_bytes()
     except OSError as error:
-        raise ValueError(f"No se pudo leer el manifiesto: {error}") from None
+        msg = f"No se pudo leer el manifiesto: {error}"
+        raise ValueError(msg) from None
     return parse_image_manifest(payload)
 
 
@@ -644,37 +706,44 @@ def verify_image_artifacts(manifest: ImageManifest, root: Path) -> None:
     try:
         base = root.resolve(strict=True)
     except (OSError, RuntimeError) as error:
-        raise ValueError(f"No se pudo abrir el directorio de artefactos: {error}") from None
+        msg = f"No se pudo abrir el directorio de artefactos: {error}"
+        raise ValueError(msg) from None
     if not base.is_dir():
-        raise ValueError("El directorio de artefactos no es un directorio.")
+        msg = "El directorio de artefactos no es un directorio."
+        raise ValueError(msg)
     for artifact in manifest.artifacts:
         path = base / PurePosixPath(artifact.path)
         try:
             resolved = path.resolve(strict=True)
         except (OSError, RuntimeError):
-            raise ValueError(f"Falta el artefacto {artifact.path}.") from None
+            msg = f"Falta el artefacto {artifact.path}."
+            raise ValueError(msg) from None
         if resolved.parent != base and base not in resolved.parents:
-            raise ValueError(f"La ruta del artefacto sale del directorio: {artifact.path}.")
+            msg = f"La ruta del artefacto sale del directorio: {artifact.path}."
+            raise ValueError(msg)
         if path.is_symlink() or not resolved.is_file():
-            raise ValueError(f"El artefacto no es un archivo regular: {artifact.path}.")
+            msg = f"El artefacto no es un archivo regular: {artifact.path}."
+            raise ValueError(msg)
         if resolved.stat().st_size != artifact.size_bytes:
-            raise ValueError(f"El tamaño de {artifact.path} no coincide con el manifiesto.")
+            msg = f"El tamaño de {artifact.path} no coincide con el manifiesto."
+            raise ValueError(msg)
         digest = hashlib.sha256()
         try:
             with resolved.open("rb") as source:
                 for chunk in iter(lambda: source.read(1024 * 1024), b""):
                     digest.update(chunk)
         except OSError as error:
-            raise ValueError(f"No se pudo leer el artefacto {artifact.path}: {error}") from None
+            msg = f"No se pudo leer el artefacto {artifact.path}: {error}"
+            raise ValueError(msg) from None
         if digest.hexdigest() != artifact.sha256:
-            raise ValueError(f"La suma SHA-256 de {artifact.path} no coincide.")
+            msg = f"La suma SHA-256 de {artifact.path} no coincide."
+            raise ValueError(msg)
         if artifact.blocks is not None:
             try:
                 verify_complete_transfer(resolved, artifact.blocks)
             except (OSError, ValueError) as error:
-                raise ValueError(
-                    f"Los bloques de {artifact.path} no están verificados: {error}"
-                ) from None
+                msg = f"Los bloques de {artifact.path} no están verificados: {error}"
+                raise ValueError(msg) from None
 
 
 def validate_image_manifest(path: Path, artifacts_dir: Path | None = None) -> ImageManifest:
