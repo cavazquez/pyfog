@@ -13,10 +13,12 @@ def normalize_mac(value: str) -> str:
     value = value.strip()
     delimited = r"(?:[0-9a-fA-F]{2}([:-]))(?:[0-9a-fA-F]{2}\1){4}[0-9a-fA-F]{2}"
     if not re.fullmatch(delimited, value) and not re.fullmatch(r"[0-9a-fA-F]{12}", value):
-        raise ValueError("Ingresá una MAC válida, por ejemplo 52:54:00:12:34:56.")
+        msg = "Ingresá una MAC válida, por ejemplo 52:54:00:12:34:56."
+        raise ValueError(msg)
     compact = value.replace(":", "").replace("-", "").lower()
     if compact == "000000000000" or int(compact[:2], 16) & 1:
-        raise ValueError("La MAC debe identificar una interfaz unicast y no puede ser cero.")
+        msg = "La MAC debe identificar una interfaz unicast y no puede ser cero."
+        raise ValueError(msg)
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
 
 
@@ -104,23 +106,27 @@ class Inventory(Schema):
     @classmethod
     def version_is_integer(cls, value: object) -> object:
         if type(value) is not int:
-            raise ValueError("schema_version debe ser el entero 1.")
+            msg = "schema_version debe ser el entero 1."
+            raise ValueError(msg)
         return value
 
     @field_validator("collected_at")
     @classmethod
     def valid_date(cls, value: datetime) -> datetime:
         if value.tzinfo is None:
-            raise ValueError("La fecha debe incluir su zona horaria.")
+            msg = "La fecha debe incluir su zona horaria."
+            raise ValueError(msg)
         if value > datetime.now(UTC) + timedelta(minutes=10):
-            raise ValueError("La fecha de recolección está en el futuro; verificá el reloj.")
+            msg = "La fecha de recolección está en el futuro; verificá el reloj."
+            raise ValueError(msg)
         return value.astimezone(UTC)
 
     @field_validator("interfaces")
     @classmethod
     def unique_interfaces(cls, value: list[Interface]) -> list[Interface]:
         if len({i.name for i in value}) != len(value):
-            raise ValueError("Hay nombres de interfaces repetidos.")
+            msg = "Hay nombres de interfaces repetidos."
+            raise ValueError(msg)
         return value
 
 
@@ -150,13 +156,15 @@ class CloneInput(Schema):
             or ".." in value
             or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", value)
         ):
-            raise ValueError("Ingresá un hostname Linux válido para el clon.")
+            msg = "Ingresá un hostname Linux válido para el clon."
+            raise ValueError(msg)
         labels = value.split(".")
         if any(
             len(label) > MAX_HOSTNAME_LABEL_LENGTH or label.startswith("-") or label.endswith("-")
             for label in labels
         ):
-            raise ValueError("Cada segmento del hostname debe ser válido.")
+            msg = "Cada segmento del hostname debe ser válido."
+            raise ValueError(msg)
         return value.lower()
 
 
