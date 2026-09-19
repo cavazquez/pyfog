@@ -1,3 +1,6 @@
+import asyncio
+import contextlib
+import os
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -13,6 +16,29 @@ from pyfog.app import create_app
 from pyfog.config import Settings
 from pyfog.models import Host, User
 from pyfog.security import passwords
+
+
+def _patch_restricted_asyncio_wakeup() -> None:
+    """Keep AnyIO's cross-thread wakeup working in the local restricted sandbox."""
+
+    loop = asyncio.new_event_loop()
+    try:
+        try:
+            loop._csock.send(b"\0")
+        except PermissionError:
+
+            def write_to_self(event_loop):
+                csock = getattr(event_loop, "_csock", None)
+                if csock is not None:
+                    with contextlib.suppress(OSError):
+                        os.write(csock.fileno(), b"\0")
+
+            asyncio.selector_events.BaseSelectorEventLoop._write_to_self = write_to_self
+    finally:
+        loop.close()
+
+
+_patch_restricted_asyncio_wakeup()
 
 
 @pytest.fixture(scope="session")
