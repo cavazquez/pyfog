@@ -45,40 +45,53 @@ def build_reduction_plan(
 
     capabilities = manifest_capabilities(manifest)
     if capabilities.disks != 1 or capabilities.partition_table != "gpt":
-        raise ReductionError("La reducción sólo admite un disco GPT.")
+        msg = "La reducción sólo admite un disco GPT."
+        raise ReductionError(msg)
     if capabilities.encryption != "none" or capabilities.volumes != "partitions":
-        raise ReductionError("La reducción rechaza cifrado, LVM, RAID y otros volúmenes.")
+        msg = "La reducción rechaza cifrado, LVM, RAID y otros volúmenes."
+        raise ReductionError(msg)
     if source == destination or source.resolve() == destination.resolve():
-        raise ReductionError("El artefacto original y la variante no pueden ser el mismo archivo.")
+        msg = "El artefacto original y la variante no pueden ser el mismo archivo."
+        raise ReductionError(msg)
     if source.is_symlink() or not source.is_file():
-        raise ReductionError("El origen debe ser un archivo regular no enlazado.")
+        msg = "El origen debe ser un archivo regular no enlazado."
+        raise ReductionError(msg)
     if destination.exists() or destination.is_symlink():
-        raise ReductionError("La variante de salida no se sobrescribe.")
+        msg = "La variante de salida no se sobrescribe."
+        raise ReductionError(msg)
     disk = manifest.disk
     root = next((partition for partition in disk.partitions if partition.role == "root"), None)
     if root is None or root.filesystem != "ext4":
-        raise ReductionError("La reducción sólo admite una raíz ext4.")
+        msg = "La reducción sólo admite una raíz ext4."
+        raise ReductionError(msg)
     if any(partition.role == "swap" for partition in disk.partitions):
-        raise ReductionError("La reducción no mueve una partición swap.")
+        msg = "La reducción no mueve una partición swap."
+        raise ReductionError(msg)
     if target_size_bytes >= disk.size_bytes:
-        raise ReductionError("La variante reducida debe ser estrictamente menor que el origen.")
+        msg = "La variante reducida debe ser estrictamente menor que el origen."
+        raise ReductionError(msg)
     if target_size_bytes % disk.logical_sector_bytes:
-        raise ReductionError("El tamaño destino debe ser múltiplo del sector lógico.")
+        msg = "El tamaño destino debe ser múltiplo del sector lógico."
+        raise ReductionError(msg)
     if disk.first_usable_sector is None or disk.last_usable_sector is None:
-        raise ReductionError("El manifiesto no declara una geometría GPT completa.")
+        msg = "El manifiesto no declara una geometría GPT completa."
+        raise ReductionError(msg)
     target_sectors = target_size_bytes // disk.logical_sector_bytes
     gpt_tail = 34
     if target_sectors <= disk.first_usable_sector + 1 or target_sectors <= gpt_tail:
-        raise ReductionError("El destino no deja espacio para la geometría GPT.")
+        msg = "El destino no deja espacio para la geometría GPT."
+        raise ReductionError(msg)
     new_root_end = target_sectors - gpt_tail - 1
     if new_root_end < root.start_sector:
-        raise ReductionError("El destino no deja espacio para la raíz.")
+        msg = "El destino no deja espacio para la raíz."
+        raise ReductionError(msg)
     if (
         minimum_filesystem_bytes <= 0
         or minimum_filesystem_bytes
         > (new_root_end - root.start_sector + 1) * disk.logical_sector_bytes
     ):
-        raise ReductionError("El filesystem ext4 no cabe en el tamaño solicitado.")
+        msg = "El filesystem ext4 no cabe en el tamaño solicitado."
+        raise ReductionError(msg)
     return ReductionPlan(
         source=source,
         destination=destination,
@@ -141,7 +154,8 @@ def reduce_ext4_image(
             _reduce_with_loop(plan, temporary)
         temporary.replace(plan.destination)
     except (OSError, subprocess.SubprocessError, ValueError) as error:
-        raise ReductionError(f"La reducción no se publicó: {error}") from None
+        msg = f"La reducción no se publicó: {error}"
+        raise ReductionError(msg) from None
     else:
         return plan.destination
     finally:
@@ -153,14 +167,16 @@ def reduce_ext4_image(
 def _run_command(arguments: list[str]) -> None:
     executable = shutil.which(arguments[0])
     if not executable:
-        raise ReductionError(f"Falta la herramienta {arguments[0]}.")
+        msg = f"Falta la herramienta {arguments[0]}."
+        raise ReductionError(msg)
     subprocess.run([executable, *arguments[1:]], check=True, capture_output=True)  # noqa: S603
 
 
 def _run_output(arguments: list[str]) -> str:
     executable = shutil.which(arguments[0])
     if not executable:
-        raise ReductionError(f"Falta la herramienta {arguments[0]}.")
+        msg = f"Falta la herramienta {arguments[0]}."
+        raise ReductionError(msg)
     result = subprocess.run(  # noqa: S603 - arguments are fixed storage-tool parameters
         [executable, *arguments[1:]], check=True, capture_output=True, text=True
     )
@@ -174,7 +190,8 @@ def _reduce_with_loop(plan: ReductionPlan, working_image: Path) -> None:
     try:
         loop_device = _run_output(["losetup", "--find", "--show", "--partscan", str(working_image)])
         if not re.fullmatch(r"/dev/loop[0-9]+", loop_device):
-            raise ReductionError("losetup devolvió un dispositivo inesperado.")
+            msg = "losetup devolvió un dispositivo inesperado."
+            raise ReductionError(msg)
         root_device = f"{loop_device}p{plan.root_partition_number}"
         _run_command(["e2fsck", "-f", "-y", root_device])
         _run_command(["resize2fs", "-M", root_device])
