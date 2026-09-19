@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-import pyfog.plugins as plugins
+from pyfog import plugins
 from pyfog.domain import DomainJoinRequest, domain_plugin_call
 from pyfog.hooks import HookError, HookLedger, HookPlan, run_post_deploy_hooks
 from pyfog.plugins import (
@@ -20,6 +20,8 @@ from pyfog.plugins import (
     redact_plugin_message,
     request_id,
 )
+
+MIN_PLUGIN_NONCE_LENGTH = 10
 
 
 def make_descriptor(**overrides):
@@ -307,14 +309,15 @@ def test_plugin_runner_wraps_process_and_response_failures(monkeypatch):
         monkeypatch.setattr(plugins.subprocess, "run", fake_run)
 
     def raise_oserror(*_args, **_kwargs):
-        raise OSError("plugin unavailable")
+        raise OSError
 
     monkeypatch.setattr(plugins.subprocess, "run", raise_oserror)
     with pytest.raises(PluginError, match="no terminó"):
         runner.run("test-plugin", PluginCall(operation="run", payload={}))
 
     def raise_timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired("plugin", 1)
+        command = "plugin"
+        raise subprocess.TimeoutExpired(command, 1)
 
     monkeypatch.setattr(plugins.subprocess, "run", raise_timeout)
     with pytest.raises(PluginError, match="no terminó"):
@@ -361,7 +364,7 @@ def test_plugin_command_resolution_and_message_helpers(tmp_path, monkeypatch):
     with pytest.raises(PluginError, match="No se encontró"):
         PluginRunner._resolve_command(make_descriptor())
     assert isinstance(request_id(), type(uuid4()))
-    assert len(random_plugin_nonce()) > 10
+    assert len(random_plugin_nonce()) > MIN_PLUGIN_NONCE_LENGTH
     assert redact_plugin_message("token=secret") == "Plugin error (secret redacted)"
     assert redact_plugin_message("  plain   message ") == "plain message"
     assert redact_plugin_message("   ") == "Plugin error"
