@@ -57,19 +57,23 @@ from pyfog.transfer import (
 MAX_RESPONSE_BYTES = 1_000_000
 MAX_AGENT_TCP_PORT = 65535
 MAX_AGENT_TOKEN_LENGTH = 256
+HTTP_OK_STATUS = 200
 ASCII_CONTROL_MAX = 31
 ASCII_DELETE = 127
+BIOS_GRUB_RESERVED_SECTORS = 2_048
 DEFAULT_CHUNK_BYTES = 512 * 1024
 LEGACY_SECTOR_SIZE_BYTES = 512
 MANIFEST_VERSION_V2 = 2
 MAX_ARTIFACT_PARTITIONS = 4
 MAX_HOSTNAME_LENGTH = 253
+MAX_HOSTNAME_LABEL_LENGTH = 63
 MAX_MANIFEST_ARTIFACTS = 512
 MAX_MANIFEST_DISKS = 128
 MAX_PARTITION_NUMBER = 128
 MBR_BOOT_SECTOR_BYTES = 446
 MIN_ARTIFACT_COUNT = 2
 MIN_GPT_PARTITIONS = 2
+MIN_PROC_MOUNT_FIELDS = 2
 MIN_RAID_DISKS = 2
 NO_TASK_EXIT = 3
 MAX_IMAGE_BYTES = 2**50
@@ -214,7 +218,7 @@ def upload_chunk(
     )
     try:
         with opener(ca_file).open(request, timeout=60) as response:
-            if response.status != 200:
+            if response.status != HTTP_OK_STATUS:
                 raise ValueError(
                     f"El servidor devolvió HTTP {response.status} durante la transferencia."
                 )
@@ -1569,7 +1573,7 @@ def parse_mbr(
 ) -> dict[str, Any]:
     """Read a DOS partition table and classify its Linux filesystems without guessing UEFI."""
 
-    if int(selected.get("log-sec") or 0) != 512:
+    if int(selected.get("log-sec") or 0) != LEGACY_SECTOR_SIZE_BYTES:
         raise ValueError("El arranque BIOS/MBR requiere sectores lógicos de 512 bytes.")
     try:
         document = json.loads(run_command(["sfdisk", "--json", device]))
@@ -1605,7 +1609,12 @@ def parse_mbr(
         number = int(number_match[1])
         start = raw_partition.get("start")
         count = raw_partition.get("size")
-        if type(start) is not int or type(count) is not int or start < 2_048 or count <= 0:
+        if (
+            type(start) is not int
+            or type(count) is not int
+            or start < BIOS_GRUB_RESERVED_SECTORS
+            or count <= 0
+        ):
             raise ValueError("Una partición MBR no deja espacio suficiente para GRUB BIOS.")
         child = child_by_number.get(number, {})
         part_path = (
@@ -1736,10 +1745,10 @@ def parse_mbr(
 def read_mbr_boot_sector(device: str) -> bytes:
     try:
         with Path(device).open("rb", buffering=0) as source:
-            value = source.read(512)
+            value = source.read(LEGACY_SECTOR_SIZE_BYTES)
     except OSError as error:
         raise ValueError(f"No se pudo leer el sector de arranque MBR: {error}") from None
-    if len(value) != 512 or value[510:512] != b"\x55\xaa":
+    if len(value) != LEGACY_SECTOR_SIZE_BYTES or value[510:LEGACY_SECTOR_SIZE_BYTES] != b"\x55\xaa":
         raise ValueError("El sector de arranque MBR no tiene la firma 55aa.")
     if not any(value[:446]):
         raise ValueError("El sector de arranque MBR no contiene código de arranque.")
@@ -1748,7 +1757,10 @@ def read_mbr_boot_sector(device: str) -> bytes:
 
 def validate_mbr_boot_sector(device: str, geometry: dict[str, Any]) -> bytes:
     value = read_mbr_boot_sector(device)
-    if any(int(partition["start_sector"]) < 2_048 for partition in geometry["partitions"]):
+    if any(
+        int(partition["start_sector"]) < BIOS_GRUB_RESERVED_SECTORS
+        for partition in geometry["partitions"]
+    ):
         raise ValueError("El MBR no deja el espacio requerido para incrustar GRUB BIOS.")
     return value[:446]
 
@@ -1768,7 +1780,7 @@ def assert_disk_is_quiescent(partitions: list[dict[str, Any]]) -> None:
         separator = line.find(" - ")
         if separator >= 0:
             fields = line[separator + 3 :].split()
-            if len(fields) >= 2:
+            if len(fields) >= MIN_PROC_MOUNT_FIELDS:
                 mounted_devices.add(fields[1])
     if devices & mounted_devices:
         raise ValueError("El disco tiene una partición montada y no se puede capturar.")
@@ -2161,7 +2173,7 @@ def download_artifact(
 
 
 def partition_device(device: str, number: int) -> str:
-    if not 1 <= number <= 128:
+    if not 1 <= number <= MAX_PARTITION_NUMBER:
         raise ValueError("El número de partición no es válido.")
     base = device_path({"path": device})
     return f"{base}{'p' if base[-1].isdigit() else ''}{number}"
@@ -2309,7 +2321,7 @@ def write_mbr_boot_code(artifact: Path, device: str) -> None:
         value = artifact.read_bytes()
     except OSError as error:
         raise ValueError(f"No se pudo leer el boot sector MBR publicado: {error}") from None
-    if len(value) != 446:
+    if len(value) != MBR_BOOT_SECTOR_BYTES:
         raise ValueError("El artefacto de boot sector MBR debe medir 446 bytes.")
     try:
         with Path(device).open("r+b", buffering=0) as target:
@@ -2480,7 +2492,7 @@ def validate_clone_hostname(hostname: str) -> str:
         or ".." in hostname
         or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", hostname)
         or any(
-            len(label) > 63 or label.startswith("-") or label.endswith("-")
+            len(label) > MAX_HOSTNAME_LABEL_LENGTH or label.startswith("-") or label.endswith("-")
             for label in hostname.split(".")
         )
     ):
@@ -2835,7 +2847,7 @@ def _restore_claimed_task(
     if storage_plan.profile == "luks2":
         provider = key_provider or configured_luks2_key_provider(storage_plan.luks)  # type: ignore[arg-type]
         candidate = provider()
-        if not isinstance(candidate, bytes) or not 1 <= len(candidate) <= 4096:
+        if not isinstance(candidate, bytes) or not 1 <= len(candidate) <= MAX_EPHEMERAL_KEY_BYTES:
             raise ValueError("El proveedor LUKS2 no entregó una clave válida.")
         luks_key = candidate
     lease.check()
@@ -3188,7 +3200,10 @@ def capture_task(
                 "Los discos de una captura no pueden mezclar perfiles de almacenamiento."
             )
         if profile_names == {"raid1"}:
-            if len(storage_profiles) != len(selected_geometries) or len(selected_geometries) < 2:
+            if (
+                len(storage_profiles) != len(selected_geometries)
+                or len(selected_geometries) < MIN_RAID_DISKS
+            ):
                 _raise_capture_error("La captura RAID1 requiere todos sus discos miembros.")
             first_array = storage_profiles[0].get("raid_array")
             if not isinstance(first_array, dict):
