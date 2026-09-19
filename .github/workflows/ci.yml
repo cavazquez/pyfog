@@ -42,9 +42,47 @@ jobs:
       - name: Release metadata
         run: make release-check
       - name: Tests
-        run: timeout --signal=TERM --kill-after=10s 120s uv run pytest -q
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 120s \
+            uv run pytest -q --durations=20 --durations-min=1.0 \
+            --junitxml="pytest-${{ matrix.python }}.xml" 2>&1 | tee "pytest-${{ matrix.python }}.log"
       - name: Coverage
-        run: timeout --signal=TERM --kill-after=10s 180s make test-coverage
+        env:
+          PYFOG_JUNIT_XML: pytest-coverage-${{ matrix.python }}.xml
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 180s make test-coverage 2>&1 | \
+            tee "coverage-${{ matrix.python }}.log"
+      - name: Test timing summary
+        if: always()
+        run: |
+          {
+            echo "## Test timing (Python ${{ matrix.python }})"
+            echo
+            echo "Tests taking at least 1 second are reported below."
+            echo
+            echo '```text'
+            if [ -f "pytest-${{ matrix.python }}.log" ]; then
+              awk '/slowest [0-9]+ durations/{show=1} show' "pytest-${{ matrix.python }}.log"
+            else
+              echo "No se generó el log de pytest."
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage and test timing artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-observability-python-${{ matrix.python }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            coverage.xml
+            pytest-${{ matrix.python }}.log
+            pytest-${{ matrix.python }}.xml
+            coverage-${{ matrix.python }}.log
+            pytest-coverage-${{ matrix.python }}.xml
       - name: Migration consistency
         env:
           PYFOG_DATABASE_URL: sqlite:////tmp/pyfog-ci.db

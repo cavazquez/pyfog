@@ -2,6 +2,9 @@
 	lan-migrate lan-admin lab-check agent-check pxe-check \
 	image-manifest-check compatibility-check secure-boot-policy-check secure-boot-artifact-check release-check release-package e2e-plan e2e e2e-bios
 
+PYTEST_TIMING_ARGS ?= --durations=20 --durations-min=1.0
+PYFOG_JUNIT_XML ?= pytest-results.xml
+
 setup:
 	uv sync --frozen
 
@@ -45,10 +48,11 @@ typecheck:
 	uv run mypy
 
 test:
-	uv run pytest
+	uv run pytest $(PYTEST_TIMING_ARGS)
 
 test-coverage:
-	uv run pytest --cov=pyfog --cov=scripts --cov-report=term-missing --cov-report=xml
+	uv run pytest --cov=pyfog --cov=scripts --cov-report=term-missing --cov-report=xml \
+		$(PYTEST_TIMING_ARGS) --junitxml="$(PYFOG_JUNIT_XML)"
 	uv run coverage report --include='pyfog/*' --fail-under=70
 	uv run coverage report --include='scripts/*' --fail-under=40
 	$(MAKE) coverage-module-check
