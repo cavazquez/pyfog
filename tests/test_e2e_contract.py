@@ -1,12 +1,21 @@
 import copy
+import hashlib
+import json
+import sqlite3
 import urllib.error
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from pyfog.models import Image, Task, TaskEvent
 from scripts import run_image_task as task_agent
+from scripts.backup_server import create_backup, restore_backup, sqlite_path, verify_backup
+from tests.conftest import csrf
 from tests.test_image_manifest import valid_manifest
 from tests.test_restore import selected_disk, target_selector
+from tests.test_tasks import CAPABILITIES, claim, enqueue_capture
 
 
 def test_source_restore_contract_accepts_larger_target_and_uefi_manifest() -> None:
@@ -71,3 +80,135 @@ def test_network_loss_does_not_allow_a_lease_heartbeat_to_claim_success(
     heartbeat._run()
     with pytest.raises(ValueError, match="renovar la lease"):
         heartbeat.check()
+
+
+def capture_and_publish(admin, app, host_id, inventory) -> tuple[str, str]:
+    """Drive the HTTP capture protocol far enough to produce a verified publication."""
+
+    task_id, image_id, report_id, host_token = enqueue_capture(admin, app, host_id, inventory)
+    assignment = claim(admin, host_id, host_token).json()
+    assert assignment["task_id"] == task_id
+    task_headers = {"Authorization": f"Bearer {assignment['task_token']}"}
+    artifacts = {"partitions/01-esp.img": b"esp", "partitions/02-root.partclone": b"root"}
+    for index, (path, payload) in enumerate(artifacts.items()):
+        uploaded = admin.post(
+            f"/api/v1/tasks/{task_id}/artifacts/{path}",
+            content=payload,
+            headers={
+                **task_headers,
+                "Content-Type": "application/octet-stream",
+                "X-PyFog-Chunk-Index": str(index),
+                "X-PyFog-Chunk-Offset": "0",
+                "X-PyFog-Artifact-Size": str(len(payload)),
+                "X-PyFog-Chunk-SHA256": hashlib.sha256(payload).hexdigest(),
+            },
+        )
+        assert uploaded.status_code == 200, uploaded.text
+
+    manifest = copy.deepcopy(valid_manifest())
+    manifest["image_id"] = image_id
+    manifest["source"]["host_id"] = host_id  # type: ignore[index]
+    manifest["source"]["inventory_report_id"] = report_id  # type: ignore[index]
+    result = admin.post(
+        f"/api/v1/tasks/{task_id}/result",
+        json={"sequence": 1, "success": True, "manifest": manifest},
+        headers=task_headers,
+    )
+    assert result.status_code == 200, result.text
+    assert result.json() == {"task_id": task_id, "status": "succeeded", "accepted": True}
+    return image_id, host_token
+
+
+def test_capture_publication_is_restorable_and_survives_backup_round_trip(
+    admin, app, host_id, inventory, tmp_path
+) -> None:
+    image_id, host_token = capture_and_publish(admin, app, host_id, inventory)
+
+    restore_path = f"/hosts/{host_id}/restore"
+    assert admin.get(restore_path).status_code == 200
+    requested = admin.post(
+        restore_path,
+        data={
+            "csrf": csrf(admin, restore_path),
+            "image_id": image_id,
+            "disk_key": "wwn:0xTESTWWN",
+            "confirm": "1",
+            "idempotency_key": "restore-e2e-contract-001",
+        },
+        follow_redirects=False,
+    )
+    assert requested.status_code == 303, requested.text
+    restore_task_id = requested.headers["location"].rsplit("/", maxsplit=1)[-1]
+
+    assignment = claim(
+        admin,
+        host_id,
+        host_token,
+        capabilities=[*CAPABILITIES, "restore"],
+    )
+    assert assignment.status_code == 200, assignment.text
+    payload = assignment.json()
+    assert payload["task_id"] == restore_task_id
+    assert payload["operation"] == "restore"
+    assert payload["manifest"]["image_id"] == image_id
+    task_headers = {"Authorization": f"Bearer {payload['task_token']}"}
+
+    downloaded = admin.get(
+        f"{payload['artifact_base']}/partitions/02-root.partclone?offset=1&length=2",
+        headers=task_headers,
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"oo"
+    assert downloaded.headers["content-range"] == "bytes 1-2/4"
+
+    finished = admin.post(
+        f"/api/v1/tasks/{restore_task_id}/result",
+        json={"sequence": 1, "success": True},
+        headers=task_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    assert finished.json() == {
+        "task_id": restore_task_id,
+        "status": "succeeded",
+        "accepted": True,
+    }
+
+    with Session(app.state.engine) as db:
+        image = db.get(Image, image_id)
+        restore_task = db.get(Task, restore_task_id)
+        assert image is not None
+        assert image.status == "ready"
+        assert restore_task is not None
+        assert restore_task.status == "succeeded"
+        events = db.scalars(
+            select(TaskEvent).where(TaskEvent.task_id == restore_task_id).order_by(TaskEvent.id)
+        ).all()
+        assert [event.event_type for event in events] == [
+            "created",
+            "reserved",
+            "assigned",
+            "progress",
+            "completed",
+        ]
+
+    backup = tmp_path / "backup"
+    create_backup(
+        sqlite_path(app.state.settings.database_url),
+        app.state.settings.image_store_path,
+        backup,
+    )
+    assert verify_backup(backup)["format"] == "pyfog-backup"
+    restored_database = tmp_path / "restored.db"
+    restored_store = tmp_path / "restored-images"
+    restore_backup(backup, restored_database, restored_store)
+
+    with sqlite3.connect(restored_database) as connection:
+        row = connection.execute(
+            "SELECT status, manifest_json FROM images WHERE id = ?", (image_id,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "ready"
+    assert json.loads(row[1])["image_id"] == image_id
+    assert (
+        restored_store / "published" / image_id / "partitions/02-root.partclone"
+    ).read_bytes() == b"root"
