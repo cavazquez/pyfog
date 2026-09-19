@@ -54,9 +54,13 @@ test-coverage:
 	$(MAKE) coverage-module-check
 
 coverage-module-check:
-	@for module in pyfog/api.py pyfog/web.py pyfog/layouts.py pyfog/domain.py pyfog/key_provider.py; do \
+	@for module in pyfog/layouts.py pyfog/domain.py pyfog/key_provider.py; do \
 		echo "Checking coverage floor 60% for $$module"; \
 		uv run coverage report --include="$$module" --fail-under=60; \
+	done
+	@for module in pyfog/api.py pyfog/web.py; do \
+		echo "Checking coverage floor 70% for $$module"; \
+		uv run coverage report --include="$$module" --fail-under=70; \
 	done
 	@for module in scripts/backup_server.py scripts/collect_inventory.py scripts/secure_boot_artifacts.py scripts/secure_boot_policy.py; do \
 		echo "Checking coverage floor 35% for $$module"; \
