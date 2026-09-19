@@ -134,7 +134,8 @@ def required_capabilities(
     try:
         required = REQUIRED_CAPABILITIES[operation]
     except KeyError:
-        raise TaskError("La operación de la tarea no es válida.") from None
+        msg = "La operación de la tarea no es válida."
+        raise TaskError(msg) from None
     if operation in {"restore", "clone"} and manifest is not None:
         firmware = manifest.get("firmware")
         if isinstance(firmware, dict) and firmware.get("type") == "bios":
@@ -179,15 +180,18 @@ def transition_task(
     message: str | None = None,
 ) -> None:
     if status not in TASK_STATES:
-        raise TaskError("El estado de la tarea no es válido.")
+        msg = "El estado de la tarea no es válido."
+        raise TaskError(msg)
     if status != task.status and status not in ALLOWED_TRANSITIONS.get(task.status, frozenset()):
-        raise TaskError(f"No se puede pasar una tarea de {task.status} a {status}.")
+        msg = f"No se puede pasar una tarea de {task.status} a {status}."
+        raise TaskError(msg)
     current = now()
     task.status = status
     task.updated_at = current
     if phase is not None:
         if phase not in TASK_PHASES:
-            raise TaskError("La fase de la tarea no es válida.")
+            msg = "La fase de la tarea no es válida."
+            raise TaskError(msg)
         task.phase = phase
     if message is not None:
         task.message = message[:500]
@@ -274,9 +278,11 @@ def add_event(
     message: str = "",
 ) -> TaskEvent:
     if event_type not in TASK_EVENT_TYPES:
-        raise TaskError("El tipo de evento de tarea no es válido.")
+        msg = "El tipo de evento de tarea no es válido."
+        raise TaskError(msg)
     if failure_code is not None and failure_code not in TASK_FAILURE_CODES:
-        raise TaskError("El código de fallo de tarea no es válido.")
+        msg = "El código de fallo de tarea no es válido."
+        raise TaskError(msg)
     current = now()
     duration_ms: int | None = None
     throughput: int | None = None
@@ -357,7 +363,8 @@ def request_task_cancellation(db: Session, task: Task, *, reason: str) -> bool:
     if task.status in TERMINAL_TASK_STATES:
         return False
     if task.status == "intervention_required":
-        raise TaskError("La tarea requiere reconciliación antes de cancelarse.")
+        msg = "La tarea requiere reconciliación antes de cancelarse."
+        raise TaskError(msg)
     current = now()
     if task.cancel_requested_at is not None:
         return False
@@ -404,7 +411,8 @@ def acknowledge_task_cancellation(
     if task.status == "cancelled":
         return
     if task.cancel_requested_at is None:
-        raise TaskError("La tarea no tiene una cancelación solicitada.")
+        msg = "La tarea no tiene una cancelación solicitada."
+        raise TaskError(msg)
     if task.operation in {"restore", "clone"} and attempt.started_at is not None:
         reason = f"{reason[:420]} El destino puede haber quedado incompleto; requiere diagnóstico."
     current = now()
@@ -446,7 +454,8 @@ def reconcile_task(db: Session, task: Task) -> None:
     """Make an intervention-required task explicitly eligible for a new attempt."""
 
     if task.status != "intervention_required":
-        raise TaskError("Sólo se pueden reconciliar tareas que requieren intervención.")
+        msg = "Sólo se pueden reconciliar tareas que requieren intervención."
+        raise TaskError(msg)
     current = now()
     task.cancel_requested_at = None
     task.cancel_acknowledged_at = None
@@ -497,7 +506,8 @@ def claim_task(
         select(TaskAttempt).where(TaskAttempt.agent_session_id == session_id)
     )
     if existing_session is not None:
-        raise TaskError("La sesión de arranque ya fue utilizada.")
+        msg = "La sesión de arranque ya fue utilizada."
+        raise TaskError(msg)
     if db.scalar(select(Task.id).where(Task.transfer_slot == 1)) is not None:
         db.rollback()
         return None
@@ -526,7 +536,8 @@ def claim_task(
             required = required | {"capture.hot"}
     if not required.issubset(capabilities):
         db.rollback()
-        raise TaskError("El agente no anuncia todas las capacidades requeridas para la operación.")
+        msg = "El agente no anuncia todas las capacidades requeridas para la operación."
+        raise TaskError(msg)
     attempt_number = (
         db.scalar(
             select(TaskAttempt.attempt_number)
@@ -595,19 +606,24 @@ def touch_attempt(
     message: str,
 ) -> None:
     if phase not in TASK_PHASES or phase in {"queued", "completed", "failed"}:
-        raise TaskError("La fase enviada por el agente no es válida.")
+        msg = "La fase enviada por el agente no es válida."
+        raise TaskError(msg)
     if PHASE_ORDER[phase] < PHASE_ORDER.get(attempt.phase, 0):
-        raise TaskError("La fase de la tarea no puede retroceder.")
+        msg = "La fase de la tarea no puede retroceder."
+        raise TaskError(msg)
     if bytes_processed < attempt.bytes_processed:
-        raise TaskError("El progreso de la tarea no puede retroceder.")
+        msg = "El progreso de la tarea no puede retroceder."
+        raise TaskError(msg)
     if (
         total_bytes is not None
         and attempt.total_bytes is not None
         and total_bytes < attempt.total_bytes
     ):
-        raise TaskError("El tamaño total de la tarea no puede retroceder.")
+        msg = "El tamaño total de la tarea no puede retroceder."
+        raise TaskError(msg)
     if total_bytes is not None and bytes_processed > total_bytes:
-        raise TaskError("El progreso supera el tamaño total declarado.")
+        msg = "El progreso supera el tamaño total declarado."
+        raise TaskError(msg)
     current = now()
     attempt.last_heartbeat_at = current
     attempt.lease_expires_at = current + timedelta(seconds=settings.task_lease_seconds)
@@ -648,7 +664,8 @@ def record_progress(
     """Record a monotonic agent event; duplicate events are safe to replay."""
 
     if phase not in TASK_PHASES or phase in {"queued", "completed", "failed"}:
-        raise TaskError("La fase enviada por el agente no es válida.")
+        msg = "La fase enviada por el agente no es válida."
+        raise TaskError(msg)
     previous = db.scalar(
         select(TaskEvent).where(TaskEvent.attempt_id == attempt.id, TaskEvent.sequence == sequence)
     )
@@ -660,7 +677,8 @@ def record_progress(
             and previous.message == message
         )
         if not same:
-            raise TaskError("El número de secuencia ya fue usado con otro progreso.")
+            msg = "El número de secuencia ya fue usado con otro progreso."
+            raise TaskError(msg)
         return False
     if sequence <= attempt.last_sequence:
         return False
