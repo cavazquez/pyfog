@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from pyfog.schemas import OperatingSystem, Schema
+from pyfog.transfer import TransferManifest, verify_complete_transfer
 
 IMAGE_FORMAT = "pyfog-disk-image"
 LEGACY_IMAGE_FORMAT_VERSION = 1
@@ -28,6 +29,66 @@ FilesystemUuid = Annotated[
 CapabilityName = Annotated[
     str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._+-]+$", strict=True)
 ]
+DiskIdentity = Annotated[
+    str,
+    Field(
+        max_length=256,
+        pattern=(
+            r"^(?:|wwn:[A-Za-z0-9._:-]+|serial:[A-Za-z0-9._:+-]+|"
+            r"path:/dev/[A-Za-z0-9._+-]+)$"
+        ),
+        strict=True,
+    ),
+]
+
+FilesystemName = Literal["fat32", "ext4", "xfs", "btrfs", "swap"]
+
+
+class ImageSubvolume(Schema):
+    """A declared Btrfs subvolume; snapshots are deliberately not represented."""
+
+    path: str = Field(min_length=1, max_length=255, pattern=r"^/?[A-Za-z0-9._/@+-]+$")
+    mountpoint: Literal["/", "/home", "/var", "/srv", None] = None
+    readonly: bool = Field(default=False, strict=True)
+
+
+class ImageEncryption(Schema):
+    """Non-secret LUKS metadata.  Keys and keyslots are never part of this model."""
+
+    type: Literal["luks2"]
+    uuid: FilesystemUuid
+    cipher: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._+-]+$")
+    sector_size: SectorSize
+
+
+class ImageVolume(Schema):
+    """The subset of volume management that a manifest may request."""
+
+    type: Literal["lvm-linear"]
+    pv_uuid: FilesystemUuid
+    vg_name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._+-]+$")
+    vg_uuid: FilesystemUuid
+    lv_name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._+-]+$")
+    lv_uuid: FilesystemUuid
+    size_bytes: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
+
+
+class ImageRaidArray(Schema):
+    """A metadata-only mdadm RAID1 declaration."""
+
+    level: Literal[1]
+    uuid: FilesystemUuid
+    metadata: Literal["1.0", "1.1", "1.2"]
+    member_ids: list[DiskIdentity] = Field(min_length=2, max_length=128)
+    size_bytes: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
+
+    @model_validator(mode="after")
+    def validate_member_identities(self) -> "ImageRaidArray":
+        if any(not member or member.startswith("path:") for member in self.member_ids):
+            raise ValueError("RAID1 debe usar identidades estables, nunca el orden /dev.")
+        if len(set(self.member_ids)) != len(self.member_ids):
+            raise ValueError("RAID1 no puede repetir identidades de miembros.")
+        return self
 
 
 def validate_relative_path(value: str) -> str:
@@ -65,8 +126,15 @@ class ImageArtifact(Schema):
     size_bytes: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
     compression: Literal["none", "gzip", "zstd"]
     sha256: Sha256
+    blocks: TransferManifest | None = None
 
     _path = field_validator("path")(validate_relative_path)
+
+    @model_validator(mode="after")
+    def validate_blocks(self) -> "ImageArtifact":
+        if self.blocks is not None and self.blocks.size_bytes != self.size_bytes:
+            raise ValueError("El índice de bloques no coincide con el tamaño del artefacto.")
+        return self
 
 
 class ImageSource(Schema):
@@ -97,6 +165,14 @@ class ImageCapabilities(Schema):
             raise ValueError("Las capacidades no pueden repetir sistemas de archivos.")
         return sorted(value)
 
+    @model_validator(mode="after")
+    def validate_profile_names(self) -> "ImageCapabilities":
+        if self.encryption not in {"none", "luks2"}:
+            raise ValueError("El perfil de cifrado no es válido.")
+        if self.volumes not in {"partitions", "lvm", "lvm-linear", "raid1"}:
+            raise ValueError("El perfil de volúmenes no es válido.")
+        return self
+
 
 class ImageTool(Schema):
     name: Literal["partclone"]
@@ -112,22 +188,27 @@ class ImagePartition(Schema):
     start_sector: NonNegativeInt
     size_sectors: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
     partition_guid: UUID | None = None
-    filesystem: Literal["fat32", "ext4", "swap"]
+    filesystem: FilesystemName
     filesystem_uuid: FilesystemUuid
     mountpoint: Literal["/boot/efi", "/boot", "/", None]
     artifact: str | None = Field(default=None, max_length=240)
+    subvolume: str | None = Field(default=None, max_length=255)
+    mount_options: list[str] = Field(default_factory=list, max_length=16)
 
     _artifact_path = field_validator("artifact")(validate_optional_path)
 
     @model_validator(mode="after")
     def validate_role(self) -> "ImagePartition":
-        expected = {
-            "esp": ("fat32", "/boot/efi"),
-            "boot": ("ext4", "/boot"),
-            "root": ("ext4", "/"),
-            "swap": ("swap", None),
+        expected_mountpoint = {"esp": "/boot/efi", "boot": "/boot", "root": "/", "swap": None}[
+            self.role
+        ]
+        expected_filesystems = {
+            "esp": {"fat32"},
+            "boot": {"ext4", "xfs"},
+            "root": {"ext4", "xfs", "btrfs"},
+            "swap": {"swap"},
         }[self.role]
-        if self.filesystem != expected[0] or self.mountpoint != expected[1]:
+        if self.filesystem not in expected_filesystems or self.mountpoint != expected_mountpoint:
             raise ValueError(f"La partición {self.role} no coincide con su sistema de archivos.")
         if self.role == "swap" and self.artifact is not None:
             raise ValueError("La partición swap no puede tener un artefacto de datos.")
@@ -142,10 +223,20 @@ class ImagePartition(Schema):
                 raise ValueError(
                     f"La partición {self.role} requiere un UUID de filesystem válido."
                 ) from None
+        if self.filesystem == "btrfs" and not self.subvolume:
+            raise ValueError("Una raíz Btrfs debe declarar su subvolumen.")
+        if self.filesystem != "btrfs" and self.subvolume is not None:
+            raise ValueError("Sólo Btrfs puede declarar un subvolumen.")
+        if self.filesystem != "btrfs" and self.mount_options:
+            raise ValueError("Sólo Btrfs puede declarar opciones de montaje.")
+        if any(not re.fullmatch(r"[A-Za-z0-9._+=:@/-]+", option) for option in self.mount_options):
+            raise ValueError("Las opciones de montaje contienen caracteres no permitidos.")
         return self
 
 
 class ImageDisk(Schema):
+    disk_id: DiskIdentity = ""
+    source_disk_id: DiskIdentity = ""
     size_bytes: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
     logical_sector_bytes: SectorSize
     sector_count: Annotated[int, Field(gt=0, le=MAX_ARTIFACT_BYTES, strict=True)]
@@ -252,8 +343,12 @@ class ImageManifest(Schema):
     firmware: ImageFirmware
     disk: ImageDisk
     tool: ImageTool
-    artifacts: list[ImageArtifact] = Field(min_length=1, max_length=5)
+    artifacts: list[ImageArtifact] = Field(min_length=1, max_length=512)
     capabilities: ImageCapabilities | None = None
+    disks: list[ImageDisk] | None = None
+    encryption: ImageEncryption | None = None
+    volumes: list[ImageVolume] = Field(default_factory=list, max_length=128)
+    raid_arrays: list[ImageRaidArray] = Field(default_factory=list, max_length=128)
     publishable: bool = Field(default=False, strict=True)
 
     @field_validator("format_version", mode="before")
@@ -277,30 +372,60 @@ class ImageManifest(Schema):
         paths = [artifact.path for artifact in self.artifacts]
         if len(set(paths)) != len(paths):
             raise ValueError("El manifiesto contiene rutas de artefacto repetidas.")
-        partition_paths = [
-            partition.artifact
-            for partition in self.disk.partitions
+        all_disks = self.disks or [self.disk]
+        if self.disks:
+            if self.disks[0] != self.disk:
+                raise ValueError("El campo disk debe ser el primer disco del manifiesto.")
+            if len({disk.disk_id for disk in self.disks if disk.disk_id}) != len(
+                [disk for disk in self.disks if disk.disk_id]
+            ):
+                raise ValueError("Los discos del manifiesto deben tener identidades únicas.")
+            if len(self.disks) > 1 and any(not disk.disk_id for disk in self.disks):
+                raise ValueError("Una imagen multidisco debe identificar cada disco de origen.")
+            if len(self.disks) > 1 and any(disk.disk_id.startswith("path:") for disk in self.disks):
+                raise ValueError("Una imagen multidisco no puede depender del orden /dev.")
+        partition_references: list[tuple[str, str]] = [
+            (partition.artifact, partition.role)
+            for disk in all_disks
+            for partition in disk.partitions
             if partition.artifact is not None
         ]
-        if self.disk.boot_sector is not None:
-            partition_paths.append(self.disk.boot_sector.path)
+        for disk in all_disks:
+            if disk.boot_sector is not None:
+                partition_references.append((disk.boot_sector.path, "boot-sector"))
+        partition_paths = [path for path, _role in partition_references]
         if len(set(partition_paths)) != len(partition_paths):
-            raise ValueError("Dos particiones no pueden compartir un artefacto.")
+            allow_shared_raid_root = (
+                self.capabilities is not None
+                and self.capabilities.volumes == "raid1"
+                and all(
+                    role == "root"
+                    for path, role in partition_references
+                    if partition_paths.count(path) > 1
+                )
+            )
+            if not allow_shared_raid_root:
+                raise ValueError("Dos particiones no pueden compartir un artefacto.")
         if set(paths) != set(partition_paths):
             raise ValueError("Cada artefacto debe corresponder a una partición de datos.")
         expected_commands = {
-            "esp": "partclone.fat",
-            "boot": "partclone.ext4",
-            "root": "partclone.ext4",
+            "fat32": "partclone.fat",
+            "ext4": "partclone.ext4",
+            "xfs": "partclone.xfs",
+            "btrfs": "partclone.btrfs",
         }
         commands = set(self.tool.commands)
-        for partition in self.disk.partitions:
-            if partition.role != "swap" and expected_commands[partition.role] not in commands:
-                raise ValueError(f"Falta la herramienta para la partición {partition.role}.")
-        if self.disk.mbr_disk_signature is not None and "mbr" not in commands:
-            raise ValueError("Falta la herramienta para validar el boot sector MBR.")
-        if self.disk.gpt_disk_guid is not None and "mbr" in commands:
-            raise ValueError("Un manifiesto GPT no puede declarar herramientas MBR.")
+        for disk in all_disks:
+            for partition in disk.partitions:
+                if (
+                    partition.role != "swap"
+                    and expected_commands[partition.filesystem] not in commands
+                ):
+                    raise ValueError(f"Falta la herramienta para la partición {partition.role}.")
+            if disk.mbr_disk_signature is not None and "mbr" not in commands:
+                raise ValueError("Falta la herramienta para validar el boot sector MBR.")
+            if disk.gpt_disk_guid is not None and "mbr" in commands:
+                raise ValueError("Un manifiesto GPT no puede declarar herramientas MBR.")
         if self.system.id.lower() != "ubuntu":
             raise ValueError("El manifiesto v1 sólo admite una imagen Ubuntu Linux.")
         return self
@@ -317,6 +442,13 @@ class ImageManifest(Schema):
             raise ValueError("El manifiesto v2 debe declarar capacidades explícitas.")
         if self.capabilities.firmware != self.firmware:
             raise ValueError("Las capacidades de firmware no coinciden con el campo firmware.")
+        if (
+            self.format_version == IMAGE_FORMAT_VERSION
+            and self.firmware.type == "bios"
+            and self.disks
+            and len(self.disks) > 1
+        ):
+            raise ValueError("El perfil BIOS multidisco no tiene un boot sector por disco.")
         return self
 
 
@@ -342,7 +474,15 @@ def manifest_capabilities(manifest: ImageManifest) -> ImageCapabilities:
     return manifest.capabilities or capabilities_from_legacy(manifest)
 
 
-def image_compatibility_errors(manifest: ImageManifest) -> list[str]:
+def manifest_disks(manifest: ImageManifest) -> list[ImageDisk]:
+    """Return the v2 disk list while keeping the v1/v2 primary field compatible."""
+
+    return manifest.disks or [manifest.disk]
+
+
+def image_compatibility_errors(
+    manifest: ImageManifest, *, allow_extended: bool = False
+) -> list[str]:
     """List reasons why an image cannot be used by the current MVP implementation."""
 
     capabilities = manifest_capabilities(manifest)
@@ -361,11 +501,24 @@ def image_compatibility_errors(manifest: ImageManifest) -> list[str]:
         errors.append("el perfil UEFI requiere un disco GPT")
     if firmware_type == "bios" and manifest.disk.mbr_disk_signature is None:
         errors.append("el perfil BIOS requiere un disco MBR")
-    if capabilities.disks != 1:
+    disks = manifest_disks(manifest)
+    if capabilities.disks != len(disks):
+        errors.append("la cantidad de discos declarada no coincide con el layout")
+    if capabilities.disks != 1 and not allow_extended:
         errors.append("requiere exactamente un disco")
-    actual_filesystems = {partition.filesystem for partition in manifest.disk.partitions}
+    if allow_extended and capabilities.disks > 1 and firmware_type == "bios":
+        errors.append("el perfil BIOS multidisco requiere artefactos de boot separados")
+    if allow_extended and capabilities.disks > 1:
+        disk_ids = [disk.disk_id for disk in disks]
+        if any(not disk_id or disk_id.startswith("path:") for disk_id in disk_ids):
+            errors.append("una imagen multidisco requiere identidades estables de disco")
+        elif len(set(disk_ids)) != len(disk_ids):
+            errors.append("las identidades de disco multidisco deben ser únicas")
+    actual_filesystems = {partition.filesystem for disk in disks for partition in disk.partitions}
     declared_filesystems = set(capabilities.filesystems)
     allowed_filesystems = {"fat32", "ext4", "swap"}
+    if allow_extended:
+        allowed_filesystems |= {"xfs", "btrfs"}
     if firmware_type == "bios":
         allowed_filesystems = {"ext4", "swap"}
     unsupported_filesystems = declared_filesystems - allowed_filesystems
@@ -376,10 +529,42 @@ def image_compatibility_errors(manifest: ImageManifest) -> list[str]:
         )
     if actual_filesystems != declared_filesystems:
         errors.append("los sistemas de archivos declarados no coinciden con el layout")
-    if capabilities.encryption != "none":
+    if capabilities.encryption != "none" and not allow_extended:
         errors.append("el cifrado declarado todavía no está soportado")
-    if capabilities.volumes != "partitions":
+    if capabilities.volumes != "partitions" and not allow_extended:
         errors.append("la gestión de volúmenes declarada todavía no está soportada")
+    if capabilities.encryption == "none" and manifest.encryption is not None:
+        errors.append("la metadata LUKS2 no puede acompañar un perfil sin cifrado")
+    if allow_extended and capabilities.encryption == "luks2" and manifest.encryption is None:
+        errors.append("el perfil de cifrado LUKS2 no declara metadata criptográfica")
+    if allow_extended and capabilities.encryption == "luks2" and capabilities.disks != 1:
+        errors.append("LUKS2 requiere exactamente un disco")
+    if (
+        allow_extended
+        and capabilities.encryption != "none"
+        and capabilities.volumes != "partitions"
+    ):
+        errors.append("LUKS2 no puede combinarse con LVM o RAID1")
+    if allow_extended and capabilities.volumes == "partitions" and manifest.volumes:
+        errors.append("el perfil por particiones no puede declarar volúmenes LVM")
+    if allow_extended and capabilities.volumes == "raid1" and manifest.volumes:
+        errors.append("RAID1 no puede combinarse con metadata LVM")
+    if allow_extended and capabilities.volumes != "raid1" and manifest.raid_arrays:
+        errors.append("el manifiesto declara arrays RAID fuera del perfil RAID1")
+    if (
+        allow_extended
+        and capabilities.volumes in {"lvm", "lvm-linear"}
+        and (capabilities.volumes != "lvm-linear" or len(manifest.volumes) != 1)
+    ):
+        errors.append("el perfil LVM lineal no declara un volumen válido")
+    if allow_extended and capabilities.volumes == "lvm":
+        errors.append("el perfil LVM genérico no está soportado; use lvm-linear")
+    if allow_extended and capabilities.volumes == "raid1" and len(manifest.raid_arrays) != 1:
+        errors.append("el perfil RAID1 no declara arrays")
+    if allow_extended and capabilities.volumes == "raid1" and capabilities.disks < 2:
+        errors.append("RAID1 requiere al menos dos discos")
+    if allow_extended and capabilities.volumes == "lvm-linear" and capabilities.disks != 1:
+        errors.append("LVM lineal requiere exactamente un disco")
     return errors
 
 
@@ -389,6 +574,17 @@ def ensure_supported_image(manifest: ImageManifest) -> ImageManifest:
     errors = image_compatibility_errors(manifest)
     if errors:
         raise ValueError("La imagen no es compatible con el perfil actual: " + "; ".join(errors))
+    return manifest
+
+
+def ensure_supported_extended_image(manifest: ImageManifest) -> ImageManifest:
+    """Validate the P1/P2 profiles after their feature-specific checks are enabled."""
+
+    errors = image_compatibility_errors(manifest, allow_extended=True)
+    if errors:
+        raise ValueError(
+            "La imagen no es compatible con los perfiles extendidos: " + "; ".join(errors)
+        )
     return manifest
 
 
@@ -464,6 +660,13 @@ def verify_image_artifacts(manifest: ImageManifest, root: Path) -> None:
             raise ValueError(f"No se pudo leer el artefacto {artifact.path}: {error}") from None
         if digest.hexdigest() != artifact.sha256:
             raise ValueError(f"La suma SHA-256 de {artifact.path} no coincide.")
+        if artifact.blocks is not None:
+            try:
+                verify_complete_transfer(resolved, artifact.blocks)
+            except (OSError, ValueError) as error:
+                raise ValueError(
+                    f"Los bloques de {artifact.path} no están verificados: {error}"
+                ) from None
 
 
 def validate_image_manifest(path: Path, artifacts_dir: Path | None = None) -> ImageManifest:

@@ -1,6 +1,6 @@
 """Catalog rules shared by image web pages and future task validation."""
 
-from pyfog.image_manifest import image_compatibility_errors, parse_image_manifest
+from pyfog.image_manifest import ensure_supported_extended_image, parse_image_manifest
 from pyfog.models import Image
 
 IMAGE_STATUSES = ("draft", "capturing", "ready", "failed", "deleted")
@@ -20,4 +20,8 @@ def image_is_selectable(image: Image) -> bool:
         manifest = parse_image_manifest(image.manifest_json)
     except ValueError:
         return False
-    return not image_compatibility_errors(manifest)
+    try:
+        ensure_supported_extended_image(manifest)
+    except ValueError:
+        return False
+    return True

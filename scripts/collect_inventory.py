@@ -55,13 +55,20 @@ def disk_inventory(warnings: list[str]) -> list[dict[str, Any]]:
         for device in devices:
             if device.get("type") != "disk" or int(device.get("size") or 0) <= 0:
                 continue
+            wwn = (device.get("wwn") or "").strip()[:200]
+            serial = (device.get("serial") or "").strip()[:200]
+            name = str(device.get("name") or "")
+            stable_id = (
+                f"wwn:{wwn}" if wwn else f"serial:{serial}" if serial else f"path:/dev/{name}"
+            )
             disks.append(
                 {
-                    "name": f"/dev/{device['name']}",
+                    "name": f"/dev/{name}",
+                    "stable_id": stable_id,
                     "size_bytes": int(device["size"]),
                     "model": (device.get("model") or "").strip()[:200],
-                    "serial_number": (device.get("serial") or "").strip()[:200],
-                    "wwn": (device.get("wwn") or "").strip()[:200],
+                    "serial_number": serial,
+                    "wwn": wwn,
                     "transport": (device.get("tran") or "")[:200],
                     "logical_sector_bytes": (
                         int(device["log-sec"]) if device.get("log-sec") else None

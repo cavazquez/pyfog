@@ -59,8 +59,8 @@ Opciones de build:
   --version VERSION         Sobrescribir la versión de agent/VERSION
 
 El modo imaging exige busybox, Python, HTTPS, red, sgdisk/sfdisk, Partclone ext4/FAT y las
-herramientas GRUB de restauración UEFI/BIOS. El modo inventory-only omite las herramientas de
-escritura para probar un agente sin riesgo.
+herramientas GRUB de restauración UEFI/BIOS. XFS/Btrfs y las utilidades de hot-capture se
+incorporan cuando están instaladas; un manifiesto sólo puede reclamar la capacidad empaquetada.
 EOF
 }
 
@@ -101,6 +101,15 @@ find_partclone_fat() {
             return 0
         fi
     done
+    return 1
+}
+
+find_partclone_optional() {
+    local candidate=$1
+    if [ -n "$(resolve_tool "$candidate")" ]; then
+        resolve_tool "$candidate"
+        return 0
+    fi
     return 1
 }
 
@@ -204,6 +213,13 @@ doctor() {
             printf '  FALTA   %-18s (partclone.fat o partclone.vfat)\n' partclone.fat
             missing=1
         fi
+        for optional_tool in partclone.xfs partclone.btrfs fsfreeze findmnt e2fsck resize2fs; do
+            if path=$(resolve_tool "$optional_tool"); then
+                printf '  OK      %-18s %s (opcional)\n' "$optional_tool" "$path"
+            else
+                printf '  OMITIDO %-18s (perfil extendido no disponible)\n' "$optional_tool"
+            fi
+        done
         for grub_target in i386-pc x86_64-efi; do
             if grub_target_available "$grub_target"; then
                 printf '  OK      %-18s /usr/lib/grub/%s\n' "grub-$grub_target" "$grub_target"
@@ -431,7 +447,7 @@ PY
 }
 
 build() {
-    local kernel path partclone_ext4 partclone_fat python_stdlib python_base
+    local kernel path partclone_ext4 partclone_fat partclone_xfs partclone_btrfs python_stdlib python_base
     local -a tools
     local metadata_path final_manifest kernel_output initramfs_output manifest_output sums_output
     [ "$(uname -m)" = "x86_64" ] || error "el builder sólo admite el host x86_64 del MVP"
@@ -475,11 +491,15 @@ build() {
         [ -n "$path" ] || error "falta sfdisk para el modo imaging"
         partclone_ext4=$(find_partclone) || error "falta partclone.ext4 o partclone.ext4dev"
         partclone_fat=$(find_partclone_fat) || error "falta partclone.fat o partclone.vfat"
+        partclone_xfs=$(find_partclone_optional partclone.xfs || true)
+        partclone_btrfs=$(find_partclone_optional partclone.btrfs || true)
         grub_target_available i386-pc || error "falta el target GRUB i386-pc (grub-pc-bin)"
         grub_target_available x86_64-efi || error "falta el target GRUB x86_64-efi (grub-efi-amd64-bin)"
     else
         partclone_ext4=""
         partclone_fat=""
+        partclone_xfs=""
+        partclone_btrfs=""
     fi
     if [ -n "$CA_FILE_SOURCE" ]; then
         [ -r "$CA_FILE_SOURCE" ] || error "la CA no se puede leer: $CA_FILE_SOURCE"
@@ -530,6 +550,11 @@ build() {
     tools=(curl openssl gzip ip lsblk blkid)
     if [ "$MODE" = imaging ]; then
         tools+=(sfdisk blockdev partprobe mount umount grub-install chroot ssh-keygen mkswap)
+        for optional_tool in fsfreeze findmnt e2fsck resize2fs cryptsetup mdadm pvs vgs lvs pvcreate vgcreate lvcreate lvchange btrfs; do
+            if path=$(resolve_tool "$optional_tool"); then
+                tools+=("$optional_tool")
+            fi
+        done
         path=$(resolve_tool zstd)
         [ -n "$path" ] || error "falta zstd para restaurar artefactos zstd"
         tools+=(zstd)
@@ -538,7 +563,7 @@ build() {
         path=$(resolve_tool "$tool_name")
         [ -n "$path" ] || error "falta $tool_name"
         case "$tool_name" in
-            ip|blkid|sfdisk|blockdev|partprobe|mount|umount|grub-install|chroot|mkswap) stage_binary "$tool_name" "$path" "/usr/sbin/$tool_name" ;;
+            ip|blkid|sfdisk|blockdev|partprobe|mount|umount|grub-install|chroot|mkswap|fsfreeze|findmnt|e2fsck|resize2fs|cryptsetup|mdadm|pvs|vgs|lvs|pvcreate|vgcreate|lvcreate|lvchange|btrfs) stage_binary "$tool_name" "$path" "/usr/sbin/$tool_name" ;;
             *) stage_binary "$tool_name" "$path" "/usr/bin/$tool_name" ;;
         esac
     done
@@ -546,6 +571,12 @@ build() {
         stage_binary sgdisk "$(resolve_tool sgdisk)" /usr/sbin/sgdisk
         stage_binary partclone.ext4 "$partclone_ext4" /usr/sbin/partclone.ext4
         stage_binary partclone.fat "$partclone_fat" /usr/sbin/partclone.fat
+        if [ -n "$partclone_xfs" ]; then
+            stage_binary partclone.xfs "$partclone_xfs" /usr/sbin/partclone.xfs
+        fi
+        if [ -n "$partclone_btrfs" ]; then
+            stage_binary partclone.btrfs "$partclone_btrfs" /usr/sbin/partclone.btrfs
+        fi
         for grub_tool in grub-file grub-install grub-mkconfig grub-mkimage grub-probe; do
             path=$(resolve_tool "$grub_tool")
             [ -n "$path" ] || error "falta $grub_tool"
@@ -553,7 +584,26 @@ build() {
         done
         copy_path /usr/lib/grub /usr/lib/grub
         [ -d /usr/share/grub ] && copy_path /usr/share/grub /usr/share/grub
-        printf '%s\n' gpt mbr partclone.ext4 partclone.fat restore clone identity >>"$CAPABILITIES_FILE"
+        printf '%s\n' gpt mbr multidisk partclone.ext4 partclone.fat restore clone identity >>"$CAPABILITIES_FILE"
+        [ -n "$partclone_xfs" ] && printf '%s\n' partclone.xfs >>"$CAPABILITIES_FILE"
+        [ -n "$partclone_btrfs" ] && printf '%s\n' partclone.btrfs >>"$CAPABILITIES_FILE"
+        if resolve_tool fsfreeze >/dev/null && resolve_tool findmnt >/dev/null; then
+            printf '%s\n' capture.hot >>"$CAPABILITIES_FILE"
+        fi
+        if resolve_tool e2fsck >/dev/null && resolve_tool resize2fs >/dev/null; then
+            printf '%s\n' expand.ext4 >>"$CAPABILITIES_FILE"
+        fi
+        if resolve_tool pvs >/dev/null && resolve_tool vgs >/dev/null && resolve_tool lvs >/dev/null \
+            && resolve_tool pvcreate >/dev/null && resolve_tool vgcreate >/dev/null \
+            && resolve_tool lvcreate >/dev/null && resolve_tool lvchange >/dev/null; then
+            printf '%s\n' lvm-linear >>"$CAPABILITIES_FILE"
+        fi
+        if resolve_tool mdadm >/dev/null; then
+            printf '%s\n' raid1 >>"$CAPABILITIES_FILE"
+        fi
+        if resolve_tool cryptsetup >/dev/null; then
+            printf '%s\n' luks2 >>"$CAPABILITIES_FILE"
+        fi
     fi
     if path=$(resolve_tool modprobe); then
         stage_binary modprobe "$path" /sbin/modprobe

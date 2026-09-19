@@ -12,15 +12,47 @@ import re
 import shutil
 import ssl
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from pyfog.key_provider import external_luks2_key
+from pyfog.layouts import (
+    LayoutError,
+    Luks2Layout,
+    LvmLinearLayout,
+    Raid1Layout,
+    filesystem_tool,
+    luks2_layout_from_manifest,
+    lvm_layout_from_manifest,
+    lvm_layout_to_manifest,
+    lvm_restore_commands,
+    parse_btrfs_subvolumes,
+    parse_luks2_metadata,
+    parse_lvm_linear_reports,
+    parse_mdraid1_export,
+    raid1_layout_from_manifest,
+    raid1_layout_to_manifest,
+    raid1_restore_commands,
+    validate_luks2_match,
+)
+from pyfog.plugins import PluginRegistry, PluginRunner
+from pyfog.transfer import (
+    TransferBlock,
+    TransferManifest,
+    missing_block_indices,
+    verify_complete_transfer,
+    write_verified_block,
+)
 
 MAX_RESPONSE_BYTES = 1_000_000
 DEFAULT_CHUNK_BYTES = 512 * 1024
@@ -202,6 +234,583 @@ def parse_export(payload: str) -> dict[str, str]:
     return values
 
 
+def inspect_btrfs_root_subvolume(device: str) -> str:
+    """Read the root subvolume through a temporary read-only mount."""
+
+    mountpoint = Path(tempfile.mkdtemp(prefix="pyfog-btrfs-"))
+    try:
+        run_command(["mount", "-o", "ro", device, str(mountpoint)], timeout=60)
+        try:
+            subvolumes = parse_btrfs_subvolumes(
+                run_command(["btrfs", "subvolume", "list", str(mountpoint)], timeout=60)
+            )
+        except LayoutError as error:
+            raise ValueError(str(error)) from None
+        root = next(
+            (item.path for item in subvolumes if item.path in {"@", "@/", "."}),
+            None,
+        )
+        if root is None:
+            raise ValueError("Btrfs no declara un subvolumen raíz conocido.")
+        return root
+    finally:
+        run_command(["umount", "--", str(mountpoint)], timeout=60, check=False)
+        shutil.rmtree(mountpoint, ignore_errors=True)
+
+
+def inspect_lvm_layout(device: str) -> LvmLinearLayout:
+    """Read one LVM chain without activating or changing it."""
+
+    if not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", device):
+        raise ValueError("El PV no es un dispositivo seguro.")
+    try:
+        return parse_lvm_linear_reports(
+            run_command(
+                [
+                    "pvs",
+                    "--reportformat",
+                    "json",
+                    "--units",
+                    "b",
+                    "--nosuffix",
+                    "--options",
+                    "pv_uuid,pv_name,pv_size",
+                    device,
+                ]
+            ),
+            run_command(
+                [
+                    "vgs",
+                    "--reportformat",
+                    "json",
+                    "--options",
+                    "vg_name,vg_uuid",
+                    device,
+                ]
+            ),
+            run_command(
+                [
+                    "lvs",
+                    "--reportformat",
+                    "json",
+                    "--units",
+                    "b",
+                    "--nosuffix",
+                    "--options",
+                    "lv_name,lv_uuid,vg_name,vg_uuid,lv_layout,lv_attr,lv_size",
+                    device,
+                ]
+            ),
+        )
+    except LayoutError as error:
+        raise ValueError(str(error)) from None
+
+
+def inspect_lvm_filesystem(device: str) -> tuple[LvmLinearLayout, str, str, str | None]:
+    """Inspect one linear PV and its mounted-data filesystem without mutating it."""
+
+    layout = inspect_lvm_layout(device)
+    logical_device = f"/dev/{layout.vg_name}/{layout.lv_name}"
+    values = parse_export(run_command(["blkid", "-o", "export", logical_device]))
+    filesystem = values.get("TYPE", "").lower()
+    if filesystem == "vfat":
+        filesystem = "fat32"
+    if filesystem not in {"ext4", "xfs", "btrfs"}:
+        raise ValueError("El LV lineal no contiene un filesystem Linux admitido.")
+    filesystem_uuid = values.get("UUID", "")
+    if not filesystem_uuid:
+        raise ValueError("El LV lineal no declara un UUID de filesystem.")
+    subvolume = inspect_btrfs_root_subvolume(logical_device) if filesystem == "btrfs" else None
+    return layout, filesystem, filesystem_uuid, subvolume
+
+
+def prepare_capture_storage(
+    selected_geometries: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes | None]],
+    opened_mappings: list[str],
+) -> None:
+    """Open an already-encrypted source only long enough to inspect/capture its filesystem."""
+
+    for _selected, _selector, geometry, _boot in selected_geometries:
+        storage = geometry.get("storage")
+        if not isinstance(storage, dict) or storage.get("profile") != "luks2":
+            continue
+        encryption = storage.get("encryption")
+        try:
+            expected = luks2_layout_from_manifest(encryption)
+        except LayoutError as error:
+            raise ValueError(str(error)) from None
+        provider = configured_luks2_key_provider(expected)
+        mapping_name = "pyfog-capture-" + expected.uuid.replace("-", "")
+        root = next(
+            (
+                partition
+                for partition in geometry.get("partitions", [])
+                if isinstance(partition, dict)
+                and partition.get("outer_filesystem") == "crypto_luks"
+            ),
+            None,
+        )
+        if not isinstance(root, dict):
+            raise ValueError("El perfil LUKS2 no contiene una partición raíz cifrada.")
+        mapping = unlock_luks2(str(root["device"]), mapping_name, expected, provider)
+        opened_mappings.append(mapping_name)
+        values = parse_export(run_command(["blkid", "-o", "export", mapping]))
+        filesystem = values.get("TYPE", "").lower()
+        if filesystem == "vfat":
+            filesystem = "fat32"
+        if filesystem not in {"ext4", "xfs", "btrfs"}:
+            raise ValueError("El contenedor LUKS2 no contiene un filesystem Linux admitido.")
+        filesystem_uuid = values.get("UUID", "")
+        if not filesystem_uuid:
+            raise ValueError("El filesystem LUKS2 no declara un UUID.")
+        root["filesystem"] = filesystem
+        root["filesystem_uuid"] = filesystem_uuid
+        root["capture_device"] = mapping
+        root["mountpoint"] = "/"
+        if filesystem == "btrfs":
+            root["subvolume"] = inspect_btrfs_root_subvolume(mapping)
+
+
+def inspect_raid1_layout(device: str) -> Raid1Layout:
+    if not re.fullmatch(r"/dev/md(?:[0-9]+|-[A-Za-z0-9._+-]+)", device):
+        raise ValueError("El dispositivo mdadm no es seguro.")
+    try:
+        return parse_mdraid1_export(run_command(["mdadm", "--detail", "--export", device]))
+    except LayoutError as error:
+        raise ValueError(str(error)) from None
+
+
+def _nested_raid_device(value: object) -> str | None:
+    """Find an md RAID node reported below a selected disk without guessing /dev order."""
+
+    if not isinstance(value, dict):
+        return None
+    path = value.get("path") or value.get("name")
+    kind = str(value.get("type") or "").casefold()
+    if (
+        isinstance(path, str)
+        and (kind.startswith("raid") or path.startswith("/dev/md"))
+        and re.fullmatch(r"/dev/md(?:[0-9]+|-[A-Za-z0-9._+-]+)", path)
+    ):
+        return path
+    children = value.get("children")
+    if isinstance(children, list):
+        for child in children:
+            found = _nested_raid_device(child)
+            if found is not None:
+                return found
+    return None
+
+
+def _contains_device(value: object, target: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    path = value.get("path") or value.get("name")
+    if path == target:
+        return True
+    children = value.get("children")
+    return isinstance(children, list) and any(_contains_device(child, target) for child in children)
+
+
+def _raid_device_from_inventory(inventory: object, member: str) -> str | None:
+    """Find the assembled md node that owns a member in the complete lsblk tree."""
+
+    if not isinstance(inventory, dict):
+        return None
+    roots = inventory.get("blockdevices")
+    if not isinstance(roots, list):
+        return None
+
+    def visit(value: object) -> str | None:
+        if not isinstance(value, dict):
+            return None
+        path = value.get("path") or value.get("name")
+        kind = str(value.get("type") or "").casefold()
+        if (
+            isinstance(path, str)
+            and (kind.startswith("raid") or path.startswith("/dev/md"))
+            and re.fullmatch(r"/dev/md(?:[0-9]+|-[A-Za-z0-9._+-]+)", path)
+            and _contains_device(value, member)
+        ):
+            return path
+        children = value.get("children")
+        if isinstance(children, list):
+            for child in children:
+                found = visit(child)
+                if found is not None:
+                    return found
+        return None
+
+    for root in roots:
+        found = visit(root)
+        if found is not None:
+            return found
+    return None
+
+
+def inspect_raid1_filesystem(
+    device: str,
+) -> tuple[Raid1Layout, str, str, str | None]:
+    """Read the filesystem carried by an already assembled RAID1 array."""
+
+    layout = inspect_raid1_layout(device)
+    values = parse_export(run_command(["blkid", "-o", "export", device]))
+    filesystem = values.get("TYPE", "").lower()
+    if filesystem == "vfat":
+        filesystem = "fat32"
+    if filesystem not in {"ext4", "xfs", "btrfs"}:
+        raise ValueError("El array RAID1 no contiene un filesystem Linux admitido.")
+    filesystem_uuid = values.get("UUID", "")
+    if not filesystem_uuid:
+        raise ValueError("El filesystem RAID1 no declara un UUID.")
+    subvolume = inspect_btrfs_root_subvolume(device) if filesystem == "btrfs" else None
+    return layout, filesystem, filesystem_uuid, subvolume
+
+
+def inspect_luks2_layout(device: str) -> Luks2Layout:
+    if not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", device):
+        raise ValueError("El contenedor LUKS2 no es un dispositivo seguro.")
+    try:
+        return parse_luks2_metadata(
+            run_command(["cryptsetup", "luksDump", "--dump-json-metadata", device])
+        )
+    except LayoutError as error:
+        raise ValueError(str(error)) from None
+
+
+def unlock_luks2(
+    device: str,
+    mapping_name: str,
+    expected: Luks2Layout,
+    key_provider: Callable[[], bytes] | Any,
+) -> str:
+    """Unlock LUKS2 with a short-lived provider key supplied on stdin only."""
+
+    actual = inspect_luks2_layout(device)
+    try:
+        validate_luks2_match(expected, actual)
+    except LayoutError as error:
+        raise ValueError(str(error)) from None
+    if not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", mapping_name):
+        raise ValueError("El nombre del mapping LUKS2 no es seguro.")
+    key = key_provider()
+    return _unlock_luks2_with_key(device, mapping_name, key)
+
+
+def _unlock_luks2_with_key(device: str, mapping_name: str, key: object) -> str:
+    if not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", device):
+        raise ValueError("El contenedor LUKS2 no es un dispositivo seguro.")
+    if not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", mapping_name):
+        raise ValueError("El nombre del mapping LUKS2 no es seguro.")
+    if not isinstance(key, bytes) or not 1 <= len(key) <= 4096:
+        raise ValueError("El proveedor LUKS2 no entregó una clave válida.")
+    executable = shutil.which("cryptsetup")
+    if not executable:
+        raise ValueError("Falta la herramienta cryptsetup en el agente.")
+    result = subprocess.run(  # noqa: S603 - fixed cryptsetup arguments; key is stdin only
+        [executable, "luksOpen", device, mapping_name, "--key-file=-"],
+        input=key,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise ValueError("cryptsetup rechazó la clave LUKS2.")
+    return f"/dev/mapper/{mapping_name}"
+
+
+def format_and_unlock_luks2(
+    device: str,
+    expected: Luks2Layout,
+    key_provider: Callable[[], bytes],
+) -> tuple[str, str]:
+    """Create a LUKS2 container from non-secret metadata and open it with one ephemeral key."""
+
+    if not re.fullmatch(r"/dev/[A-Za-z0-9._+-]+", device):
+        raise ValueError("El contenedor LUKS2 no es un dispositivo seguro.")
+    key = key_provider()
+    if not isinstance(key, bytes) or not 1 <= len(key) <= 4096:
+        raise ValueError("El proveedor LUKS2 no entregó una clave válida.")
+    executable = shutil.which("cryptsetup")
+    if not executable:
+        raise ValueError("Falta la herramienta cryptsetup en el agente.")
+    result = subprocess.run(  # noqa: S603 - fixed cryptsetup argv; key is stdin only
+        [
+            executable,
+            "luksFormat",
+            "--type",
+            "luks2",
+            "--batch-mode",
+            "--uuid",
+            expected.uuid,
+            "--cipher",
+            expected.cipher,
+            "--sector-size",
+            str(expected.sector_size),
+            "--key-file=-",
+            device,
+        ],
+        input=key,
+        capture_output=True,
+        check=False,
+        timeout=180,
+    )
+    if result.returncode != 0:
+        raise ValueError("cryptsetup no pudo crear el contenedor LUKS2.")
+    actual = inspect_luks2_layout(device)
+    try:
+        validate_luks2_match(expected, actual)
+    except LayoutError as error:
+        raise ValueError(str(error)) from None
+    mapping_name = "pyfog-" + expected.uuid.replace("-", "")
+    mapping = _unlock_luks2_with_key(device, mapping_name, key)
+    return mapping, mapping_name
+
+
+def close_luks2(mapping_name: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", mapping_name):
+        raise ValueError("El nombre del mapping LUKS2 no es seguro.")
+    run_command(["cryptsetup", "close", mapping_name], timeout=120)
+
+
+@dataclass(frozen=True)
+class RestoreStoragePlan:
+    """Validated storage graph to construct after partition tables are recreated."""
+
+    profile: str
+    lvm: LvmLinearLayout | None = None
+    raid: Raid1Layout | None = None
+    luks: Luks2Layout | None = None
+    root_artifacts: tuple[str, ...] = ()
+
+
+def _layout_disks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = manifest.get("disks") or [manifest.get("disk")]
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError("El manifiesto no contiene layouts de disco válidos.")
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _root_partition(disk: dict[str, Any]) -> dict[str, Any]:
+    partitions = disk.get("partitions")
+    if not isinstance(partitions, list):
+        raise ValueError("El layout no contiene particiones.")
+    roots = [item for item in partitions if isinstance(item, dict) and item.get("role") == "root"]
+    if len(roots) != 1:
+        raise ValueError("Cada layout debe declarar una única partición raíz.")
+    return roots[0]
+
+
+def _partition_capacity(partition: dict[str, Any], disk: dict[str, Any]) -> int:
+    sectors = partition.get("size_sectors")
+    sector_size = disk.get("logical_sector_bytes")
+    if type(sectors) is not int or sectors <= 0 or type(sector_size) is not int:
+        raise ValueError("El tamaño de la partición raíz no es válido.")
+    return sectors * sector_size
+
+
+def _root_artifact_paths(manifest: dict[str, Any], disks: list[dict[str, Any]]) -> tuple[str, ...]:
+    paths: list[str] = []
+    for disk in disks:
+        artifact = _root_partition(disk).get("artifact")
+        if not isinstance(artifact, str) or not artifact:
+            raise ValueError("La partición raíz no referencia un artefacto.")
+        paths.append(artifact)
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ValueError("El manifiesto no contiene artefactos.")
+    by_path = {str(item.get("path")): item for item in artifacts if isinstance(item, dict)}
+    if any(path not in by_path for path in paths):
+        raise ValueError("El artefacto raíz no está publicado en el manifiesto.")
+    return tuple(paths)
+
+
+def build_restore_storage_plan(
+    manifest: dict[str, Any],
+    selected_pairs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
+) -> RestoreStoragePlan:
+    """Validate the extended storage graph before any target partition is modified."""
+
+    capabilities = manifest.get("capabilities")
+    if not isinstance(capabilities, dict):
+        raise ValueError("La tarea no contiene capacidades de almacenamiento explícitas.")
+    disks = _layout_disks(manifest)
+    if len(disks) != len(selected_pairs):
+        raise ValueError("La cantidad de discos no coincide con el plan de almacenamiento.")
+    profile = str(capabilities.get("volumes") or "partitions")
+    encryption = str(capabilities.get("encryption") or "none")
+    if encryption != "none" and profile != "partitions":
+        raise ValueError("No se admite combinar LUKS2 con LVM o RAID1 en una misma imagen.")
+    root_artifacts = _root_artifact_paths(manifest, disks)
+
+    if profile == "partitions" and encryption == "none":
+        if manifest.get("volumes") or manifest.get("raid_arrays"):
+            raise ValueError("El perfil por particiones no puede declarar metadata de volumen.")
+        return RestoreStoragePlan("partitions", root_artifacts=root_artifacts)
+
+    if profile == "lvm-linear":
+        if encryption != "none" or len(disks) != 1 or len(selected_pairs) != 1:
+            raise ValueError("LVM lineal requiere un único disco sin cifrado.")
+        volumes = manifest.get("volumes")
+        if not isinstance(volumes, list) or len(volumes) != 1:
+            raise ValueError("LVM lineal requiere exactamente un volumen declarado.")
+        lvm_layout = lvm_layout_from_manifest(volumes[0])
+        root = _root_partition(disks[0])
+        if lvm_layout.size_bytes > _partition_capacity(root, disks[0]):
+            raise ValueError("El LV declarado no entra en la partición PV destino.")
+        if manifest.get("raid_arrays"):
+            raise ValueError("LVM lineal no puede declarar arrays RAID.")
+        return RestoreStoragePlan("lvm-linear", lvm=lvm_layout, root_artifacts=root_artifacts)
+
+    if profile == "raid1":
+        if encryption != "none" or len(disks) < 2:
+            raise ValueError("RAID1 requiere dos o más discos sin cifrado.")
+        arrays = manifest.get("raid_arrays")
+        if not isinstance(arrays, list) or len(arrays) != 1:
+            raise ValueError("RAID1 requiere exactamente un array declarado.")
+        raid_layout = raid1_layout_from_manifest(arrays[0])
+        source_ids = [str(disk.get("disk_id") or disk.get("source_disk_id")) for disk in disks]
+        if any(not value or value.startswith("path:") for value in source_ids):
+            raise ValueError("RAID1 requiere identidades estables para todos sus discos.")
+        if tuple(source_ids) != raid_layout.member_ids:
+            raise ValueError("Los miembros RAID1 no coinciden con el orden del manifiesto.")
+        target_sizes = [_partition_capacity(_root_partition(disk), disk) for disk in disks]
+        if raid_layout.size_bytes > min(target_sizes):
+            raise ValueError("El array RAID1 declarado no entra en alguno de sus destinos.")
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise ValueError("El manifiesto RAID1 no contiene artefactos.")
+        by_path = {str(item.get("path")): item for item in artifacts if isinstance(item, dict)}
+        root_metadata = [by_path[path] for path in root_artifacts]
+        if any(
+            item.get("sha256") != root_metadata[0].get("sha256")
+            or item.get("size_bytes") != root_metadata[0].get("size_bytes")
+            for item in root_metadata[1:]
+        ):
+            raise ValueError("Los artefactos raíz de RAID1 no tienen el mismo checksum.")
+        return RestoreStoragePlan("raid1", raid=raid_layout, root_artifacts=root_artifacts)
+
+    if encryption == "luks2" and profile == "partitions":
+        if len(disks) != 1 or len(selected_pairs) != 1:
+            raise ValueError("LUKS2 requiere un único disco.")
+        encryption_metadata = manifest.get("encryption")
+        if not isinstance(encryption_metadata, dict):
+            raise ValueError("LUKS2 requiere metadata criptográfica no secreta.")
+        luks_layout = luks2_layout_from_manifest(encryption_metadata)
+        if manifest.get("volumes") or manifest.get("raid_arrays"):
+            raise ValueError("LUKS2 no puede declarar metadata LVM o RAID.")
+        return RestoreStoragePlan("luks2", luks=luks_layout, root_artifacts=root_artifacts)
+
+    raise ValueError("El perfil de almacenamiento de la imagen no está soportado.")
+
+
+def _require_restore_tools(
+    manifest: dict[str, Any], plan: RestoreStoragePlan, *, requires_expansion: bool = False
+) -> None:
+    """Check every destructive/boot tool before the first partition-table write."""
+
+    firmware = manifest.get("firmware")
+    required = {"blkid", "mount", "umount", "mkswap", "sgdisk", "grub-install", "chroot"}
+    if isinstance(firmware, dict) and firmware.get("type") == "bios":
+        required.discard("sgdisk")
+        required.add("sfdisk")
+    for artifact in manifest.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        path = str(artifact.get("path", ""))
+        if path == "boot-sector.bin":
+            continue
+        for disk in _layout_disks(manifest):
+            for partition in disk.get("partitions", []):
+                if isinstance(partition, dict) and partition.get("artifact") == path:
+                    filesystem = str(partition.get("filesystem", ""))
+                    if filesystem != "swap":
+                        required.add(filesystem_tool(filesystem))
+    if plan.profile == "lvm-linear":
+        required.update({"pvcreate", "vgcreate", "lvcreate", "lvchange", "lvs", "pvs", "vgs"})
+    elif plan.profile == "raid1":
+        required.add("mdadm")
+    elif plan.profile == "luks2":
+        required.add("cryptsetup")
+    if requires_expansion:
+        required.update({"e2fsck", "resize2fs"})
+    missing = sorted(command for command in required if shutil.which(command) is None)
+    if missing:
+        raise ValueError("Faltan herramientas del perfil de restore: " + ", ".join(missing))
+
+
+def configured_luks2_key_provider(layout: Luks2Layout) -> Callable[[], bytes]:
+    """Load an administrator-owned key provider without putting a key in agent arguments."""
+
+    directory_value = os.environ.get("PYFOG_PLUGIN_DIR", "")
+    plugin_name = os.environ.get("PYFOG_LUKS_KEY_PLUGIN", "")
+    key_ref = os.environ.get("PYFOG_LUKS_KEY_REF", "")
+    if not directory_value or not plugin_name or not key_ref:
+        raise ValueError(
+            "LUKS2 requiere PYFOG_PLUGIN_DIR, PYFOG_LUKS_KEY_PLUGIN y PYFOG_LUKS_KEY_REF."
+        )
+    registry = PluginRegistry()
+    try:
+        registry.load_directory(Path(directory_value))
+        runner = PluginRunner(
+            registry,
+            environment={
+                key: value for key, value in os.environ.items() if key.startswith("PYFOG_PLUGIN_")
+            },
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise ValueError(f"No se pudo cargar el proveedor LUKS2: {error}") from None
+
+    def provider() -> bytes:
+        try:
+            return external_luks2_key(runner, plugin_name, layout, key_ref=key_ref)
+        except (OSError, ValueError, RuntimeError) as error:
+            raise ValueError(f"El proveedor LUKS2 no entregó una clave: {error}") from None
+
+    return provider
+
+
+def create_lvm_linear_stack(layout: LvmLinearLayout, device: str) -> str:
+    """Create and verify the single-PV/VG/LV graph declared by an image."""
+
+    try:
+        commands = lvm_restore_commands(layout, device)
+    except (LayoutError, ValueError) as error:
+        raise ValueError(str(error)) from None
+    for command in commands:
+        run_command(command, timeout=180)
+    target = f"/dev/{layout.vg_name}/{layout.lv_name}"
+    actual = inspect_lvm_layout(device)
+    if actual != layout:
+        raise ValueError("La topología LVM creada no coincide con el manifiesto.")
+    return target
+
+
+def create_raid1_stack(
+    layout: Raid1Layout,
+    members: list[str],
+    *,
+    member_ids: tuple[str, ...],
+) -> str:
+    """Create a named RAID1 array only after every stable member was mapped."""
+
+    try:
+        command = raid1_restore_commands(layout, members, member_ids=member_ids)
+    except (LayoutError, ValueError) as error:
+        raise ValueError(str(error)) from None
+    run_command(command, timeout=300)
+    device = f"/dev/md-pyfog-{layout.uuid}"
+    actual = inspect_raid1_layout(device)
+    if (
+        actual.uuid != layout.uuid
+        or actual.metadata != layout.metadata
+        or len(actual.member_ids) != len(layout.member_ids)
+        or actual.size_bytes != layout.size_bytes
+    ):
+        raise ValueError("La metadata RAID1 creada no coincide con el manifiesto.")
+    return device
+
+
 def block_inventory() -> dict[str, Any]:
     output = run_command(
         [
@@ -282,7 +891,9 @@ def manifest_uuid(value: Any, label: str) -> str:
         raise ValueError(f"{label} no es un UUID válido.") from None
 
 
-def validate_manifest_capabilities(manifest: dict[str, Any]) -> None:
+def validate_manifest_capabilities(
+    manifest: dict[str, Any], *, allow_extended: bool = False
+) -> None:
     """Validate the explicit v2 profile before any target block is written."""
 
     version = manifest.get("format_version")
@@ -322,8 +933,8 @@ def validate_manifest_capabilities(manifest: dict[str, Any]) -> None:
         raise ValueError("La tabla de particiones declarada no es compatible con el agente.")
     if (firmware_type, partition_table) not in {("uefi", "gpt"), ("bios", "mbr")}:
         raise ValueError("El firmware y la tabla de particiones declarados son incompatibles.")
-    if type(capabilities.get("disks")) is not int or capabilities["disks"] != 1:
-        raise ValueError("La imagen requiere exactamente un disco.")
+    if type(capabilities.get("disks")) is not int or capabilities["disks"] < 1:
+        raise ValueError("La cantidad de discos declarada no es válida.")
     filesystems = capabilities.get("filesystems")
     if (
         not isinstance(filesystems, list)
@@ -333,24 +944,219 @@ def validate_manifest_capabilities(manifest: dict[str, Any]) -> None:
     ):
         raise ValueError("La lista de sistemas de archivos declarada no es válida.")
     supported_filesystems = {"fat32", "ext4", "swap"}
+    if allow_extended:
+        supported_filesystems |= {"xfs", "btrfs"}
     if firmware_type == "bios":
-        supported_filesystems = {"ext4", "swap"}
+        supported_filesystems.discard("fat32")
     unsupported = set(filesystems) - supported_filesystems
     if unsupported:
         raise ValueError(
             "La imagen contiene sistemas de archivos no soportados: "
             + ", ".join(sorted(unsupported))
         )
-    actual = {str(partition.get("filesystem")) for partition in manifest["disk"]["partitions"]}
+    disks = manifest.get("disks") or [manifest["disk"]]
+    if not isinstance(disks, list):
+        raise ValueError("El manifiesto no contiene una lista de discos válida.")
+    actual = {
+        str(partition.get("filesystem"))
+        for disk in disks
+        if isinstance(disk, dict)
+        for partition in disk.get("partitions", [])
+        if isinstance(partition, dict)
+    }
     if set(filesystems) != actual:
         raise ValueError("Los sistemas de archivos declarados no coinciden con el layout.")
-    if capabilities.get("encryption") != "none":
+    encryption = capabilities.get("encryption")
+    if encryption != "none" and not (allow_extended and encryption == "luks2"):
         raise ValueError("El cifrado declarado todavía no está soportado por el agente.")
-    if capabilities.get("volumes") != "partitions":
+    volumes = capabilities.get("volumes")
+    allowed_volumes = {"partitions"}
+    if allow_extended:
+        allowed_volumes |= {"lvm", "lvm-linear", "raid1"}
+    if volumes not in allowed_volumes:
         raise ValueError("La gestión de volúmenes declarada todavía no está soportada.")
+    if (
+        allow_extended
+        and volumes in {"lvm", "lvm-linear"}
+        and (volumes == "lvm" or not manifest.get("volumes"))
+    ):
+        raise ValueError("El perfil LVM lineal no declara metadata de volumen.")
+    if allow_extended and volumes == "raid1" and not manifest.get("raid_arrays"):
+        raise ValueError("El perfil RAID1 no declara metadata de array.")
+    if allow_extended and encryption == "luks2" and not manifest.get("encryption"):
+        raise ValueError("El perfil LUKS2 no declara metadata criptográfica.")
+    if allow_extended and encryption != "none" and volumes != "partitions":
+        raise ValueError("LUKS2 no puede combinarse con LVM o RAID1.")
+    if (
+        allow_extended
+        and volumes == "partitions"
+        and (manifest.get("volumes") or manifest.get("raid_arrays"))
+    ):
+        raise ValueError("El perfil por particiones no puede declarar metadata de volumen.")
+    if allow_extended and volumes == "raid1" and manifest.get("volumes"):
+        raise ValueError("RAID1 no puede combinarse con metadata LVM.")
 
 
-def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[str, Any]:
+def _validate_restore_disk_layout(
+    disk: object,
+    *,
+    firmware_type: str,
+    allow_extended: bool,
+    artifact_paths: set[str],
+    artifact_metadata: dict[str, dict[str, Any]],
+    partition_guids: set[str],
+    filesystem_uuids: set[str],
+) -> set[str]:
+    """Validate one disk while keeping artifact and identity uniqueness global."""
+
+    if not isinstance(disk, dict):
+        raise ValueError("El manifiesto contiene una geometría de disco inválida.")
+    size = manifest_int(disk.get("size_bytes"), "La capacidad de la imagen", minimum=1)
+    sector = disk.get("logical_sector_bytes")
+    if type(sector) is not int or sector not in {512, 4096}:
+        raise ValueError("El sector lógico de la imagen no es válido.")
+    sectors = manifest_int(disk.get("sector_count"), "La cantidad de sectores", minimum=1)
+    is_gpt = firmware_type == "uefi"
+    if is_gpt:
+        first = manifest_int(disk.get("first_usable_sector"), "El primer sector GPT")
+        last = manifest_int(disk.get("last_usable_sector"), "El último sector GPT")
+        if size != sector * sectors or first >= last or last >= sectors:
+            raise ValueError("La geometría GPT de la imagen no es segura.")
+        manifest_uuid(disk.get("gpt_disk_guid"), "El GUID GPT")
+        if disk.get("mbr_disk_signature") is not None or disk.get("boot_sector") is not None:
+            raise ValueError("Un disco UEFI no puede declarar datos MBR.")
+    else:
+        first = 2_048
+        last = sectors - 1
+        if (
+            size != sector * sectors
+            or sector != 512
+            or not re.fullmatch(r"[0-9A-Fa-f]{8}", str(disk.get("mbr_disk_signature", "")))
+        ):
+            raise ValueError("La geometría MBR de la imagen no es segura.")
+        if any(
+            disk.get(field) is not None
+            for field in ("gpt_disk_guid", "first_usable_sector", "last_usable_sector")
+        ):
+            raise ValueError("Un disco MBR no puede declarar geometría GPT.")
+        boot_sector = disk.get("boot_sector")
+        if (
+            not isinstance(boot_sector, dict)
+            or boot_sector.get("path") != "boot-sector.bin"
+            or boot_sector.get("size_bytes") != 446
+            or boot_sector.get("compression") != "none"
+        ):
+            raise ValueError("El manifiesto MBR no contiene un boot sector de 446 bytes.")
+
+    partitions = disk.get("partitions")
+    if not isinstance(partitions, list):
+        raise ValueError("El manifiesto no contiene particiones.")
+    if len(partitions) < (2 if is_gpt else 1) or len(partitions) > 4:
+        raise ValueError("La cantidad de particiones no es válida.")
+    referenced: set[str] = set()
+    numbers: set[int] = set()
+    spans: list[tuple[int, int]] = []
+    roles: list[str] = []
+    if not is_gpt:
+        boot_sector = disk["boot_sector"]
+        boot_path = boot_sector["path"]
+        if boot_path not in artifact_paths:
+            raise ValueError("El manifiesto MBR no publica el artefacto de boot sector.")
+        if artifact_metadata[boot_path]["size_bytes"] != 446:
+            raise ValueError("El artefacto de boot sector MBR debe medir 446 bytes.")
+        referenced.add(boot_path)
+    expected_filesystems = {
+        "esp": ({"fat32"}, "/boot/efi"),
+        "boot": ({"ext4", "xfs"} if allow_extended else {"ext4"}, "/boot"),
+        "root": (
+            {"ext4", "xfs", "btrfs"} if allow_extended else {"ext4"},
+            "/",
+        ),
+        "swap": ({"swap"}, None),
+    }
+    for partition in partitions:
+        if not isinstance(partition, dict):
+            raise ValueError("El manifiesto contiene una partición inválida.")
+        number = manifest_int(partition.get("number"), "El número de partición", minimum=1)
+        if number > 128 or number in numbers:
+            raise ValueError("La tabla contiene números de partición inválidos o repetidos.")
+        numbers.add(number)
+        role = partition.get("role")
+        if role not in expected_filesystems:
+            raise ValueError("La partición contiene un rol no admitido.")
+        roles.append(role)
+        filesystems, mountpoint = expected_filesystems[role]
+        filesystem = partition.get("filesystem")
+        if filesystem not in filesystems or partition.get("mountpoint") != mountpoint:
+            raise ValueError(f"La partición {role} no coincide con su sistema de archivos.")
+        raw_partition_guid = partition.get("partition_guid")
+        if is_gpt:
+            partition_guid = manifest_uuid(raw_partition_guid, "El GUID de partición")
+            if partition_guid in partition_guids:
+                raise ValueError("El GPT contiene GUIDs de partición repetidos.")
+            partition_guids.add(partition_guid)
+        elif raw_partition_guid is not None:
+            raise ValueError("La tabla MBR no puede declarar GUIDs de partición.")
+        filesystem_uuid = partition.get("filesystem_uuid")
+        if not isinstance(filesystem_uuid, str):
+            raise ValueError("El UUID de filesystem no es válido.")
+        if role == "esp":
+            if not re.fullmatch(r"[0-9A-Fa-f]{8}", filesystem_uuid):
+                raise ValueError(
+                    "La ESP debe conservar un UUID FAT32 de ocho dígitos hexadecimales."
+                )
+        else:
+            manifest_uuid(filesystem_uuid, "El UUID de filesystem")
+        filesystem_key = filesystem_uuid.lower()
+        if filesystem_key in filesystem_uuids:
+            raise ValueError("La imagen contiene UUIDs de filesystem repetidos.")
+        filesystem_uuids.add(filesystem_key)
+        start = manifest_int(partition.get("start_sector"), "El inicio de partición")
+        count = manifest_int(partition.get("size_sectors"), "El tamaño de partición", minimum=1)
+        end = start + count - 1
+        if start < first or end > last:
+            label = "GPT" if is_gpt else "MBR"
+            raise ValueError(f"Una partición queda fuera del rango {label} seguro.")
+        spans.append((start, end))
+        if filesystem == "btrfs":
+            subvolume = partition.get("subvolume")
+            if not isinstance(subvolume, str) or not re.fullmatch(
+                r"/?[A-Za-z0-9._/@+-]+", subvolume
+            ):
+                raise ValueError("La raíz Btrfs debe declarar un subvolumen seguro.")
+            if "snapshot" in subvolume.casefold():
+                raise ValueError("La imagen Btrfs no puede restaurar un snapshot.")
+        elif partition.get("subvolume") is not None:
+            raise ValueError("Sólo Btrfs puede declarar subvolúmenes.")
+        artifact = partition.get("artifact")
+        if role == "swap":
+            if artifact is not None:
+                raise ValueError("La partición swap no puede tener un artefacto.")
+        elif not isinstance(artifact, str):
+            raise ValueError(f"La partición {role} no tiene artefacto.")
+        else:
+            safe_artifact_path(artifact)
+            referenced.add(artifact)
+    previous_end = first - 1
+    for start, end in sorted(spans):
+        if start <= previous_end:
+            raise ValueError("Las particiones se superponen.")
+        previous_end = end
+    if (
+        (is_gpt and roles.count("esp") != 1)
+        or roles.count("root") != 1
+        or (not is_gpt and roles.count("esp") != 0)
+        or roles.count("boot") > 1
+        or roles.count("swap") > 1
+    ):
+        label = "GPT" if is_gpt else "MBR"
+        raise ValueError(f"El {label} no tiene una combinación de roles válida.")
+    return referenced
+
+
+def validate_restore_manifest(
+    manifest: dict[str, Any], image_id: str, *, allow_extended: bool = False
+) -> dict[str, Any]:
     """Validate the complete safety-critical v1/v2 manifest inside the initramfs."""
 
     format_version = manifest.get("format_version")
@@ -399,58 +1205,53 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
         required_commands.add("partclone.fat")
     else:
         required_commands.add("mbr")
+    disks_for_tools = manifest.get("disks") or [manifest.get("disk")]
+    for layout in disks_for_tools:
+        if not isinstance(layout, dict):
+            continue
+        for partition in layout.get("partitions", []):
+            if not isinstance(partition, dict):
+                continue
+            filesystem = partition.get("filesystem")
+            if filesystem == "xfs":
+                required_commands.add("partclone.xfs")
+            elif filesystem == "btrfs":
+                required_commands.add("partclone.btrfs")
     if not isinstance(commands, list) or not required_commands.issubset(commands):
         raise ValueError("El manifiesto no contiene los comandos Partclone requeridos.")
     disk = manifest.get("disk")
     if not isinstance(disk, dict):
         raise ValueError("El manifiesto no contiene la geometría del disco.")
-    size = manifest_int(disk.get("size_bytes"), "La capacidad de la imagen", minimum=1)
-    sector = disk.get("logical_sector_bytes")
-    if type(sector) is not int or sector not in {512, 4096}:
-        raise ValueError("El sector lógico de la imagen no es válido.")
-    sectors = manifest_int(disk.get("sector_count"), "La cantidad de sectores", minimum=1)
-    is_gpt = firmware_type == "uefi"
-    if is_gpt:
-        first = manifest_int(disk.get("first_usable_sector"), "El primer sector GPT")
-        last = manifest_int(disk.get("last_usable_sector"), "El último sector GPT")
-        if size != sector * sectors or first >= last or last >= sectors:
-            raise ValueError("La geometría de la imagen no es segura.")
-        manifest_uuid(disk.get("gpt_disk_guid"), "El GUID GPT")
-        if disk.get("mbr_disk_signature") is not None or disk.get("boot_sector") is not None:
-            raise ValueError("Un manifiesto UEFI no puede declarar datos MBR.")
+    raw_disks = manifest.get("disks")
+    if raw_disks is None:
+        disks = [disk]
+    elif isinstance(raw_disks, list):
+        disks = raw_disks
+        if not disks or disks[0] != disk:
+            raise ValueError("El campo disk debe ser el primer disco del manifiesto.")
     else:
-        first = 2_048
-        last = sectors - 1
-        if (
-            size != sector * sectors
-            or sector != 512
-            or not re.fullmatch(r"[0-9A-Fa-f]{8}", str(disk.get("mbr_disk_signature", "")))
-        ):
-            raise ValueError("La geometría del disco MBR no es segura.")
+        raise ValueError("El manifiesto contiene una lista de discos inválida.")
+    if len(disks) > 128:
+        raise ValueError("La imagen declara demasiados discos.")
+    capabilities = manifest.get("capabilities")
+    if isinstance(capabilities, dict) and capabilities.get("disks") != len(disks):
+        raise ValueError("La cantidad de discos declarada no coincide con el layout.")
+    if len(disks) > 1:
+        disk_ids = [item.get("disk_id") if isinstance(item, dict) else None for item in disks]
         if any(
-            disk.get(field) is not None
-            for field in ("gpt_disk_guid", "first_usable_sector", "last_usable_sector")
+            not isinstance(value, str) or not value or value.startswith("path:")
+            for value in disk_ids
         ):
-            raise ValueError("Un manifiesto MBR no puede declarar geometría GPT.")
-        boot_sector = disk.get("boot_sector")
-        if (
-            not isinstance(boot_sector, dict)
-            or boot_sector.get("path") != "boot-sector.bin"
-            or boot_sector.get("size_bytes") != 446
-            or boot_sector.get("compression") != "none"
-        ):
-            raise ValueError("El manifiesto MBR no contiene un boot sector de 446 bytes.")
-    partitions = disk.get("partitions")
+            raise ValueError(
+                "Una imagen multidisco debe identificar cada disco sin depender de /dev."
+            )
+        if len(set(disk_ids)) != len(disk_ids):
+            raise ValueError("Los discos del manifiesto deben tener identidades únicas.")
     artifacts = manifest.get("artifacts")
-    if not isinstance(partitions, list) or not isinstance(artifacts, list):
-        raise ValueError("El manifiesto no contiene particiones y artefactos.")
-    if (
-        len(partitions) < (2 if is_gpt else 1)
-        or len(partitions) > 4
-        or len(artifacts) < 2
-        or len(artifacts) > 5
-    ):
-        raise ValueError("La cantidad de particiones o artefactos no es válida.")
+    if not isinstance(artifacts, list):
+        raise ValueError("El manifiesto no contiene artefactos.")
+    if len(artifacts) < 2 or len(artifacts) > 512:
+        raise ValueError("La cantidad de artefactos no es válida.")
     artifact_paths: set[str] = set()
     artifact_metadata: dict[str, dict[str, Any]] = {}
     for artifact in artifacts:
@@ -459,7 +1260,7 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
         path = artifact.get("path")
         if not isinstance(path, str):
             raise ValueError("La ruta de un artefacto no es válida.")
-        safe_artifact_path(path, allow_boot_sector=not is_gpt)
+        safe_artifact_path(path, allow_boot_sector=firmware_type == "bios")
         if path in artifact_paths:
             raise ValueError("El manifiesto contiene artefactos repetidos.")
         artifact_paths.add(path)
@@ -470,99 +1271,36 @@ def validate_restore_manifest(manifest: dict[str, Any], image_id: str) -> dict[s
             raise ValueError("La compresión del artefacto no es compatible.")
         if not re.fullmatch(r"[0-9a-f]{64}", str(artifact.get("sha256", ""))):
             raise ValueError("El checksum del artefacto no es un SHA-256.")
+        blocks = artifact.get("blocks")
+        if blocks is not None:
+            try:
+                block_manifest = TransferManifest.model_validate(blocks)
+            except ValueError as error:
+                raise ValueError(f"El índice de bloques de {path} no es válido: {error}") from None
+            if block_manifest.size_bytes != artifact_size:
+                raise ValueError("El índice de bloques no coincide con el artefacto.")
         artifact_metadata[path] = {
             "size_bytes": artifact_size,
             "compression": artifact["compression"],
         }
     referenced: set[str] = set()
-    numbers: set[int] = set()
     partition_guids: set[str] = set()
     filesystem_uuids: set[str] = set()
-    spans: list[tuple[int, int]] = []
-    roles: list[str] = []
-    if not is_gpt:
-        boot_sector = disk["boot_sector"]
-        if boot_sector["path"] not in artifact_paths:
-            raise ValueError("El manifiesto MBR no publica el artefacto de boot sector.")
-        if artifact_metadata[boot_sector["path"]]["size_bytes"] != 446:
-            raise ValueError("El artefacto de boot sector MBR debe medir 446 bytes.")
-        referenced.add(boot_sector["path"])
-    expected_filesystems = {
-        "esp": ("fat32", "/boot/efi"),
-        "boot": ("ext4", "/boot"),
-        "root": ("ext4", "/"),
-        "swap": ("swap", None),
-    }
-    for partition in partitions:
-        if not isinstance(partition, dict):
-            raise ValueError("El manifiesto contiene una partición inválida.")
-        number = manifest_int(partition.get("number"), "El número de partición", minimum=1)
-        if number > 128 or number in numbers:
-            raise ValueError("La tabla contiene números de partición inválidos o repetidos.")
-        numbers.add(number)
-        role = partition.get("role")
-        if role not in expected_filesystems:
-            raise ValueError("La partición contiene un rol no admitido.")
-        roles.append(role)
-        filesystem, mountpoint = expected_filesystems[role]
-        if partition.get("filesystem") != filesystem or partition.get("mountpoint") != mountpoint:
-            raise ValueError(f"La partición {role} no coincide con su sistema de archivos.")
-        raw_partition_guid = partition.get("partition_guid")
-        if is_gpt:
-            partition_guid = manifest_uuid(raw_partition_guid, "El GUID de partición")
-            if partition_guid in partition_guids:
-                raise ValueError("El GPT contiene GUIDs de partición repetidos.")
-            partition_guids.add(partition_guid)
-        elif raw_partition_guid is not None:
-            raise ValueError("La tabla MBR no puede declarar GUIDs de partición.")
-        filesystem_uuid = partition.get("filesystem_uuid")
-        if not isinstance(filesystem_uuid, str):
-            raise ValueError("El UUID de filesystem no es válido.")
-        if role == "esp":
-            if not re.fullmatch(r"[0-9A-Fa-f]{8}", filesystem_uuid):
-                raise ValueError(
-                    "La ESP debe conservar un UUID FAT32 de ocho dígitos hexadecimales."
-                )
-        else:
-            manifest_uuid(filesystem_uuid, "El UUID de filesystem")
-        filesystem_key = filesystem_uuid.lower()
-        if filesystem_key in filesystem_uuids:
-            raise ValueError("El GPT contiene UUIDs de filesystem repetidos.")
-        filesystem_uuids.add(filesystem_key)
-        start = manifest_int(partition.get("start_sector"), "El inicio de partición")
-        count = manifest_int(partition.get("size_sectors"), "El tamaño de partición", minimum=1)
-        end = start + count - 1
-        if start < first or end > last:
-            label = "GPT" if is_gpt else "MBR"
-            raise ValueError(f"Una partición queda fuera del rango {label} seguro.")
-        spans.append((start, end))
-        artifact = partition.get("artifact")
-        if role == "swap":
-            if artifact is not None:
-                raise ValueError("La partición swap no puede tener un artefacto.")
-        else:
-            if not isinstance(artifact, str):
-                raise ValueError(f"La partición {role} no tiene artefacto.")
-            safe_artifact_path(artifact)
-            referenced.add(artifact)
-    ordered_spans = sorted(spans)
-    previous_end = first - 1
-    for start, end in ordered_spans:
-        if start <= previous_end:
-            raise ValueError("Las particiones se superponen.")
-        previous_end = end
-    if (
-        (is_gpt and roles.count("esp") != 1)
-        or roles.count("root") != 1
-        or (not is_gpt and roles.count("esp") != 0)
-        or roles.count("boot") > 1
-        or roles.count("swap") > 1
-    ):
-        label = "GPT" if is_gpt else "MBR"
-        raise ValueError(f"El {label} no tiene una combinación de roles válida.")
+    for item in disks:
+        referenced.update(
+            _validate_restore_disk_layout(
+                item,
+                firmware_type=firmware_type,
+                allow_extended=allow_extended,
+                artifact_paths=artifact_paths,
+                artifact_metadata=artifact_metadata,
+                partition_guids=partition_guids,
+                filesystem_uuids=filesystem_uuids,
+            )
+        )
     if referenced != artifact_paths or set(artifact_metadata) != artifact_paths:
         raise ValueError("El manifiesto no tiene referencias de artefactos consistentes.")
-    validate_manifest_capabilities(manifest)
+    validate_manifest_capabilities(manifest, allow_extended=allow_extended)
     return manifest
 
 
@@ -585,11 +1323,15 @@ def safe_artifact_path(value: str, *, allow_boot_sector: bool = False) -> str:
 
 
 def validate_restore_target(
-    selected: dict[str, Any], selector: dict[str, Any], manifest: dict[str, Any]
+    selected: dict[str, Any],
+    selector: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    disk: dict[str, Any] | None = None,
 ) -> None:
     """Check every target property again immediately before the first write."""
 
-    disk = manifest["disk"]
+    disk = disk or manifest["disk"]
     target_size = int(selected.get("size") or 0)
     target_sector = int(selected.get("log-sec") or 0)
     source_size = int(disk["size_bytes"])
@@ -626,7 +1368,12 @@ def validate_restore_target(
         raise ValueError("La imagen BIOS/MBR no puede restaurarse desde firmware UEFI.")
 
 
-def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
+def parse_gpt(
+    device: str,
+    selected: dict[str, Any],
+    *,
+    inventory: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     output = run_command(["sgdisk", "--print", device])
     guid_match = re.search(r"Disk identifier \(GUID\):\s*([0-9A-Fa-f-]{36})", output)
     first_match = re.search(r"First usable sector is\s+(\d+)", output)
@@ -659,6 +1406,7 @@ def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
         if match:
             child_by_number[int(match[1])] = child
     result: list[dict[str, Any]] = []
+    storage_metadata: dict[str, Any] | None = None
     for partition in partitions:
         number = partition["number"]
         child = child_by_number.get(number, {})
@@ -676,20 +1424,78 @@ def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
             filesystem_uuid = filesystem_uuid or values.get("UUID", "")
             part_guid = part_guid or values.get("PARTUUID", "")
         code = partition["code"]
+        capture_device = part_path
+        outer_filesystem = filesystem
+        if filesystem == "lvm2_member":
+            if storage_metadata is not None:
+                raise ValueError("El disco contiene más de un perfil de almacenamiento especial.")
+            lvm_layout, filesystem, filesystem_uuid, subvolume = inspect_lvm_filesystem(part_path)
+            capture_device = f"/dev/{lvm_layout.vg_name}/{lvm_layout.lv_name}"
+            storage_metadata = {
+                "volumes": [lvm_layout_to_manifest(lvm_layout)],
+                "profile": "lvm-linear",
+            }
+        elif filesystem == "linux_raid_member":
+            if storage_metadata is not None:
+                raise ValueError("El disco contiene más de un perfil de almacenamiento especial.")
+            raid_device = _nested_raid_device(child) or _raid_device_from_inventory(
+                inventory, part_path
+            )
+            if raid_device is None:
+                raise ValueError("No se encontró el dispositivo md del miembro RAID1.")
+            raid_layout, filesystem, filesystem_uuid, subvolume = inspect_raid1_filesystem(
+                raid_device
+            )
+            stable_id = str(selected.get("stable_id") or "")
+            if not stable_id or stable_id.startswith("path:"):
+                raise ValueError("RAID1 requiere una identidad estable para cada disco.")
+            source_layout = Raid1Layout(
+                raid_layout.uuid,
+                raid_layout.metadata,
+                (stable_id,),
+                raid_layout.size_bytes,
+            )
+            capture_device = raid_device
+            storage_metadata = {
+                "raid_array": raid1_layout_to_manifest(source_layout),
+                "raid_device": raid_device,
+                "profile": "raid1",
+            }
+        elif filesystem == "crypto_luks":
+            luks_layout = inspect_luks2_layout(part_path)
+            storage_metadata = {
+                "encryption": {
+                    "type": "luks2",
+                    "uuid": luks_layout.uuid,
+                    "cipher": luks_layout.cipher,
+                    "sector_size": luks_layout.sector_size,
+                },
+                "profile": "luks2",
+            }
+        else:
+            subvolume = None
         if code == "EF00":
             role, expected_fs, mountpoint = "esp", "fat32", "/boot/efi"
             if filesystem == "vfat":
                 filesystem = "fat32"
         elif code == "8200":
             role, expected_fs, mountpoint = "swap", "swap", None
-        elif filesystem == "ext4" and "boot" in partition["name"].lower():
-            role, expected_fs, mountpoint = "boot", "ext4", "/boot"
-        elif filesystem == "ext4":
-            role, expected_fs, mountpoint = "root", "ext4", "/"
+        elif filesystem in {"ext4", "xfs"} and "boot" in partition["name"].lower():
+            role, expected_fs, mountpoint = "boot", filesystem, "/boot"
+        elif filesystem in {"ext4", "xfs", "btrfs"}:
+            role, expected_fs, mountpoint = "root", filesystem, "/"
+        elif filesystem == "crypto_luks":
+            role, expected_fs, mountpoint = "root", "", "/"
         else:
             raise ValueError(f"La partición {number} no pertenece a la matriz Linux admitida.")
-        if filesystem != expected_fs or not filesystem_uuid or not part_guid:
+        if (
+            filesystem not in {expected_fs, "crypto_luks"}
+            or (not filesystem_uuid and filesystem != "crypto_luks")
+            or not part_guid
+        ):
             raise ValueError(f"La partición {number} no tiene filesystem y UUID compatibles.")
+        if filesystem == "btrfs" and subvolume is None:
+            subvolume = inspect_btrfs_root_subvolume(capture_device)
         result.append(
             {
                 "number": number,
@@ -701,12 +1507,15 @@ def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
                 "filesystem_uuid": filesystem_uuid,
                 "mountpoint": mountpoint,
                 "device": part_path,
+                "capture_device": capture_device,
+                "outer_filesystem": outer_filesystem,
+                "subvolume": subvolume,
             }
         )
     roles = [partition["role"] for partition in result]
     if roles.count("esp") != 1 or roles.count("root") != 1:
         raise ValueError("El disco debe tener una ESP y una raíz ext4 únicas.")
-    return {
+    geometry: dict[str, Any] = {
         "size_bytes": int(selected["size"]),
         "logical_sector_bytes": int(selected["log-sec"]),
         "sector_count": int(selected["size"]) // int(selected["log-sec"]),
@@ -715,9 +1524,17 @@ def parse_gpt(device: str, selected: dict[str, Any]) -> dict[str, Any]:
         "last_usable_sector": int(last_match[1]),
         "partitions": result,
     }
+    if storage_metadata is not None:
+        geometry["storage"] = storage_metadata
+    return geometry
 
 
-def parse_mbr(device: str, selected: dict[str, Any]) -> dict[str, Any]:
+def parse_mbr(
+    device: str,
+    selected: dict[str, Any],
+    *,
+    inventory: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Read a DOS partition table and classify its Linux filesystems without guessing UEFI."""
 
     if int(selected.get("log-sec") or 0) != 512:
@@ -745,6 +1562,7 @@ def parse_mbr(device: str, selected: dict[str, Any]) -> dict[str, Any]:
         if match:
             child_by_number[int(match[1])] = child
     result: list[dict[str, Any]] = []
+    storage_metadata: dict[str, Any] | None = None
     for raw_partition in raw_partitions:
         if not isinstance(raw_partition, dict):
             raise ValueError("sfdisk devolvió una partición MBR inválida.")
@@ -769,19 +1587,71 @@ def parse_mbr(device: str, selected: dict[str, Any]) -> dict[str, Any]:
             values = parse_export(run_command(["blkid", "-o", "export", part_path], check=False))
             filesystem = filesystem or values.get("TYPE", "").lower()
             filesystem_uuid = filesystem_uuid or values.get("UUID", "")
+        capture_device = part_path
+        outer_filesystem = filesystem
+        if filesystem == "lvm2_member":
+            if storage_metadata is not None:
+                raise ValueError("El disco contiene más de un perfil de almacenamiento especial.")
+            lvm_layout, filesystem, filesystem_uuid, subvolume = inspect_lvm_filesystem(part_path)
+            capture_device = f"/dev/{lvm_layout.vg_name}/{lvm_layout.lv_name}"
+            storage_metadata = {
+                "volumes": [lvm_layout_to_manifest(lvm_layout)],
+                "profile": "lvm-linear",
+            }
+        elif filesystem == "linux_raid_member":
+            if storage_metadata is not None:
+                raise ValueError("El disco contiene más de un perfil de almacenamiento especial.")
+            raid_device = _nested_raid_device(child) or _raid_device_from_inventory(
+                inventory, part_path
+            )
+            if raid_device is None:
+                raise ValueError("No se encontró el dispositivo md del miembro RAID1.")
+            raid_layout, filesystem, filesystem_uuid, subvolume = inspect_raid1_filesystem(
+                raid_device
+            )
+            stable_id = str(selected.get("stable_id") or "")
+            if not stable_id or stable_id.startswith("path:"):
+                raise ValueError("RAID1 requiere una identidad estable para cada disco.")
+            source_layout = Raid1Layout(
+                raid_layout.uuid,
+                raid_layout.metadata,
+                (stable_id,),
+                raid_layout.size_bytes,
+            )
+            capture_device = raid_device
+            storage_metadata = {
+                "raid_array": raid1_layout_to_manifest(source_layout),
+                "raid_device": raid_device,
+                "profile": "raid1",
+            }
+        elif filesystem == "crypto_luks":
+            luks_layout = inspect_luks2_layout(part_path)
+            storage_metadata = {
+                "encryption": {
+                    "type": "luks2",
+                    "uuid": luks_layout.uuid,
+                    "cipher": luks_layout.cipher,
+                    "sector_size": luks_layout.sector_size,
+                },
+                "profile": "luks2",
+            }
+        else:
+            subvolume = None
         mountpoints = child.get("mountpoints") or child.get("mountpoint") or []
         if isinstance(mountpoints, str):
             mountpoints = [mountpoints]
         if filesystem == "swap":
             role, mountpoint = "swap", None
-        elif filesystem == "ext4" and "/boot" in mountpoints:
+        elif filesystem in {"ext4", "xfs"} and "/boot" in mountpoints:
             role, mountpoint = "boot", "/boot"
-        elif filesystem == "ext4":
+        elif filesystem == "crypto_luks" or filesystem in {"ext4", "xfs", "btrfs"}:
             role, mountpoint = "root", "/"
         else:
             raise ValueError(f"La partición {number} no pertenece a la matriz BIOS/MBR admitida.")
-        if not filesystem_uuid:
+        if not filesystem_uuid and filesystem != "crypto_luks":
             raise ValueError(f"La partición {number} no tiene UUID de filesystem.")
+        if filesystem == "btrfs" and subvolume is None:
+            subvolume = inspect_btrfs_root_subvolume(capture_device)
         result.append(
             {
                 "number": number,
@@ -793,6 +1663,9 @@ def parse_mbr(device: str, selected: dict[str, Any]) -> dict[str, Any]:
                 "filesystem_uuid": filesystem_uuid,
                 "mountpoint": mountpoint,
                 "device": part_path,
+                "capture_device": capture_device,
+                "outer_filesystem": outer_filesystem,
+                "subvolume": subvolume,
             }
         )
     roles = [partition["role"] for partition in result]
@@ -816,13 +1689,16 @@ def parse_mbr(device: str, selected: dict[str, Any]) -> dict[str, Any]:
         for (start, _), (_, previous_end) in zip(spans[1:], spans, strict=False)
     ):
         raise ValueError("Las particiones MBR se superponen.")
-    return {
+    geometry: dict[str, Any] = {
         "size_bytes": int(selected["size"]),
         "logical_sector_bytes": int(selected["log-sec"]),
         "sector_count": sectors,
         "mbr_disk_signature": signature_match[1].lower(),
         "partitions": result,
     }
+    if storage_metadata is not None:
+        geometry["storage"] = storage_metadata
+    return geometry
 
 
 def read_mbr_boot_sector(device: str) -> bytes:
@@ -847,7 +1723,7 @@ def validate_mbr_boot_sector(device: str, geometry: dict[str, Any]) -> bytes:
 
 def assert_disk_is_quiescent(partitions: list[dict[str, Any]]) -> None:
     devices = {
-        str(partition["device"])
+        str(partition.get("capture_device") or partition["device"])
         for partition in partitions
         if isinstance(partition.get("device"), str)
     }
@@ -870,6 +1746,82 @@ def assert_disk_is_quiescent(partitions: list[dict[str, Any]]) -> None:
         swap_devices = {line.split()[0] for line in content.splitlines()[1:] if line.split()}
         if devices & swap_devices:
             raise ValueError("El disco tiene swap activo y no se puede capturar.")
+
+
+def mounted_filesystems(partitions: list[dict[str, Any]]) -> list[str]:
+    """Find supported mountpoints for a hot capture without trusting user input."""
+
+    try:
+        document = json.loads(
+            run_command(["findmnt", "--json", "--output", "SOURCE,TARGET,FSTYPE"])
+        )
+    except json.JSONDecodeError:
+        raise ValueError("findmnt devolvió un inventario de montajes inválido.") from None
+    filesystems = document.get("filesystems") if isinstance(document, dict) else None
+    if not isinstance(filesystems, list):
+        raise ValueError("findmnt no devolvió filesystems montados.")
+    devices = {
+        str(partition.get("capture_device") or partition.get("device"))
+        for partition in partitions
+        if isinstance(partition.get("device"), str)
+    }
+    mounts: list[str] = []
+    for item in filesystems:
+        if not isinstance(item, dict) or item.get("source") not in devices:
+            continue
+        target = item.get("target")
+        filesystem = str(item.get("fstype") or "").lower()
+        if (
+            not isinstance(target, str)
+            or not target.startswith("/")
+            or target == "/proc"
+            or filesystem not in {"ext4", "xfs", "btrfs"}
+        ):
+            raise ValueError("El hot capture encontró un filesystem o montaje no soportado.")
+        mounts.append(target)
+    if not mounts:
+        raise ValueError("No se encontró un filesystem soportado para congelar.")
+    return sorted(set(mounts), key=lambda path: (path.count("/"), path))
+
+
+def freeze_filesystems(mountpoints: list[str]) -> list[str]:
+    """Freeze mounts in order and thaw already-frozen mounts on partial failure."""
+
+    frozen: list[str] = []
+    try:
+        for mountpoint in mountpoints:
+            if not mountpoint.startswith("/") or "\x00" in mountpoint:
+                raise ValueError("El punto de montaje no es seguro.")
+            run_command(["fsfreeze", "--freeze", mountpoint], timeout=60)
+            frozen.append(mountpoint)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        thaw_filesystems(frozen)
+        raise
+    return frozen
+
+
+def thaw_filesystems(mountpoints: list[str]) -> None:
+    """Always attempt every thaw and report the first failure."""
+
+    first_error: ValueError | None = None
+    for mountpoint in reversed(mountpoints):
+        try:
+            run_command(["fsfreeze", "--unfreeze", mountpoint], timeout=60)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            first_error = first_error or ValueError(f"No se pudo descongelar {mountpoint}: {error}")
+    if first_error is not None:
+        raise first_error
+
+
+@contextmanager
+def hot_capture_scope(partitions: list[dict[str, Any]]) -> Iterator[None]:
+    """Freeze supported filesystems for the smallest possible capture window."""
+
+    frozen = freeze_filesystems(mounted_filesystems(partitions))
+    try:
+        yield
+    finally:
+        thaw_filesystems(frozen)
 
 
 def assert_target_is_quiescent(selected: dict[str, Any]) -> None:
@@ -898,6 +1850,45 @@ def command_version() -> str:
     output = run_command(["partclone.ext4", "--version"], check=False)
     match = re.search(r"(?:version|v)\s*([0-9][A-Za-z0-9._+-]*)", output, re.IGNORECASE)
     return match[1] if match else "0.3.45"
+
+
+def local_agent_capabilities() -> list[str]:
+    """Advertise only profiles whose tools are present in this agent image."""
+
+    capabilities = {
+        "gpt",
+        "mbr",
+        "partclone.ext4",
+        "partclone.fat",
+        "restore",
+        "clone",
+        "identity",
+        "multidisk",
+    }
+    if shutil.which("partclone.xfs"):
+        capabilities.add("partclone.xfs")
+    if shutil.which("partclone.btrfs"):
+        capabilities.add("partclone.btrfs")
+    if shutil.which("fsfreeze") and shutil.which("findmnt"):
+        capabilities.add("capture.hot")
+    if shutil.which("e2fsck") and shutil.which("resize2fs"):
+        capabilities.add("expand.ext4")
+    lvm_tools = {"pvs", "vgs", "lvs", "pvcreate", "vgcreate", "lvcreate", "lvchange"}
+    if all(shutil.which(tool) for tool in lvm_tools):
+        capabilities.add("lvm-linear")
+    if shutil.which("mdadm"):
+        capabilities.add("raid1")
+    if shutil.which("cryptsetup"):
+        capabilities.add("luks2")
+        plugin_directory = os.environ.get("PYFOG_PLUGIN_DIR", "")
+        if (
+            plugin_directory
+            and Path(plugin_directory).is_dir()
+            and os.environ.get("PYFOG_LUKS_KEY_PLUGIN")
+            and os.environ.get("PYFOG_LUKS_KEY_REF")
+        ):
+            capabilities.add("key-provider")
+    return sorted(capabilities)
 
 
 def capture_stream(command: list[str], *, chunk_bytes: int) -> Iterator[bytes]:
@@ -1046,8 +2037,46 @@ def download_artifact(
     expected_sha256: str,
     chunk_bytes: int,
     check_cancel: Any,
+    block_manifest: dict[str, Any] | None = None,
 ) -> None:
     """Stream one published artifact to staging and verify it without buffering the image."""
+
+    if block_manifest is not None:
+        manifest = TransferManifest.model_validate(block_manifest)
+        if manifest.size_bytes != expected_size:
+            raise ValueError("El índice de bloques no coincide con el tamaño del artefacto.")
+        destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            raise ValueError("El archivo de staging no es regular.")
+        if destination.exists() and destination.stat().st_size > manifest.size_bytes:
+            destination.unlink()
+        for index in missing_block_indices(destination, manifest):
+            block = manifest.blocks[index]
+            check_cancel()
+            separator = "&" if "?" in endpoint else "?"
+            ranged_endpoint = f"{endpoint}{separator}offset={block.offset}&length={block.size}"
+            headers = {
+                "Accept": "application/octet-stream",
+                "Authorization": f"Bearer {validate_token(token)}",
+                "X-PyFog-Block-Index": str(block.index),
+            }
+            request = urllib.request.Request(  # noqa: S310 - endpoint is constrained by the coordinator URL
+                ranged_endpoint, headers=headers, method="GET"
+            )
+            try:
+                with opener(ca_file).open(request, timeout=60) as response:
+                    payload = response.read(block.size + 1)
+            except urllib.error.HTTPError as error:
+                raise ValueError(
+                    f"El servidor rechazó el bloque {index} (HTTP {error.code})."
+                ) from None
+            except urllib.error.URLError:
+                raise ValueError(f"Se interrumpió la descarga del bloque {index}.") from None
+            if len(payload) != block.size:
+                raise ValueError(f"El servidor devolvió un tamaño inválido para el bloque {index}.")
+            write_verified_block(destination, manifest, block, payload)
+        verify_complete_transfer(destination, manifest)
+        return
 
     if destination.exists():
         if destination.is_symlink() or not destination.is_file():
@@ -1171,6 +2200,72 @@ def restore_partition_table(device: str, disk: dict[str, Any]) -> None:
     run_command(["sgdisk", "--verify", device], timeout=120)
 
 
+def validate_target_expansion(selected: dict[str, Any], disk: dict[str, Any]) -> None:
+    """Validate the narrow, non-destructive expansion profile before partition writes."""
+
+    target_size = int(selected.get("size") or 0)
+    source_size = int(disk.get("size_bytes") or 0)
+    if target_size <= source_size:
+        return
+    if disk.get("mbr_disk_signature") is not None:
+        raise ValueError("La expansión segura sólo está disponible para un destino GPT.")
+    partitions = disk.get("partitions")
+    if not isinstance(partitions, list):
+        raise ValueError("El manifiesto no contiene particiones para expandir.")
+    root = next((partition for partition in partitions if partition.get("role") == "root"), None)
+    if not isinstance(root, dict) or root.get("filesystem") != "ext4":
+        raise ValueError("La expansión sólo admite una raíz ext4.")
+    ordered = sorted(
+        partitions,
+        key=lambda partition: int(partition.get("start_sector") or 0),
+    )
+    if ordered[-1] is not root:
+        raise ValueError("La raíz ext4 debe ser la última partición para expandirla.")
+    if any(partition.get("role") == "swap" for partition in partitions):
+        raise ValueError("La expansión no mueve una partición swap posterior a la raíz.")
+
+
+def _new_gpt_last_usable_sector(output: str) -> int:
+    match = re.search(r"last usable sector is\s+(\d+)", output, re.IGNORECASE)
+    if not match:
+        raise ValueError("No se pudo determinar el último sector GPT del destino.")
+    return int(match[1])
+
+
+def expand_gpt_root_partition(device: str, selected: dict[str, Any], disk: dict[str, Any]) -> None:
+    """Expand the final ext4 root partition and filesystem on a larger GPT target."""
+
+    validate_target_expansion(selected, disk)
+    target_size = int(selected.get("size") or 0)
+    if target_size <= int(disk["size_bytes"]):
+        return
+    root = next(partition for partition in disk["partitions"] if partition["role"] == "root")
+    number = int(root["number"])
+    start = int(root["start_sector"])
+    guid = str(root["partition_guid"])
+    run_command(["sgdisk", "--move-second-header", device], timeout=120)
+    geometry = run_command(["sgdisk", "--print", device], timeout=120)
+    last = _new_gpt_last_usable_sector(geometry)
+    run_command(["sgdisk", f"--delete={number}", device], timeout=120)
+    run_command(
+        [
+            "sgdisk",
+            f"--new={number}:{start}:{last}",
+            f"--typecode={number}:8300",
+            f"--change-name={number}:Linux root",
+            f"--partition-guid={number}:{guid}",
+            device,
+        ],
+        timeout=120,
+    )
+    if shutil.which("partprobe"):
+        run_command(["partprobe", device], timeout=60, check=False)
+    root_device = partition_device(device, number)
+    run_command(["e2fsck", "-f", "-p", root_device], timeout=600)
+    run_command(["resize2fs", root_device], timeout=600)
+    run_command(["sgdisk", "--verify", device], timeout=120)
+
+
 def write_mbr_boot_code(artifact: Path, device: str) -> None:
     try:
         value = artifact.read_bytes()
@@ -1189,9 +2284,15 @@ def write_mbr_boot_code(artifact: Path, device: str) -> None:
 
 
 def restore_partition_artifact(
-    artifact: Path, compression: str, partition: str, role: str, *, timeout: int = 3600
+    artifact: Path,
+    compression: str,
+    partition: str,
+    role: str,
+    filesystem: str = "",
+    *,
+    timeout: int = 3600,
 ) -> None:
-    command = "partclone.fat" if role == "esp" else "partclone.ext4"
+    command = filesystem_tool(filesystem or ("fat32" if role == "esp" else "ext4"))
     executable = shutil.which(command)
     if not executable:
         raise ValueError(f"Falta la herramienta {command} en el agente.")
@@ -1253,7 +2354,13 @@ def initialize_swap(partition: dict[str, Any], device: str) -> None:
     )
 
 
-def verify_restored_layout(device: str, disk: dict[str, Any]) -> None:
+def verify_restored_layout(
+    device: str,
+    disk: dict[str, Any],
+    *,
+    root_device_override: str | None = None,
+    root_outer_type: str | None = None,
+) -> None:
     if shutil.which("partprobe"):
         run_command(["partprobe", device], timeout=60, check=False)
     if disk.get("mbr_disk_signature") is not None:
@@ -1273,18 +2380,32 @@ def verify_restored_layout(device: str, disk: dict[str, Any]) -> None:
         run_command(["sgdisk", "--verify", device], timeout=120)
     expected_types = {
         "esp": {"vfat", "fat32"},
-        "boot": {"ext4"},
-        "root": {"ext4"},
+        "boot": {"ext4", "xfs"},
+        "root": {"ext4", "xfs", "btrfs"},
         "swap": {"swap"},
     }
     for partition in disk["partitions"]:
         path = partition_device(device, int(partition["number"]))
         values = parse_export(run_command(["blkid", "-o", "export", path]))
         filesystem = values.get("TYPE", "").lower()
-        if filesystem not in expected_types[str(partition["role"])]:
+        if partition.get("role") == "root" and root_outer_type is not None:
+            if filesystem.casefold() != root_outer_type.casefold():
+                raise ValueError("La partición raíz no contiene el contenedor esperado.")
+            continue
+        expected = expected_types[str(partition["role"])]
+        if filesystem not in expected:
             raise ValueError(f"La partición {partition['role']} no tiene el filesystem esperado.")
         if values.get("UUID", "").lower() != str(partition["filesystem_uuid"]).lower():
             raise ValueError(f"El UUID de la partición {partition['role']} no coincide.")
+    if root_device_override is not None:
+        root = next(partition for partition in disk["partitions"] if partition["role"] == "root")
+        values = parse_export(run_command(["blkid", "-o", "export", root_device_override]))
+        filesystem = values.get("TYPE", "").lower()
+        expected = expected_types["root"]
+        if filesystem not in expected:
+            raise ValueError("El filesystem raíz del volumen restaurado no es compatible.")
+        if values.get("UUID", "").lower() != str(root["filesystem_uuid"]).lower():
+            raise ValueError("El UUID del filesystem raíz restaurado no coincide.")
 
 
 def safe_target_path(root: Path, relative: str, *, allow_symlink: bool = False) -> Path:
@@ -1434,17 +2555,38 @@ def mounted_target(
     device: str,
     partitions: list[dict[str, Any]],
     partition_table: str = "gpt",
+    root_device_override: str | None = None,
 ) -> Iterator[dict[str, Path]]:
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     by_role = {str(partition["role"]): partition for partition in partitions}
-    root_device = partition_device(device, int(by_role["root"]["number"]))
+    root_device = root_device_override or partition_device(device, int(by_role["root"]["number"]))
     root_mount = root / "root"
     esp_mount = root_mount / "boot/efi"
     boot_mount = root_mount / "boot"
     mounted: list[Path] = []
     try:
         root_mount.mkdir(parents=True, mode=0o755, exist_ok=True)
-        run_command(["mount", root_device, str(root_mount)], timeout=60)
+        root_options: list[str] = []
+        root_partition = by_role["root"]
+        if root_partition.get("filesystem") == "btrfs":
+            subvolume = root_partition.get("subvolume")
+            if not isinstance(subvolume, str) or not re.fullmatch(
+                r"/?[A-Za-z0-9._/@+-]+", subvolume
+            ):
+                raise ValueError("El subvolumen Btrfs del destino no es seguro.")
+            root_options.append(f"subvol={subvolume.lstrip('/')}")
+        mount_options = root_partition.get("mount_options") or []
+        if not isinstance(mount_options, list) or any(
+            not isinstance(option, str) or not re.fullmatch(r"[A-Za-z0-9._+=:@/-]+", option)
+            for option in mount_options
+        ):
+            raise ValueError("Las opciones de montaje Btrfs no son seguras.")
+        root_options.extend(mount_options)
+        mount_command = ["mount"]
+        if root_options:
+            mount_command.extend(["-o", ",".join(root_options)])
+        mount_command.extend([root_device, str(root_mount)])
+        run_command(mount_command, timeout=60)
         mounted.append(root_mount)
         if "boot" in by_role:
             boot_mount.mkdir(parents=True, mode=0o755, exist_ok=True)
@@ -1476,8 +2618,16 @@ def mounted_target(
             run_command(["umount", "--", str(mountpoint)], timeout=60, check=False)
 
 
-def ensure_uefi_boot(root: Path, device: str, partitions: list[dict[str, Any]]) -> None:
-    with mounted_target(root, device, partitions) as mounts:
+def ensure_uefi_boot(
+    root: Path,
+    device: str,
+    partitions: list[dict[str, Any]],
+    *,
+    root_device_override: str | None = None,
+) -> None:
+    with mounted_target(
+        root, device, partitions, root_device_override=root_device_override
+    ) as mounts:
         grub = shutil.which("grub-install")
         if not grub:
             raise ValueError("Falta grub-install para preparar el arranque UEFI.")
@@ -1503,8 +2653,20 @@ def ensure_uefi_boot(root: Path, device: str, partitions: list[dict[str, Any]]) 
         run_command(["sync"], timeout=60, check=False)
 
 
-def ensure_bios_boot(root: Path, device: str, partitions: list[dict[str, Any]]) -> None:
-    with mounted_target(root, device, partitions, "mbr") as mounts:
+def ensure_bios_boot(
+    root: Path,
+    device: str,
+    partitions: list[dict[str, Any]],
+    *,
+    root_device_override: str | None = None,
+) -> None:
+    with mounted_target(
+        root,
+        device,
+        partitions,
+        "mbr",
+        root_device_override=root_device_override,
+    ) as mounts:
         grub = shutil.which("grub-install")
         if not grub:
             raise ValueError("Falta grub-install para preparar el arranque BIOS.")
@@ -1533,6 +2695,36 @@ def restore_claimed_task(
     ca_file: str | None,
     lease: LeaseHeartbeat,
     staging_dir: Path,
+    key_provider: Callable[[], bytes] | None = None,
+) -> bool:
+    opened_mappings: list[str] = []
+    try:
+        return _restore_claimed_task(
+            base,
+            claim,
+            task_token,
+            ca_file,
+            lease,
+            staging_dir,
+            opened_mappings=opened_mappings,
+            key_provider=key_provider,
+        )
+    finally:
+        for mapping_name in reversed(opened_mappings):
+            with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
+                close_luks2(mapping_name)
+
+
+def _restore_claimed_task(
+    base: str,
+    claim: dict[str, Any],
+    task_token: str,
+    ca_file: str | None,
+    lease: LeaseHeartbeat,
+    staging_dir: Path,
+    *,
+    opened_mappings: list[str],
+    key_provider: Callable[[], bytes] | None,
 ) -> bool:
     operation = str(claim.get("operation", ""))
     if operation not in {"restore", "clone"}:
@@ -1542,28 +2734,72 @@ def restore_claimed_task(
     manifest_value = claim.get("manifest")
     if not isinstance(manifest_value, dict):
         raise ValueError("La tarea no contiene el manifiesto de la imagen.")
-    manifest = validate_restore_manifest(manifest_value, image_id)
+    # The initramfs advertises only tools that were staged by build-agent; the full profile is
+    # therefore validated here before any target write.  Direct contract callers keep the
+    # conservative MVP default of validate_restore_manifest().
+    manifest = validate_restore_manifest(manifest_value, image_id, allow_extended=True)
     firmware_type = str(manifest["firmware"]["type"])
     partition_table = "gpt" if firmware_type == "uefi" else "mbr"
     target = claim.get("target")
-    selector = target.get("disk") if isinstance(target, dict) else claim.get("disk")
+    target_data = target if isinstance(target, dict) else {}
+    selector = target_data.get("disk") or claim.get("disk")
+    raw_selectors = target_data.get("disks") or claim.get("disks")
+    if raw_selectors is None:
+        raw_selectors = [selector]
+    if not isinstance(raw_selectors, list) or any(
+        not isinstance(item, dict) for item in raw_selectors
+    ):
+        raise ValueError("La tarea no contiene selectores de discos válidos.")
+    layouts = manifest.get("disks") or [manifest["disk"]]
+    if not isinstance(layouts, list) or len(layouts) != len(raw_selectors):
+        raise ValueError("La cantidad de discos de la tarea no coincide con la imagen.")
+    if len(layouts) > 1 and firmware_type == "bios":
+        raise ValueError("La restauración multidisco BIOS requiere artefactos de boot separados.")
     if not isinstance(selector, dict):
         raise ValueError("La tarea no contiene el selector del disco destino.")
     if operation == "clone":
-        hostname = str(target.get("hostname", "")) if isinstance(target, dict) else ""
+        hostname = str(target_data.get("hostname", ""))
         hostname = validate_clone_hostname(hostname)
         if selector.get("clone_hostname") != hostname:
             raise ValueError("El hostname de la reserva no coincide con el destino del clon.")
     else:
         hostname = ""
-    if selector.get("operation") != operation:
-        raise ValueError("La operación del selector no coincide con la tarea.")
     document = block_inventory()
-    selected = select_disk(document, selector)
-    validate_restore_target(selected, selector, manifest)
-    assert_target_is_quiescent(selected)
+    selected_pairs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for layout, disk_selector in zip(layouts, raw_selectors, strict=True):
+        if not isinstance(layout, dict):
+            raise ValueError("La imagen contiene un layout de disco inválido.")
+        if disk_selector.get("operation") != operation:
+            raise ValueError("La operación del selector no coincide con la tarea.")
+        if len(layouts) > 1 and str(disk_selector.get("stable_id", "")).startswith("path:"):
+            raise ValueError("Una restauración multidisco no puede depender del orden /dev.")
+        source_disk_id = layout.get("disk_id") or layout.get("source_disk_id")
+        if source_disk_id and disk_selector.get("source_disk_id") != source_disk_id:
+            raise ValueError("El selector no corresponde al disco de origen reservado.")
+        selected = select_disk(document, disk_selector)
+        validate_restore_target(selected, disk_selector, manifest, disk=layout)
+        assert_target_is_quiescent(selected)
+        if (
+            int(selected.get("size") or 0) > int(layout.get("size_bytes") or 0)
+            and str((manifest.get("capabilities") or {}).get("volumes")) != "partitions"
+        ):
+            raise ValueError("La expansión de destinos no está disponible para LVM, RAID1 o LUKS2.")
+        validate_target_expansion(selected, layout)
+        selected_pairs.append((selected, disk_selector, layout))
+    storage_plan = build_restore_storage_plan(manifest, selected_pairs)
+    requires_expansion = any(
+        int(selected.get("size") or 0) > int(disk.get("size_bytes") or 0)
+        for selected, _selector, disk in selected_pairs
+    )
+    _require_restore_tools(manifest, storage_plan, requires_expansion=requires_expansion)
+    luks_key: bytes | None = None
+    if storage_plan.profile == "luks2":
+        provider = key_provider or configured_luks2_key_provider(storage_plan.luks)  # type: ignore[arg-type]
+        candidate = provider()
+        if not isinstance(candidate, bytes) or not 1 <= len(candidate) <= 4096:
+            raise ValueError("El proveedor LUKS2 no entregó una clave válida.")
+        luks_key = candidate
     lease.check()
-    disk = manifest["disk"]
     artifacts = manifest["artifacts"]
     total = sum(int(artifact["size_bytes"]) for artifact in artifacts)
     sequence = 1
@@ -1578,10 +2814,12 @@ def restore_claimed_task(
         total=total,
         message=(
             f"Destino validado para {firmware_type.upper()}/{partition_table.upper()}; "
+            f"{len(selected_pairs)} disco(s); "
             "todavía no se escribió ningún bloque."
         ),
     )
     artifact_files: dict[str, Path] = {}
+    artifact_by_path = {str(artifact["path"]): artifact for artifact in artifacts}
     processed = 0
     for artifact in artifacts:
         lease.check()
@@ -1596,6 +2834,9 @@ def restore_claimed_task(
             expected_sha256=str(artifact["sha256"]),
             chunk_bytes=DEFAULT_CHUNK_BYTES,
             check_cancel=lease.check,
+            block_manifest=artifact.get("blocks")
+            if isinstance(artifact.get("blocks"), dict)
+            else None,
         )
         artifact_files[path] = destination
         processed += int(artifact["size_bytes"])
@@ -1611,10 +2852,51 @@ def restore_claimed_task(
             message=f"Artefacto verificado: {path}.",
         )
     lease.check()
-    device = device_path(selected)
-    restore_partition_table(device, disk)
-    if firmware_type == "bios":
-        write_mbr_boot_code(artifact_files["boot-sector.bin"], device)
+    for selected, _disk_selector, disk in selected_pairs:
+        device = device_path(selected)
+        restore_partition_table(device, disk)
+        if firmware_type == "bios":
+            boot_path = str(disk["boot_sector"]["path"])
+            write_mbr_boot_code(artifact_files[boot_path], device)
+    root_target: str | None = None
+    root_outer_type: str | None = None
+    if storage_plan.profile == "lvm-linear":
+        first_device = device_path(selected_pairs[0][0])
+        first_root = _root_partition(selected_pairs[0][2])
+        root_target = create_lvm_linear_stack(
+            storage_plan.lvm,  # type: ignore[arg-type]
+            partition_device(first_device, int(first_root["number"])),
+        )
+        root_outer_type = "LVM2_member"
+    elif storage_plan.profile == "luks2":
+        first_device = device_path(selected_pairs[0][0])
+        first_root = _root_partition(selected_pairs[0][2])
+        if luks_key is None or storage_plan.luks is None:
+            raise ValueError("No se pudo preparar la clave LUKS2 antes de escribir.")
+        root_target, mapping_name = format_and_unlock_luks2(
+            partition_device(first_device, int(first_root["number"])),
+            storage_plan.luks,
+            lambda: luks_key,
+        )
+        opened_mappings.append(mapping_name)
+        root_outer_type = "crypto_LUKS"
+    elif storage_plan.profile == "raid1":
+        if storage_plan.raid is None:
+            raise ValueError("No se pudo preparar el layout RAID1.")
+        member_devices = [
+            partition_device(device_path(selected), int(_root_partition(disk)["number"]))
+            for selected, _selector, disk in selected_pairs
+        ]
+        member_ids = tuple(
+            str(disk.get("disk_id") or disk.get("source_disk_id"))
+            for _selected, _selector, disk in selected_pairs
+        )
+        root_target = create_raid1_stack(
+            storage_plan.raid,
+            member_devices,
+            member_ids=member_ids,
+        )
+        root_outer_type = "linux_raid_member"
     sequence = post_progress(
         base,
         task_id,
@@ -1627,11 +2909,52 @@ def restore_claimed_task(
         message=f"Layout {partition_table.upper()} creado; restaurando particiones verificadas.",
     )
     processed = 0
-    for partition in disk["partitions"]:
-        lease.check()
-        role = str(partition["role"])
-        if role == "swap":
-            initialize_swap(partition, device)
+    for disk_index, (selected, _disk_selector, disk) in enumerate(selected_pairs):
+        device = device_path(selected)
+        for partition in disk["partitions"]:
+            lease.check()
+            role = str(partition["role"])
+            if role == "swap":
+                initialize_swap(partition, device)
+                sequence = post_progress(
+                    base,
+                    task_id,
+                    task_token,
+                    ca_file,
+                    sequence,
+                    phase="restoring",
+                    processed=processed,
+                    total=total,
+                    message="Partición swap inicializada.",
+                )
+                continue
+            path = str(partition["artifact"])
+            if role == "root" and storage_plan.profile == "raid1" and disk_index != 0:
+                sequence = post_progress(
+                    base,
+                    task_id,
+                    task_token,
+                    ca_file,
+                    sequence,
+                    phase="restoring",
+                    processed=processed,
+                    total=total,
+                    message=(
+                        "Artefacto raíz RAID1 verificado; se escribe una sola vez sobre el array."
+                    ),
+                )
+                continue
+            target_device = partition_device(device, int(partition["number"]))
+            if role == "root" and root_target is not None:
+                target_device = root_target
+            restore_partition_artifact(
+                artifact_files[path],
+                str(artifact_by_path[path]["compression"]),
+                target_device,
+                role,
+                str(partition.get("filesystem", "")),
+            )
+            processed += int(artifact_by_path[path]["size_bytes"])
             sequence = post_progress(
                 base,
                 task_id,
@@ -1641,29 +2964,18 @@ def restore_claimed_task(
                 phase="restoring",
                 processed=processed,
                 total=total,
-                message="Partición swap inicializada.",
+                message=f"Partición {role} restaurada.",
             )
-            continue
-        path = str(partition["artifact"])
-        restore_partition_artifact(
-            artifact_files[path],
-            next(str(item["compression"]) for item in artifacts if item["path"] == path),
-            partition_device(device, int(partition["number"])),
-            role,
+        if storage_plan.profile == "partitions" and int(selected.get("size") or 0) > int(
+            disk["size_bytes"]
+        ):
+            expand_gpt_root_partition(device, selected, disk)
+        verify_restored_layout(
+            device,
+            disk,
+            root_device_override=root_target if disk_index == 0 else None,
+            root_outer_type=root_outer_type,
         )
-        processed += next(int(item["size_bytes"]) for item in artifacts if item["path"] == path)
-        sequence = post_progress(
-            base,
-            task_id,
-            task_token,
-            ca_file,
-            sequence,
-            phase="restoring",
-            processed=processed,
-            total=total,
-            message=f"Partición {role} restaurada.",
-        )
-    verify_restored_layout(device, disk)
     lease.check()
     sequence = post_progress(
         base,
@@ -1679,15 +2991,34 @@ def restore_claimed_task(
             f"preparando arranque {firmware_type.upper()}."
         ),
     )
+    first_selected, _first_selector, first_disk = selected_pairs[0]
+    first_device = device_path(first_selected)
     if operation == "clone":
         with mounted_target(
-            staging_dir / f"{task_id}.mount", device, disk["partitions"], partition_table
+            staging_dir / f"{task_id}.mount",
+            first_device,
+            first_disk["partitions"],
+            partition_table,
+            root_device_override=root_target,
         ) as mounts:
             customize_clone_identity(mounts["root"], hostname)
-    if firmware_type == "uefi":
-        ensure_uefi_boot(staging_dir / f"{task_id}.boot", device, disk["partitions"])
-    else:
-        ensure_bios_boot(staging_dir / f"{task_id}.boot", device, disk["partitions"])
+    for index, (selected, _disk_selector, disk) in enumerate(selected_pairs):
+        boot_device = device_path(selected)
+        boot_root = staging_dir / f"{task_id}.boot-{index}"
+        if firmware_type == "uefi":
+            ensure_uefi_boot(
+                boot_root,
+                boot_device,
+                disk["partitions"],
+                root_device_override=root_target,
+            )
+        else:
+            ensure_bios_boot(
+                boot_root,
+                boot_device,
+                disk["partitions"],
+                root_device_override=root_target,
+            )
     lease.check()
     sequence = post_progress(
         base,
@@ -1714,7 +3045,8 @@ def restore_claimed_task(
     with contextlib.suppress(OSError):
         shutil.rmtree(staging_dir / task_id)
         shutil.rmtree(staging_dir / f"{task_id}.mount")
-        shutil.rmtree(staging_dir / f"{task_id}.boot")
+        for index in range(len(selected_pairs)):
+            shutil.rmtree(staging_dir / f"{task_id}.boot-{index}")
     return True
 
 
@@ -1731,15 +3063,7 @@ def capture_task(
             "protocol_version": 1,
             "host_id": valid_host_id,
             "session_id": str(uuid.uuid4()),
-            "capabilities": [
-                "gpt",
-                "mbr",
-                "partclone.ext4",
-                "partclone.fat",
-                "restore",
-                "clone",
-                "identity",
-            ],
+            "capabilities": local_agent_capabilities(),
         },
         token=token,
         ca_file=ca_file,
@@ -1758,6 +3082,8 @@ def capture_task(
     lease = LeaseHeartbeat(base, task_id, task_token, ca_file, heartbeat_interval)
     lease.start()
     sequence = 1
+    frozen_mounts: list[str] = []
+    opened_mappings: list[str] = []
     try:
         if claim.get("operation") in {"restore", "clone"}:
             return restore_claimed_task(
@@ -1770,142 +3096,302 @@ def capture_task(
             )
         document = block_inventory()
         lease.check()
-        selector = claim.get("disk")
-        if not isinstance(selector, dict):
-            raise ValueError("La tarea no contiene un selector de disco.")
-        selected = select_disk(document, selector)
-        device = device_path(selected)
-        partition_table = str(selected.get("pttype") or "").lower()
-        if not partition_table:
-            partition_table = parse_export(
-                run_command(["blkid", "-o", "export", device], check=False)
-            ).get("PTTYPE", "gpt")
-        if partition_table in {"dos", "mbr"}:
-            partition_table = "mbr"
-            geometry = parse_mbr(device, selected)
-        elif partition_table == "gpt":
-            geometry = parse_gpt(device, selected)
+        raw_selectors = claim.get("disks") or [claim.get("disk")]
+        if not isinstance(raw_selectors, list) or any(
+            not isinstance(item, dict) for item in raw_selectors
+        ):
+            raise ValueError("La tarea no contiene selectores de disco válidos.")
+        if len(raw_selectors) > 1 and any(
+            str(item.get("stable_id", "")).startswith("path:") for item in raw_selectors
+        ):
+            raise ValueError("Una captura multidisco no puede depender del orden /dev.")
+        selected_geometries: list[
+            tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes | None]
+        ] = []
+        partition_table = ""
+        for selector in raw_selectors:
+            selected = select_disk(document, selector)
+            selected["stable_id"] = str(selector.get("stable_id") or "")
+            device = device_path(selected)
+            detected_table = str(selected.get("pttype") or "").lower()
+            if not detected_table:
+                detected_table = parse_export(
+                    run_command(["blkid", "-o", "export", device], check=False)
+                ).get("PTTYPE", "gpt")
+            if detected_table in {"dos", "mbr"}:
+                detected_table = "mbr"
+                geometry = parse_mbr(device, selected, inventory=document)
+            elif detected_table == "gpt":
+                geometry = parse_gpt(device, selected, inventory=document)
+            else:
+                raise ValueError("El disco no contiene una tabla GPT o MBR admitida.")
+            if partition_table and detected_table != partition_table:
+                raise ValueError("Los discos de una imagen multidisco deben compartir layout.")
+            partition_table = detected_table
+            boot_code = (
+                validate_mbr_boot_sector(device, geometry) if detected_table == "mbr" else None
+            )
+            selected_geometries.append((selected, selector, geometry, boot_code))
+        prepare_capture_storage(selected_geometries, opened_mappings)
+        if len(selected_geometries) > 1 and partition_table == "mbr":
+            raise ValueError("La captura multidisco BIOS requiere boot sector por disco.")
+        raw_storage_profiles = [
+            geometry.get("storage")
+            for _selected, _selector, geometry, _boot in selected_geometries
+            if geometry.get("storage") is not None
+        ]
+        storage_profiles = [
+            profile for profile in raw_storage_profiles if isinstance(profile, dict)
+        ]
+        profile_names = {str(profile.get("profile")) for profile in storage_profiles}
+        if len(profile_names) > 1 or len(storage_profiles) != len(raw_storage_profiles):
+            raise ValueError(
+                "Los discos de una captura no pueden mezclar perfiles de almacenamiento."
+            )
+        if profile_names == {"raid1"}:
+            if len(storage_profiles) != len(selected_geometries) or len(selected_geometries) < 2:
+                raise ValueError("La captura RAID1 requiere todos sus discos miembros.")
+            first_array = storage_profiles[0].get("raid_array")
+            if not isinstance(first_array, dict):
+                raise ValueError("La captura RAID1 no contiene metadata de array.")
+            member_ids = tuple(
+                str(selector.get("stable_id") or "")
+                for _selected, selector, _geometry, _boot in selected_geometries
+            )
+            if any(not member or member.startswith("path:") for member in member_ids):
+                raise ValueError("RAID1 requiere identidades estables para todos sus discos.")
+            storage_profile = {
+                "profile": "raid1",
+                "raid_array": {
+                    **first_array,
+                    "member_ids": list(member_ids),
+                },
+            }
+            for profile in storage_profiles[1:]:
+                array = profile.get("raid_array")
+                if not isinstance(array, dict) or any(
+                    array.get(key) != first_array.get(key)
+                    for key in ("uuid", "metadata", "size_bytes")
+                ):
+                    raise ValueError("Los discos seleccionados no pertenecen al mismo RAID1.")
+        elif storage_profiles:
+            if len(storage_profiles) != 1 or len(selected_geometries) != 1:
+                raise ValueError("LVM y LUKS2 requieren un único disco de origen.")
+            storage_profile = storage_profiles[0]
         else:
-            raise ValueError("El disco no contiene una tabla GPT o MBR admitida.")
-        boot_code: bytes | None = None
-        if partition_table == "mbr":
-            boot_code = validate_mbr_boot_sector(device, geometry)
-        assert_disk_is_quiescent(geometry["partitions"])
-        total = int(selected["size"])
+            storage_profile = None
+        volume_profile = (
+            str(storage_profile.get("profile")) if storage_profile is not None else "partitions"
+        )
+        encryption_profile = (
+            "luks2" if storage_profile and storage_profile.get("profile") == "luks2" else "none"
+        )
+        hot_capture = any(item[1].get("consistency") == "hot" for item in selected_geometries)
+        if hot_capture and any(item[1].get("consistency") != "hot" for item in selected_geometries):
+            raise ValueError("Todos los discos de una captura multidisco deben usar el mismo modo.")
+        if hot_capture:
+            sequence = post_progress(
+                base,
+                task_id,
+                task_token,
+                ca_file,
+                sequence,
+                phase="freezing",
+                processed=0,
+                total=sum(int(item[0]["size"]) for item in selected_geometries),
+                message="Preparando fsfreeze; no se transferirá ningún bloque todavía.",
+            )
+            mounts = [
+                mount
+                for _selected, _selector, geometry, _boot in selected_geometries
+                for mount in mounted_filesystems(geometry["partitions"])
+            ]
+            frozen_mounts = freeze_filesystems(sorted(set(mounts)))
+            sequence = post_progress(
+                base,
+                task_id,
+                task_token,
+                ca_file,
+                sequence,
+                phase="capturing",
+                processed=0,
+                total=sum(int(item[0]["size"]) for item in selected_geometries),
+                message="Filesystem congelado; iniciando captura consistente.",
+            )
+        else:
+            for _selected, _selector, geometry, _boot in selected_geometries:
+                assert_disk_is_quiescent(geometry["partitions"])
+        total = sum(int(item[0]["size"]) for item in selected_geometries)
         sequence = post_progress(
             base,
             task_id,
             task_token,
             ca_file,
             sequence,
-            phase="inspecting",
+            phase="capturing" if hot_capture else "inspecting",
             processed=0,
             total=total,
             message="Disco validado en modo de solo lectura.",
         )
         artifacts: list[dict[str, Any]] = []
-        partition_artifacts: list[dict[str, Any]] = []
+        disk_payloads: list[dict[str, Any]] = []
         commands: set[str] = set()
         processed_total = 0
-        if boot_code is not None:
-            boot_path = "boot-sector.bin"
-            upload_chunk(
-                f"{base}/api/v1/tasks/{task_id}/artifacts/{boot_path}",
-                boot_code,
-                token=task_token,
-                ca_file=ca_file,
-                index=0,
-                offset=0,
-                chunk_size=int(claim.get("chunk_bytes") or DEFAULT_CHUNK_BYTES),
-            )
-            artifacts.append(
-                {
+        negotiated_chunk = min(
+            DEFAULT_CHUNK_BYTES, int(claim.get("chunk_bytes") or DEFAULT_CHUNK_BYTES)
+        )
+        captured_artifacts: dict[str, dict[str, Any]] = {}
+        for disk_index, (_selected, selector, geometry, boot_code) in enumerate(
+            selected_geometries
+        ):
+            disk_prefix = "" if len(selected_geometries) == 1 else f"disk-{disk_index + 1:02d}-"
+            boot_artifact: dict[str, Any] | None = None
+            if boot_code is not None:
+                boot_path = "boot-sector.bin"
+                upload_chunk(
+                    f"{base}/api/v1/tasks/{task_id}/artifacts/{boot_path}",
+                    boot_code,
+                    token=task_token,
+                    ca_file=ca_file,
+                    index=0,
+                    offset=0,
+                    chunk_size=negotiated_chunk,
+                )
+                boot_block = TransferBlock(
+                    index=0,
+                    offset=0,
+                    size=len(boot_code),
+                    sha256=hashlib.sha256(boot_code).hexdigest(),
+                )
+                boot_transfer = TransferManifest(
+                    size_bytes=len(boot_code),
+                    block_size=len(boot_code),
+                    blocks=[boot_block],
+                )
+                boot_artifact = {
                     "path": boot_path,
                     "size_bytes": len(boot_code),
                     "compression": "none",
                     "sha256": hashlib.sha256(boot_code).hexdigest(),
+                    "blocks": boot_transfer.model_dump(mode="json"),
                 }
-            )
-            commands.add("mbr")
-            processed_total += len(boot_code)
-        for partition in geometry["partitions"]:
-            if partition["role"] == "swap":
-                continue
-            command = "partclone.fat" if partition["role"] == "esp" else "partclone.ext4"
-            commands.add(command)
-            path = f"partitions/{partition['number']:02d}-{partition['role']}.partclone.gz"
-            processed_partition = 0
-            digest = hashlib.sha256()
-            for chunk_index, chunk in enumerate(
-                capture_stream(
-                    [command, "-c", "-s", partition["device"], "-o", "-"],
-                    chunk_bytes=min(
-                        DEFAULT_CHUNK_BYTES, int(claim.get("chunk_bytes") or DEFAULT_CHUNK_BYTES)
-                    ),
-                )
-            ):
-                digest.update(chunk)
-                upload_chunk(
-                    f"{base}/api/v1/tasks/{task_id}/artifacts/{path}",
-                    chunk,
-                    token=task_token,
-                    ca_file=ca_file,
-                    index=chunk_index,
-                    offset=processed_partition,
-                    chunk_size=int(claim.get("chunk_bytes") or DEFAULT_CHUNK_BYTES),
-                )
-                lease.check()
-                processed_partition += len(chunk)
-                processed_total += len(chunk)
-                if (
-                    processed_partition == len(chunk)
-                    or processed_partition % (8 * DEFAULT_CHUNK_BYTES) == 0
-                ):
-                    sequence = post_progress(
-                        base,
-                        task_id,
-                        task_token,
-                        ca_file,
-                        sequence,
-                        phase="uploading",
-                        processed=min(total, processed_total),
-                        total=total,
-                        message=f"Transfiriendo {path}.",
+                artifacts.append(boot_artifact)
+                commands.add("mbr")
+                processed_total += len(boot_code)
+            partition_artifacts: list[dict[str, Any]] = []
+            for partition in geometry["partitions"]:
+                if partition["role"] == "swap":
+                    continue
+                command = filesystem_tool(str(partition["filesystem"]))
+                commands.add(command)
+                if volume_profile == "raid1" and partition["role"] == "root":
+                    path = "partitions/raid1-root.partclone.gz"
+                    cached = captured_artifacts.get(path)
+                    if cached is not None:
+                        partition_artifacts.append(cached)
+                        continue
+                else:
+                    path = (
+                        f"partitions/{disk_prefix}{partition['number']:02d}-"
+                        f"{partition['role']}.partclone.gz"
                     )
-            partition_artifacts.append(
-                {
+                processed_partition = 0
+                digest = hashlib.sha256()
+                block_entries: list[TransferBlock] = []
+                for chunk_index, chunk in enumerate(
+                    capture_stream(
+                        [
+                            command,
+                            "-c",
+                            "-s",
+                            str(partition.get("capture_device") or partition["device"]),
+                            "-o",
+                            "-",
+                        ],
+                        chunk_bytes=negotiated_chunk,
+                    )
+                ):
+                    digest.update(chunk)
+                    block_entries.append(
+                        TransferBlock(
+                            index=chunk_index,
+                            offset=processed_partition,
+                            size=len(chunk),
+                            sha256=hashlib.sha256(chunk).hexdigest(),
+                        )
+                    )
+                    upload_chunk(
+                        f"{base}/api/v1/tasks/{task_id}/artifacts/{path}",
+                        chunk,
+                        token=task_token,
+                        ca_file=ca_file,
+                        index=chunk_index,
+                        offset=processed_partition,
+                        chunk_size=negotiated_chunk,
+                    )
+                    lease.check()
+                    processed_partition += len(chunk)
+                    processed_total += len(chunk)
+                    if (
+                        processed_partition == len(chunk)
+                        or processed_partition % (8 * DEFAULT_CHUNK_BYTES) == 0
+                    ):
+                        sequence = post_progress(
+                            base,
+                            task_id,
+                            task_token,
+                            ca_file,
+                            sequence,
+                            phase="uploading",
+                            processed=min(total, processed_total),
+                            total=total,
+                            message=f"Transfiriendo {path}.",
+                        )
+                transfer = TransferManifest(
+                    size_bytes=processed_partition,
+                    block_size=negotiated_chunk,
+                    blocks=block_entries,
+                )
+                artifact = {
                     "path": path,
                     "size_bytes": processed_partition,
                     "compression": "gzip",
                     "sha256": digest.hexdigest(),
+                    "blocks": transfer.model_dump(mode="json"),
                 }
-            )
-        partition_payload = [
-            {
-                key: value
-                for key, value in partition.items()
-                if key != "device" and key != "code" and key != "name"
+                partition_artifacts.append(artifact)
+                artifacts.append(artifact)
+                captured_artifacts[path] = artifact
+            partition_payload = [
+                {
+                    key: value
+                    for key, value in partition.items()
+                    if key not in {"device", "capture_device", "outer_filesystem", "code", "name"}
+                }
+                for partition in geometry["partitions"]
+            ]
+            for partition, artifact in zip(
+                [part for part in partition_payload if part["role"] != "swap"],
+                partition_artifacts,
+                strict=True,
+            ):
+                partition["artifact"] = artifact["path"]
+            for partition in partition_payload:
+                partition.setdefault("artifact", None)
+            stable_id = str(selector.get("stable_id") or "")
+            if not stable_id:
+                raise ValueError("El selector de captura no contiene una identidad de disco.")
+            disk_payload: dict[str, Any] = {
+                **{key: geometry[key] for key in geometry if key not in {"partitions", "storage"}},
+                "disk_id": stable_id,
+                "source_disk_id": stable_id,
+                "partitions": partition_payload,
             }
-            for partition in geometry["partitions"]
-        ]
-        for partition, artifact in zip(
-            [part for part in partition_payload if part["role"] != "swap"],
-            partition_artifacts,
-            strict=True,
-        ):
-            partition["artifact"] = artifact["path"]
-        for partition in partition_payload:
-            partition.setdefault("artifact", None)
+            if boot_artifact is not None:
+                disk_payload["boot_sector"] = boot_artifact
+            disk_payloads.append(disk_payload)
         source = claim.get("source")
         system = claim.get("system")
-        disk_payload: dict[str, Any] = {
-            **{key: geometry[key] for key in geometry if key != "partitions"},
-            "partitions": partition_payload,
-        }
-        if boot_code is not None:
-            disk_payload["boot_sector"] = next(
-                artifact for artifact in artifacts if artifact["path"] == "boot-sector.bin"
-            )
         firmware = (
             {"type": "bios", "secure_boot": False}
             if partition_table == "mbr"
@@ -1924,12 +3410,18 @@ def capture_task(
             "capabilities": {
                 "firmware": firmware,
                 "partition_table": partition_table,
-                "disks": 1,
-                "filesystems": sorted({part["filesystem"] for part in partition_payload}),
-                "encryption": "none",
-                "volumes": "partitions",
+                "disks": len(disk_payloads),
+                "filesystems": sorted(
+                    {
+                        part["filesystem"]
+                        for disk_payload in disk_payloads
+                        for part in disk_payload["partitions"]
+                    }
+                ),
+                "encryption": encryption_profile,
+                "volumes": volume_profile,
             },
-            "disk": disk_payload,
+            "disk": disk_payloads[0],
             "tool": {
                 "name": "partclone",
                 "version": command_version(),
@@ -1938,6 +3430,29 @@ def capture_task(
             "artifacts": artifacts,
             "publishable": True,
         }
+        if len(disk_payloads) > 1:
+            manifest["disks"] = disk_payloads
+        if storage_profile:
+            if volume_profile == "lvm-linear":
+                manifest["volumes"] = storage_profile["volumes"]
+            elif volume_profile == "raid1":
+                manifest["raid_arrays"] = [storage_profile["raid_array"]]
+            elif encryption_profile != "none":
+                manifest["encryption"] = storage_profile["encryption"]
+        if frozen_mounts:
+            sequence = post_progress(
+                base,
+                task_id,
+                task_token,
+                ca_file,
+                sequence,
+                phase="thawing",
+                processed=processed_total,
+                total=total,
+                message="Liberando fsfreeze antes de publicar la captura.",
+            )
+            thaw_filesystems(frozen_mounts)
+            frozen_mounts = []
         sequence = post_progress(
             base,
             task_id,
@@ -1976,6 +3491,12 @@ def capture_task(
             )
         raise
     finally:
+        if frozen_mounts:
+            with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
+                thaw_filesystems(frozen_mounts)
+        for mapping_name in reversed(opened_mappings):
+            with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
+                close_luks2(mapping_name)
         lease.close()
 
 

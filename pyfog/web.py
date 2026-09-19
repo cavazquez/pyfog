@@ -21,8 +21,11 @@ from pyfog.database import get_db
 from pyfog.health import operational_snapshot
 from pyfog.image_catalog import IMAGE_STATUSES, image_is_selectable
 from pyfog.image_manifest import (
+    ImageDisk,
     ImageManifest,
+    ensure_supported_extended_image,
     image_compatibility_errors,
+    manifest_disks,
     parse_image_manifest,
 )
 from pyfog.models import (
@@ -243,7 +246,9 @@ def task_disk_selector(
     *,
     operation: str = "capture",
     manifest: ImageManifest | None = None,
+    manifest_disk: ImageDisk | None = None,
     clone_hostname: str = "",
+    consistency: str = "cold",
 ) -> dict[str, Any]:
     selector: dict[str, Any] = {
         key: disk[key]
@@ -261,16 +266,52 @@ def task_disk_selector(
         if key in disk
     }
     if operation in {"restore", "clone"} and manifest is not None:
+        source_disk = manifest_disk or manifest.disk
         selector.update(
             {
                 "operation": operation,
-                "source_size_bytes": manifest.disk.size_bytes,
-                "required_logical_sector_bytes": manifest.disk.logical_sector_bytes,
+                "source_size_bytes": source_disk.size_bytes,
+                "required_logical_sector_bytes": source_disk.logical_sector_bytes,
             }
         )
+        if source_disk.disk_id:
+            selector["source_disk_id"] = source_disk.disk_id
         if operation == "clone":
             selector["clone_hostname"] = clone_hostname
+    if operation == "capture":
+        selector["consistency"] = consistency
     return selector
+
+
+def task_disk_selectors(
+    disks: list[dict[str, Any]],
+    *,
+    operation: str = "capture",
+    manifest: ImageManifest | None = None,
+    clone_hostname: str = "",
+    consistency: str = "cold",
+) -> dict[str, Any]:
+    """Encode one or more stable selectors while preserving the v1 shape for one disk."""
+
+    if not disks:
+        raise ValueError("La tarea debe contener al menos un disco.")
+    source_disks = manifest_disks(manifest) if manifest is not None else []
+    if source_disks and len(source_disks) != len(disks):
+        raise ValueError("La cantidad de discos destino no coincide con la imagen.")
+    selectors = [
+        task_disk_selector(
+            disk,
+            operation=operation,
+            manifest=manifest,
+            manifest_disk=source_disks[index] if source_disks else None,
+            clone_hostname=clone_hostname,
+            consistency=consistency,
+        )
+        for index, disk in enumerate(disks)
+    ]
+    if len(selectors) == 1:
+        return selectors[0]
+    return {"disks": selectors, "primary": selectors[0]}
 
 
 def selectable_manifest(request: Request, image: Image) -> ImageManifest | None:
@@ -282,8 +323,7 @@ def selectable_manifest(request: Request, image: Image) -> ImageManifest | None:
         manifest = parse_image_manifest(image.manifest_json)
         if str(manifest.image_id) != image.id:
             return None
-        if image_compatibility_errors(manifest):
-            return None
+        ensure_supported_extended_image(manifest)
         directory = request.app.state.artifact_store.published_directory(image.id)
         if not directory.is_dir() or directory.is_symlink():
             return None
@@ -304,6 +344,7 @@ def deployment_validation(
     *,
     operation: str,
     clone_hostname: str = "",
+    disks: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     errors: dict[str, str] = {}
     if manifest is None:
@@ -314,7 +355,7 @@ def deployment_validation(
         errors["image_id"] = "La imagen publicada no coincide con su manifiesto."
     if image.source_host_id and image.source_host_id != source_host_id:
         errors["image_id"] = "La imagen publicada no coincide con su equipo de origen."
-    compatibility_errors = image_compatibility_errors(manifest)
+    compatibility_errors = image_compatibility_errors(manifest, allow_extended=True)
     if compatibility_errors:
         errors["image_id"] = "La imagen no es compatible con el perfil actual: " + "; ".join(
             compatibility_errors
@@ -323,18 +364,27 @@ def deployment_validation(
         errors["image_id"] = "La restauración sólo puede volver al equipo de origen."
     if operation == "clone" and source_host_id == host.id:
         errors["image_id"] = "La clonación necesita un equipo destino diferente del origen."
-    if disk is None:
+    selected_disks = disks if disks is not None else ([disk] if disk is not None else [])
+    expected_disks = manifest_disks(manifest)
+    if not selected_disks:
         errors["disk_key"] = "Seleccioná un disco del último inventario."
+    elif len(selected_disks) != len(expected_disks):
+        errors["disk_key"] = (
+            f"La imagen requiere {len(expected_disks)} disco(s) y seleccionaste "
+            f"{len(selected_disks)}."
+        )
     else:
-        size = int(disk.get("size_bytes") or 0)
-        required_size = manifest.disk.size_bytes
-        if size < required_size:
-            errors["disk_key"] = "El disco destino es menor que el de la imagen."
-        sector = disk.get("logical_sector_bytes")
-        if sector != manifest.disk.logical_sector_bytes:
-            errors["disk_key"] = "El sector lógico del destino no es compatible con la imagen."
-        if disk.get("removable"):
-            errors["disk_key"] = "No se puede usar un disco removible como destino."
+        for selected, source in zip(selected_disks, expected_disks, strict=True):
+            size = int(selected.get("size_bytes") or 0)
+            if size < source.size_bytes:
+                errors["disk_key"] = "Un disco destino es menor que el de la imagen."
+            sector = selected.get("logical_sector_bytes")
+            if sector != source.logical_sector_bytes:
+                errors["disk_key"] = (
+                    "El sector lógico de un destino no es compatible con la imagen."
+                )
+            if selected.get("removable"):
+                errors["disk_key"] = "No se puede usar un disco removible como destino."
     if operation == "clone":
         try:
             CloneInput.model_validate({"hostname": clone_hostname})
@@ -780,11 +830,15 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
     host = get_host(db, host_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
-    values = {
+    disk_keys = [str(value).strip() for value in form.getlist("disk_key") if str(value).strip()]
+    values: dict[str, Any] = {
         key: str(form.get(key, "")).strip()
-        for key in ("image_id", "image_name", "image_description", "disk_key", "idempotency_key")
+        for key in ("image_id", "image_name", "image_description", "idempotency_key")
     }
+    values["disk_key"] = disk_keys[0] if disk_keys else ""
+    values["disk_keys"] = disk_keys
     values["confirm"] = str(form.get("confirm", ""))
+    values["consistency"] = str(form.get("consistency", "cold")).strip().lower()
     errors: dict[str, str] = {}
     report = latest_report(db, host)
     disks = inventory_disks(report)
@@ -797,11 +851,13 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
         errors["form"] = "El equipo necesita un inventario antes de capturar una imagen."
     if values["confirm"] != "1":
         errors["confirm"] = "Confirmá el equipo, el disco y la imagen antes de iniciar."
-    selected_disk = next(
-        (disk for disk in disks if disk.get("stable_id") == values["disk_key"]), None
-    )
-    if selected_disk is None:
+    if values["consistency"] not in {"cold", "hot"}:
+        errors["consistency"] = "Elegí una modalidad de consistencia válida."
+    selected_disks = [disk for key in disk_keys for disk in disks if disk.get("stable_id") == key]
+    if not disk_keys or len(selected_disks) != len(disk_keys):
         errors["disk_key"] = "Seleccioná un disco del último inventario."
+    elif len(set(disk_keys)) != len(disk_keys):
+        errors["disk_key"] = "No repitas el mismo disco en una captura multidisco."
     image: Image | None = None
     if values["image_id"]:
         try:
@@ -827,7 +883,8 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
                     str(user.id),
                     host.id,
                     values["image_id"] or values["image_name"],
-                    values["disk_key"],
+                    ",".join(disk_keys),
+                    values["consistency"],
                     report.id if report else "",
                 ]
             )
@@ -842,7 +899,7 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
             return RedirectResponse(f"/tasks/{existing.id}", 303)
     if db.scalar(select(Task.id).where(Task.reservation_key == host.id)) is not None:
         errors["form"] = "Este equipo ya tiene una tarea activa."
-    if errors or report is None or selected_disk is None or image is None:
+    if errors or report is None or not selected_disks or image is None:
         return render(
             request,
             "capture.html",
@@ -886,12 +943,12 @@ async def capture_request(request: Request, host_id: UUID, db: Db) -> Response:
         host_id=host.id,
         image_id=image_id,
         inventory_report_id=report.id,
-        disk_selector=task_disk_selector(selected_disk),
+        disk_selector=task_disk_selectors(selected_disks, consistency=values["consistency"]),
         idempotency_key=values["idempotency_key"],
         reservation_key=host.id,
         phase="queued",
         bytes_processed=0,
-        total_bytes=int(selected_disk["size_bytes"]),
+        total_bytes=sum(int(disk["size_bytes"]) for disk in selected_disks),
         message="En espera de un agente PXE compatible.",
     )
     db.add(image)
@@ -995,22 +1052,25 @@ async def deployment_request(
     host = get_host(db, host_id)
     form = await request.form()
     verify_csrf(request, form.get("csrf"))
-    values = {
-        key: str(form.get(key, "")).strip()
-        for key in ("image_id", "disk_key", "idempotency_key", "hostname")
+    disk_keys = [str(value).strip() for value in form.getlist("disk_key") if str(value).strip()]
+    values: dict[str, Any] = {
+        key: str(form.get(key, "")).strip() for key in ("image_id", "idempotency_key", "hostname")
     }
+    values["disk_key"] = disk_keys[0] if disk_keys else ""
+    values["disk_keys"] = disk_keys
     values["confirm"] = str(form.get("confirm", ""))
     errors: dict[str, str] = {}
     report = latest_report(db, host)
     disks = inventory_disks(report)
     images = deployment_images(db, host, operation)
-    selected_disk = next(
-        (disk for disk in disks if disk.get("stable_id") == values["disk_key"]), None
-    )
+    selected_disks = [disk for key in disk_keys for disk in disks if disk.get("stable_id") == key]
+    selected_disk = selected_disks[0] if len(selected_disks) == 1 else None
     if report is None:
         errors["form"] = "El equipo necesita un inventario actualizado antes de operar."
     if values["confirm"] != "1":
         errors["confirm"] = "Confirmá el equipo, el disco y la sobrescritura antes de iniciar."
+    if len(set(disk_keys)) != len(disk_keys):
+        errors["disk_key"] = "No repitas el mismo disco en una tarea multidisco."
     image: Image | None = None
     manifest: ImageManifest | None = None
     if values["image_id"]:
@@ -1039,6 +1099,7 @@ async def deployment_request(
                 selected_disk,
                 operation=operation,
                 clone_hostname=values["hostname"],
+                disks=selected_disks,
             ).items()
             if key not in errors
         }
@@ -1051,7 +1112,7 @@ async def deployment_request(
                     operation,
                     host.id,
                     values["image_id"],
-                    values["disk_key"],
+                    ",".join(disk_keys),
                     values["hostname"],
                     report.id if report else "",
                 ]
@@ -1067,7 +1128,7 @@ async def deployment_request(
             return RedirectResponse(f"/tasks/{existing.id}", 303)
     if db.scalar(select(Task.id).where(Task.reservation_key == host.id)) is not None:
         errors["form"] = "Este equipo ya tiene una tarea activa."
-    if errors or report is None or selected_disk is None or image is None or manifest is None:
+    if errors or report is None or not selected_disks or image is None or manifest is None:
         return render(
             request,
             "deployment.html",
@@ -1108,8 +1169,8 @@ async def deployment_request(
         host_id=host.id,
         image_id=image.id,
         inventory_report_id=report.id,
-        disk_selector=task_disk_selector(
-            selected_disk,
+        disk_selector=task_disk_selectors(
+            selected_disks,
             operation=operation,
             manifest=manifest,
             clone_hostname=values["hostname"],

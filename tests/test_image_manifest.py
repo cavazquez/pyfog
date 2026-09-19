@@ -8,6 +8,7 @@ import pytest
 
 from pyfog.image_manifest import (
     ImageManifest,
+    ensure_supported_extended_image,
     ensure_supported_image,
     image_compatibility_errors,
     parse_image_manifest,
@@ -290,3 +291,65 @@ def test_manifest_rejects_future_dates_and_non_ubuntu_system():
     other["system"] = {"name": "Fedora", "id": "fedora", "version": "41"}
     with pytest.raises(ValueError, match="Ubuntu"):
         ImageManifest.model_validate(other)
+
+
+def test_v2_multidisk_manifest_matches_stable_identities_before_restore():
+    payload = valid_manifest_v2()
+    first = copy.deepcopy(payload["disk"])
+    first["disk_id"] = "wwn:disk-a"
+    for partition in first["partitions"]:
+        if partition.get("artifact"):
+            partition["artifact"] = partition["artifact"].replace(
+                "partitions/", "partitions/disk-a-"
+            )
+    second = copy.deepcopy(payload["disk"])
+    second["disk_id"] = "wwn:disk-b"
+    for partition in second["partitions"]:
+        if partition.get("artifact"):
+            partition["artifact"] = partition["artifact"].replace(
+                "partitions/", "partitions/disk-b-"
+            )
+    payload["disk"] = first
+    payload["disks"] = [first, second]
+    payload["capabilities"] = {
+        **payload["capabilities"],
+        "disks": 2,
+    }
+    artifacts = copy.deepcopy(payload["artifacts"])
+    for artifact in artifacts:
+        artifact["path"] = artifact["path"].replace("partitions/", "partitions/disk-a-")
+    payload["artifacts"] = artifacts + [
+        {
+            **artifact,
+            "path": artifact["path"].replace("disk-a-", "disk-b-"),
+        }
+        for artifact in artifacts
+    ]
+    manifest = ImageManifest.model_validate(payload)
+    assert len(manifest.disks or []) == 2
+    ensure_supported_extended_image(manifest)
+
+
+def test_multidisk_and_raid_manifests_reject_path_order_identities():
+    payload = valid_manifest_v2()
+    first = copy.deepcopy(payload["disk"])
+    second = copy.deepcopy(payload["disk"])
+    first["disk_id"] = "path:/dev/vda"
+    second["disk_id"] = "wwn:disk-b"
+    payload["disk"] = first
+    payload["disks"] = [first, second]
+    payload["capabilities"] = {**payload["capabilities"], "disks": 2}
+    with pytest.raises(ValueError, match="orden /dev"):
+        ImageManifest.model_validate(payload)
+
+    raid = {
+        "level": 1,
+        "uuid": "11111111-1111-4111-8111-111111111111",
+        "metadata": "1.2",
+        "member_ids": ["path:/dev/vda", "wwn:disk-b"],
+        "size_bytes": 1024,
+    }
+    payload = valid_manifest_v2()
+    payload["raid_arrays"] = [raid]
+    with pytest.raises(ValueError, match="identidades estables"):
+        ImageManifest.model_validate(payload)

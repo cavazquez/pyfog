@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from pyfog.config import Settings
+from pyfog.coordinator import FencingLease, assert_fenced
 from pyfog.models import Image, Task, TaskAttempt, TaskEvent, now
 from pyfog.security import digest
 
@@ -35,9 +36,11 @@ TASK_PHASES = frozenset(
         "assigned",
         "running",
         "inspecting",
+        "freezing",
         "capturing",
         "uploading",
         "downloading",
+        "thawing",
         "restoring",
         "personalizing",
         "finalizing",
@@ -52,16 +55,18 @@ PHASE_ORDER = {
     "assigned": 1,
     "running": 2,
     "inspecting": 3,
-    "capturing": 4,
-    "uploading": 5,
-    "downloading": 5,
-    "restoring": 6,
-    "personalizing": 7,
-    "finalizing": 8,
-    "cancelling": 9,
-    "verifying": 10,
-    "completed": 11,
-    "failed": 12,
+    "freezing": 4,
+    "capturing": 5,
+    "uploading": 6,
+    "downloading": 6,
+    "restoring": 7,
+    "personalizing": 8,
+    "finalizing": 9,
+    "thawing": 10,
+    "cancelling": 11,
+    "verifying": 12,
+    "completed": 13,
+    "failed": 14,
 }
 TASK_EVENT_TYPES = frozenset(
     {
@@ -133,7 +138,24 @@ def required_capabilities(
     if operation in {"restore", "clone"} and manifest is not None:
         firmware = manifest.get("firmware")
         if isinstance(firmware, dict) and firmware.get("type") == "bios":
-            return required | {"mbr"}
+            required = required | {"mbr"}
+        capabilities = manifest.get("capabilities")
+        if isinstance(capabilities, dict):
+            filesystems = capabilities.get("filesystems")
+            if isinstance(filesystems, list):
+                if "xfs" in filesystems:
+                    required = required | {"partclone.xfs"}
+                if "btrfs" in filesystems:
+                    required = required | {"partclone.btrfs"}
+            disk_count = capabilities.get("disks", 1)
+            if type(disk_count) is int and disk_count > 1:
+                required = required | {"multidisk"}
+            if capabilities.get("encryption") == "luks2":
+                required = required | {"luks2", "key-provider"}
+            if capabilities.get("volumes") in {"lvm", "lvm-linear"}:
+                required = required | {"lvm-linear"}
+            if capabilities.get("volumes") == "raid1":
+                required = required | {"raid1"}
     return required
 
 
@@ -460,9 +482,12 @@ def claim_task(
     capabilities: set[str],
     settings: Settings,
     agent_credential_id: str | None = None,
+    coordinator_lease: FencingLease | None = None,
 ) -> ClaimedTask | None:
     """Atomically assign the oldest compatible task for one host."""
 
+    if coordinator_lease is not None:
+        assert_fenced(db, coordinator_lease)
     expired = expire_stale_tasks(db)
     if expired:
         # Expiry is a durable safety decision. Do not lose it when the claim finds no work or
@@ -492,6 +517,13 @@ def claim_task(
         if image is not None and isinstance(image.manifest_json, dict):
             manifest = image.manifest_json
     required = required_capabilities(task.operation, manifest)
+    if task.operation == "capture":
+        selector = task.disk_selector
+        selectors = selector.get("disks") if isinstance(selector, dict) else None
+        if not isinstance(selectors, list):
+            selectors = [selector]
+        if any(isinstance(item, dict) and item.get("consistency") == "hot" for item in selectors):
+            required = required | {"capture.hot"}
     if not required.issubset(capabilities):
         db.rollback()
         raise TaskError("El agente no anuncia todas las capacidades requeridas para la operación.")
@@ -540,6 +572,8 @@ def claim_task(
         message=task.message,
     )
     try:
+        if coordinator_lease is not None:
+            assert_fenced(db, coordinator_lease)
         db.commit()
     except IntegrityError:
         db.rollback()

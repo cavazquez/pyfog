@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "report_id": "7c8d3d35-ae9d-4f21-94ad-df03cc5c0a02",
+  "collected_at": "2026-01-15T12:00:00Z",
+  "hostname": "MAC-LAB-01",
+  "firmware": "uefi",
+  "os": {
+    "name": "macOS Synthetic",
+    "id": "macos",
+    "version": "15.2"
+  },
+  "kernel": "24.2.0",
+  "architecture": "arm64",
+  "cpu": {
+    "model": "Apple Silicon Synthetic",
+    "logical_cores": 8
+  },
+  "memory": {
+    "total_bytes": 17179869184
+  },
+  "system": {
+    "manufacturer": "Apple",
+    "model": "Synthetic Mac",
+    "serial_number": "MAC-DEMO-001"
+  },
+  "disks": [
+    {
+      "name": "disk0",
+      "stable_id": "serial:MAC-DISK-001",
+      "size_bytes": 134217728000,
+      "model": "Synthetic Apple SSD",
+      "serial_number": "MAC-DISK-001",
+      "wwn": "",
+      "transport": "internal",
+      "logical_sector_bytes": 4096,
+      "partition_table": "gpt",
+      "removable": false
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "en0",
+      "mac_address": "52:54:00:12:34:57",
+      "state": "up"
+    }
+  ],
+  "warnings": ["inventory-only-evaluation"]
+}

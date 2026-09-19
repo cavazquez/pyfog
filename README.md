@@ -7,14 +7,18 @@ Es la primera entrega de un proyecto de imágenes por red inspirado en FOG.
 administrativa, recolector Linux, importación JSON, API con tokens por equipo, inventario actual e
 historial, catálogo web de fichas de imágenes, captura, restauración y clonación Linux con tareas
 persistentes, leases, progreso, cancelación cooperativa, reconciliación, auditoría, healthchecks,
-backup y almacenamiento por fragmentos con publicación verificada. Acceso mediante administrador
-local.
+backup y almacenamiento por fragmentos con publicación verificada. La imagen v2 agrega perfiles
+XFS/Btrfs, multidisco, expansión ext4, LVM lineal, RAID1, LUKS2 con proveedor externo y captura
+en caliente cuando el agente anuncia esas capacidades. También hay contrato de inventario Windows,
+evaluación macOS, plugins/hooks de mínimo privilegio y coordinación activo/pasivo. Acceso mediante
+administrador local.
 
-**Alcance restante:** la operación multi-coordinador y la matriz completa de pruebas E2E siguen
-fuera del MVP actual. El modo `imaging` requiere un initramfs específico y una provisión controlada
-del token del equipo.
+**Alcance restante:** Windows queda limitado a inventario y macOS a evaluación no destructiva; no
+se promete Secure Boot de imágenes. El modo `imaging` requiere un initramfs específico y una
+provisión controlada del token del equipo. Unicast HTTPS sigue siendo el transporte por defecto;
+relay, P2P y multicast sólo se habilitan después de medir el laboratorio.
 
-[Roadmap y 47 issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
+[Roadmap y issues atómicos](https://github.com/cavazquez/pyfog/issues/1) ·
 [estado consolidado](docs/roadmap.md) ·
 [Hitos](https://github.com/cavazquez/pyfog/milestones) ·
 [Arquitectura](docs/architecture.md) ·
@@ -224,10 +228,10 @@ El [roadmap](https://github.com/cavazquez/pyfog/issues/1) organizó cinco entreg
 4. Restauración y clonación (completa).
 5. Operación, documentación y validación del MVP (completa; la ejecución UEFI requiere el host del laboratorio).
 
-Las imágenes tienen una matriz acotada a Linux x86_64, UEFI/GPT o BIOS/MBR sin Secure Boot, raíz
-ext4, ESP FAT32 sólo para UEFI y swap opcional; un disco por tarea y destino de igual o mayor
-capacidad. El inventario actual puede describir hardware fuera de esa matriz. No se promete
-compatibilidad de formato con FOG.
+Las imágenes tienen una matriz base Linux x86_64, UEFI/GPT o BIOS/MBR sin Secure Boot, y perfiles
+extendidos declarativos para XFS/Btrfs, varios discos, LVM, RAID1, LUKS2 y expansión ext4. El agente
+rechaza temprano cualquier perfil cuya herramienta no esté instalada. El inventario puede describir
+hardware fuera de la matriz de imaging. No se promete compatibilidad de formato con FOG.
 
 La publicación EFI post-MVP puede firmarse con `pxe/build-pxe --secure-boot` usando una clave
 externa al checkout; el laboratorio ofrece el smoke reproducible con `./lab/e2e.sh run --secure-boot`.

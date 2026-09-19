@@ -80,6 +80,45 @@ def test_agent_restore_accepts_v2_and_rejects_unsupported_capabilities() -> None
         task_agent.validate_restore_manifest(boolean_version, image_id)
 
 
+def test_agent_extended_manifest_validates_all_disks_and_unique_artifacts() -> None:
+    manifest = copy.deepcopy(valid_manifest_v2())
+    first = copy.deepcopy(manifest["disk"])
+    second = copy.deepcopy(first)
+    first["disk_id"] = "wwn:disk-a"
+    second["disk_id"] = "wwn:disk-b"
+    second["gpt_disk_guid"] = "3e93f0c6-c66d-4c21-8c70-7a04ee4c1111"
+    second["partitions"][0]["partition_guid"] = "3e93f0c6-c66d-4c21-8c70-7a04ee4c2222"
+    second["partitions"][0]["filesystem_uuid"] = "A1B2C3D5"
+    second["partitions"][0]["artifact"] = "partitions/disk-b-esp.img"
+    second["partitions"][1]["partition_guid"] = "3e93f0c6-c66d-4c21-8c70-7a04ee4c3333"
+    second["partitions"][1]["filesystem_uuid"] = "3e93f0c6-c66d-4c21-8c70-7a04ee4c4444"
+    second["partitions"][1]["artifact"] = "partitions/disk-b-root.partclone"
+    manifest["disk"] = first
+    manifest["disks"] = [first, second]
+    manifest["capabilities"]["disks"] = 2  # type: ignore[index]
+    manifest["artifacts"].extend(  # type: ignore[union-attr]
+        [
+            {
+                "path": "partitions/disk-b-esp.img",
+                "size_bytes": 3,
+                "compression": "none",
+                "sha256": "a" * 64,
+            },
+            {
+                "path": "partitions/disk-b-root.partclone",
+                "size_bytes": 4,
+                "compression": "zstd",
+                "sha256": "b" * 64,
+            },
+        ]
+    )
+
+    parsed = task_agent.validate_restore_manifest(
+        manifest, str(manifest["image_id"]), allow_extended=True
+    )
+    assert parsed["capabilities"]["disks"] == 2  # type: ignore[index]
+
+
 def test_agent_restore_accepts_bios_mbr_and_rejects_firmware_table_mismatch() -> None:
     manifest = valid_bios_manifest()
     image_id = str(manifest["image_id"])
@@ -90,6 +129,71 @@ def test_agent_restore_accepts_bios_mbr_and_rejects_firmware_table_mismatch() ->
     mismatch["capabilities"]["partition_table"] = "gpt"  # type: ignore[index]
     with pytest.raises(ValueError, match="incompatibles"):
         task_agent.validate_restore_manifest(mismatch, image_id)
+
+
+def test_restore_storage_plans_validate_lvm_luks_and_raid_profiles() -> None:
+    base = valid_manifest_v2()
+    selected = selected_disk()
+    selector = target_selector()
+    lvm_manifest = copy.deepcopy(base)
+    lvm_manifest["capabilities"]["volumes"] = "lvm-linear"  # type: ignore[index]
+    lvm_manifest["volumes"] = [
+        {
+            "type": "lvm-linear",
+            "pv_uuid": "pv-1",
+            "vg_name": "ubuntu-vg",
+            "vg_uuid": "vg-1",
+            "lv_name": "root",
+            "lv_uuid": "lv-1",
+            "size_bytes": 100,
+        }
+    ]
+    lvm_plan = task_agent.build_restore_storage_plan(
+        lvm_manifest,
+        [(selected, selector, lvm_manifest["disk"])],  # type: ignore[list-item]
+    )
+    assert lvm_plan.profile == "lvm-linear"
+
+    luks_manifest = copy.deepcopy(base)
+    luks_manifest["capabilities"]["encryption"] = "luks2"  # type: ignore[index]
+    luks_manifest["encryption"] = {
+        "type": "luks2",
+        "uuid": "luks-1",
+        "cipher": "aes-xts-plain64",
+        "sector_size": 512,
+    }
+    luks_plan = task_agent.build_restore_storage_plan(
+        luks_manifest,
+        [(selected, selector, luks_manifest["disk"])],  # type: ignore[list-item]
+    )
+    assert luks_plan.profile == "luks2"
+
+    raid_manifest = copy.deepcopy(base)
+    first = copy.deepcopy(raid_manifest["disk"])
+    second = copy.deepcopy(raid_manifest["disk"])
+    first["disk_id"] = "wwn:disk-a"
+    second["disk_id"] = "wwn:disk-b"
+    raid_manifest["disk"] = first
+    raid_manifest["disks"] = [first, second]
+    raid_manifest["capabilities"]["disks"] = 2  # type: ignore[index]
+    raid_manifest["capabilities"]["volumes"] = "raid1"  # type: ignore[index]
+    raid_manifest["raid_arrays"] = [
+        {
+            "level": 1,
+            "uuid": "raid-1",
+            "metadata": "1.2",
+            "member_ids": ["wwn:disk-a", "wwn:disk-b"],
+            "size_bytes": 100,
+        }
+    ]
+    raid_plan = task_agent.build_restore_storage_plan(
+        raid_manifest,
+        [
+            (selected, selector, first),
+            (selected, selector, second),
+        ],
+    )
+    assert raid_plan.profile == "raid1"
 
 
 def test_bios_target_requires_legacy_firmware(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,6 +249,44 @@ def test_target_quiescence_checks_whole_disk_and_swap_sources(
     with pytest.raises(ValueError, match="partición montada"):
         task_agent.assert_target_is_quiescent(selected_disk())
 
+
+def test_hot_capture_thaws_in_reverse_order_even_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        task_agent,
+        "run_command",
+        lambda arguments, **_kwargs: calls.append(arguments) or "",
+    )
+    frozen = task_agent.freeze_filesystems(["/", "/home"])
+    assert frozen == ["/", "/home"]
+    task_agent.thaw_filesystems(frozen)
+    assert calls[-2:] == [
+        ["fsfreeze", "--unfreeze", "/home"],
+        ["fsfreeze", "--unfreeze", "/"],
+    ]
+
+
+def test_hot_capture_releases_freeze_when_body_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        task_agent,
+        "mounted_filesystems",
+        lambda _partitions: ["/", "/home"],
+    )
+    monkeypatch.setattr(
+        task_agent,
+        "run_command",
+        lambda arguments, **_kwargs: calls.append(arguments) or "",
+    )
+    with pytest.raises(RuntimeError), task_agent.hot_capture_scope([{"device": "/dev/vda2"}]):
+        raise RuntimeError("interrumpido")
+    assert calls[-2:] == [
+        ["fsfreeze", "--unfreeze", "/home"],
+        ["fsfreeze", "--unfreeze", "/"],
+    ]
+
     monkeypatch.setattr(
         task_agent.Path,
         "read_text",
@@ -172,6 +314,39 @@ def test_restore_partition_table_moves_secondary_gpt_header_on_larger_target(
     assert ["sgdisk", "--move-second-header", "/dev/vda"] in calls
     assert ["sgdisk", "--verify", "/dev/vda"] in calls
     assert any(argument.startswith("--partition-guid=1:") for call in calls for argument in call)
+
+
+def test_larger_gpt_target_expands_only_final_ext4_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        task_agent,
+        "run_command",
+        lambda arguments, **_kwargs: (
+            calls.append(arguments)
+            or (
+                "Disk identifier (GUID): x\nlast usable sector is 4194238"
+                if arguments[:2] == ["sgdisk", "--print"]
+                else ""
+            )
+        ),
+    )
+    monkeypatch.setattr(task_agent.shutil, "which", lambda name: "/usr/bin/" + name)
+    manifest = restore_manifest()
+    selected = selected_disk(size=2 * 1_073_741_824)
+    task_agent.expand_gpt_root_partition(
+        "/dev/vda",
+        selected,
+        manifest["disk"],  # type: ignore[arg-type]
+    )
+    assert ["sgdisk", "--move-second-header", "/dev/vda"] in calls
+    assert ["e2fsck", "-f", "-p", "/dev/vda2"] in calls
+    assert ["resize2fs", "/dev/vda2"] in calls
+    assert ["sgdisk", "--verify", "/dev/vda"] in calls
+
+    unsupported = copy.deepcopy(manifest["disk"])
+    unsupported["partitions"][1]["filesystem"] = "xfs"  # type: ignore[index]
+    with pytest.raises(ValueError, match="ext4"):
+        task_agent.validate_target_expansion(selected, unsupported)
 
 
 def test_optional_swap_is_initialized_with_manifest_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,6 +406,76 @@ Number  Start (sector)    End (sector)  Size       Code  Name
     assert geometry["partitions"][0]["filesystem"] == "fat32"
 
 
+def test_parse_gpt_finds_assembled_raid_from_complete_lsblk_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = """
+Disk identifier (GUID): 7c1c8a08-13b3-4505-8e1c-9b0d2da93333
+First usable sector is 2048, last usable sector is 2095103
+Number  Start (sector)    End (sector)  Size       Code  Name
+   1            2048          206847   100.0 MiB  EF00  EFI System
+   2          206848         2095103   920.0 MiB  FD00  Linux RAID
+"""
+    md_report = "\n".join(
+        [
+            "MD_LEVEL=raid1",
+            "MD_STATE=clean,active",
+            "MD_UUID=5d5d5d5d-1111-2222-3333-444444444444",
+            "MD_METADATA=1.2",
+            "MD_DEVICE_0_DEV=/dev/vda2",
+            "MD_DEVICE_1_DEV=/dev/vdb2",
+            "MD_ARRAY_SIZE=966367232",
+        ]
+    )
+    selected = selected_disk()
+    selected["stable_id"] = "wwn:disk-a"
+    selected["children"] = [
+        {
+            "name": "/dev/vda1",
+            "path": "/dev/vda1",
+            "fstype": "vfat",
+            "uuid": "A1B2C3D4",
+            "partuuid": "a8f7b8d4-ccdf-4d9d-8d2d-6da2fb6f4444",
+        },
+        {
+            "name": "/dev/vda2",
+            "path": "/dev/vda2",
+            "fstype": "linux_raid_member",
+            "uuid": "5d5d5d5d-aaaa-bbbb-cccc-444444444444",
+            "partuuid": "bbd0a02f-8c3d-4384-8f3c-3b109b5d5555",
+        },
+    ]
+    inventory = {
+        "blockdevices": [
+            selected,
+            {
+                "name": "/dev/md0",
+                "path": "/dev/md0",
+                "type": "raid1",
+                "children": [{"name": "/dev/vda2", "path": "/dev/vda2"}],
+            },
+        ]
+    }
+
+    def fake_run(arguments: list[str], **_kwargs: object) -> str:
+        if arguments[0] == "sgdisk":
+            return table
+        if arguments[0] == "mdadm":
+            return md_report
+        if arguments[0] == "blkid":
+            return "TYPE=ext4\nUUID=bbd0a02f-8c3d-4384-8f3c-3b109b5d5555\n"
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(task_agent, "run_command", fake_run)
+    geometry = task_agent.parse_gpt("/dev/vda", selected, inventory=inventory)
+
+    root = next(partition for partition in geometry["partitions"] if partition["role"] == "root")
+    assert geometry["storage"]["profile"] == "raid1"
+    assert geometry["storage"]["raid_device"] == "/dev/md0"
+    assert geometry["storage"]["raid_array"]["member_ids"] == ["wwn:disk-a"]
+    assert root["capture_device"] == "/dev/md0"
+
+
 def test_parse_mbr_reads_signature_and_grub_embedding_gap(monkeypatch: pytest.MonkeyPatch) -> None:
     selected = selected_disk()
     selected["pttype"] = "dos"
@@ -253,6 +498,52 @@ def test_parse_mbr_reads_signature_and_grub_embedding_gap(monkeypatch: pytest.Mo
     assert geometry["mbr_disk_signature"] == "1a2b3c4d"
     assert geometry["partitions"][0]["role"] == "root"
     assert geometry["partitions"][0]["start_sector"] == 2048
+
+
+def test_local_agent_capabilities_follow_installed_tools_and_key_plugin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    available = {
+        "partclone.xfs",
+        "partclone.btrfs",
+        "fsfreeze",
+        "findmnt",
+        "e2fsck",
+        "resize2fs",
+        "pvs",
+        "vgs",
+        "lvs",
+        "pvcreate",
+        "vgcreate",
+        "lvcreate",
+        "lvchange",
+        "mdadm",
+        "cryptsetup",
+    }
+    monkeypatch.setattr(
+        task_agent.shutil,
+        "which",
+        lambda executable: executable if executable in available else None,
+    )
+    monkeypatch.setenv("PYFOG_PLUGIN_DIR", str(tmp_path))
+    monkeypatch.setenv("PYFOG_LUKS_KEY_PLUGIN", "test-provider")
+    monkeypatch.setenv("PYFOG_LUKS_KEY_REF", "secret/ref")
+
+    capabilities = task_agent.local_agent_capabilities()
+
+    assert {
+        "capture.hot",
+        "expand.ext4",
+        "lvm-linear",
+        "raid1",
+        "luks2",
+        "key-provider",
+        "partclone.xfs",
+        "partclone.btrfs",
+    }.issubset(capabilities)
+
+    monkeypatch.delenv("PYFOG_LUKS_KEY_PLUGIN")
+    assert "key-provider" not in task_agent.local_agent_capabilities()
 
 
 def test_clone_identity_removes_source_identity_and_enables_first_boot_dhcp(tmp_path: Path) -> None:
