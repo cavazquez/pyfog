@@ -16,7 +16,8 @@ class SecureBootPolicyError(ValueError):
 def _openssl() -> str:
     path = shutil.which("openssl")
     if path is None:
-        raise SecureBootPolicyError("Falta openssl; instalá el paquete openssl.")
+        msg = "Falta openssl; instalá el paquete openssl."
+        raise SecureBootPolicyError(msg)
     return path
 
 
@@ -29,10 +30,12 @@ def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[
             text=True,
         )
     except FileNotFoundError:
-        raise SecureBootPolicyError("Falta openssl; instalá el paquete openssl.") from None
+        msg = "Falta openssl; instalá el paquete openssl."
+        raise SecureBootPolicyError(msg) from None
     except subprocess.CalledProcessError as error:
         detail = error.stderr.strip() or error.stdout.strip() or "sin diagnóstico"
-        raise SecureBootPolicyError(f"openssl falló: {detail}") from None
+        msg = f"openssl falló: {detail}"
+        raise SecureBootPolicyError(msg) from None
     return result
 
 
