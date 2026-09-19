@@ -2708,6 +2708,7 @@ def restore_claimed_task(
     task_token: str,
     ca_file: str | None,
     lease: LeaseHeartbeat,
+    *,
     staging_dir: Path,
     key_provider: Callable[[], bytes] | None = None,
 ) -> bool:
@@ -2719,7 +2720,7 @@ def restore_claimed_task(
             task_token,
             ca_file,
             lease,
-            staging_dir,
+            staging_dir=staging_dir,
             opened_mappings=opened_mappings,
             key_provider=key_provider,
         )
@@ -2735,8 +2736,8 @@ def _restore_claimed_task(
     task_token: str,
     ca_file: str | None,
     lease: LeaseHeartbeat,
-    staging_dir: Path,
     *,
+    staging_dir: Path,
     opened_mappings: list[str],
     key_provider: Callable[[], bytes] | None,
 ) -> bool:
@@ -3106,7 +3107,7 @@ def capture_task(
                 task_token,
                 ca_file,
                 lease,
-                staging_dir or Path("/run/pyfog/staging"),
+                staging_dir=staging_dir or Path("/run/pyfog/staging"),
             )
         document = block_inventory()
         lease.check()

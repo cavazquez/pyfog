@@ -228,21 +228,22 @@ def failure_code(reason: str) -> str:
     """Map free-form failures to a small, stable metric label set."""
 
     normalized = reason.casefold()
+    code = "agent_error"
     if "lease" in normalized or "concesión" in normalized:
-        return "lease_expired"
-    if "cancel" in normalized:
-        return "cancelled"
-    if "reconcili" in normalized or "intervención" in normalized:
-        return "reconciliation_required"
-    if "manifiesto" in normalized:
-        return "manifest_invalid"
-    if "artefact" in normalized or "integridad" in normalized or "suma" in normalized:
-        return "artifact_integrity"
-    if "almacén" in normalized or "storage" in normalized or "espacio" in normalized:
-        return "storage_error"
-    if "destino" in normalized and "incompleto" in normalized:
-        return "destination_incomplete"
-    return "agent_error"
+        code = "lease_expired"
+    elif "cancel" in normalized:
+        code = "cancelled"
+    elif "reconcili" in normalized or "intervención" in normalized:
+        code = "reconciliation_required"
+    elif "manifiesto" in normalized:
+        code = "manifest_invalid"
+    elif "artefact" in normalized or "integridad" in normalized or "suma" in normalized:
+        code = "artifact_integrity"
+    elif "almacén" in normalized or "storage" in normalized or "espacio" in normalized:
+        code = "storage_error"
+    elif "destino" in normalized and "incompleto" in normalized:
+        code = "destination_incomplete"
+    return code
 
 
 def event_metrics(
@@ -481,6 +482,7 @@ def claim_task(
     session_id: str,
     capabilities: set[str],
     settings: Settings,
+    *,
     agent_credential_id: str | None = None,
     coordinator_lease: FencingLease | None = None,
 ) -> ClaimedTask | None:
