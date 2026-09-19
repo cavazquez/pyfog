@@ -27,6 +27,14 @@ class FencingLease:
     expires_at: datetime
 
 
+def require_lease(lease: FencingLease | None) -> FencingLease:
+    """Convert passive coordinator state into the domain error used by mutations."""
+
+    if lease is None:
+        raise CoordinatorError("El coordinador activo no está disponible.")
+    return lease
+
+
 def _validate_holder(holder_id: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", holder_id):
         raise CoordinatorError("La identidad del coordinador no es válida.")

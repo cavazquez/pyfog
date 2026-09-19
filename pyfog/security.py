@@ -8,7 +8,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from pyfog.audit import record_audit
-from pyfog.coordinator import CoordinatorError, acquire_lease, assert_fenced
+from pyfog.coordinator import CoordinatorError, acquire_lease, assert_fenced, require_lease
 from pyfog.models import LoginAttempt, LoginSession, User, now
 from pyfog.rbac import has_permission, role_of
 
@@ -75,13 +75,13 @@ def require_permission(
             coordinator_id = str(getattr(request.app.state.settings, "coordinator_id", ""))
             if coordinator_id:
                 try:
-                    lease = acquire_lease(
-                        db,
-                        coordinator_id,
-                        lease_seconds=request.app.state.settings.coordinator_lease_seconds,
+                    lease = require_lease(
+                        acquire_lease(
+                            db,
+                            coordinator_id,
+                            lease_seconds=request.app.state.settings.coordinator_lease_seconds,
+                        )
                     )
-                    if lease is None:
-                        raise CoordinatorError("El coordinador activo no está disponible.")
                     assert_fenced(db, lease)
                 except CoordinatorError as error:
                     db.rollback()

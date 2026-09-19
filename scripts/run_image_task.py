@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 from pyfog.key_provider import external_luks2_key
 from pyfog.layouts import (
@@ -66,6 +66,10 @@ class ReadableResponse(Protocol):
 
 class TaskCancelledError(ValueError):
     """The coordinator asked the agent to stop before the next destructive step."""
+
+
+def _raise_capture_error(message: str) -> NoReturn:
+    raise ValueError(message)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1788,14 +1792,18 @@ def mounted_filesystems(partitions: list[dict[str, Any]]) -> list[str]:
     return sorted(set(mounts), key=lambda path: (path.count("/"), path))
 
 
+def _validate_mountpoint(mountpoint: str) -> None:
+    if not mountpoint.startswith("/") or "\x00" in mountpoint:
+        raise ValueError("El punto de montaje no es seguro.")
+
+
 def freeze_filesystems(mountpoints: list[str]) -> list[str]:
     """Freeze mounts in order and thaw already-frozen mounts on partial failure."""
 
     frozen: list[str] = []
     try:
         for mountpoint in mountpoints:
-            if not mountpoint.startswith("/") or "\x00" in mountpoint:
-                raise ValueError("El punto de montaje no es seguro.")
+            _validate_mountpoint(mountpoint)
             run_command(["fsfreeze", "--freeze", mountpoint], timeout=60)
             frozen.append(mountpoint)
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -3106,11 +3114,11 @@ def capture_task(
         if not isinstance(raw_selectors, list) or any(
             not isinstance(item, dict) for item in raw_selectors
         ):
-            raise ValueError("La tarea no contiene selectores de disco válidos.")
+            _raise_capture_error("La tarea no contiene selectores de disco válidos.")
         if len(raw_selectors) > 1 and any(
             str(item.get("stable_id", "")).startswith("path:") for item in raw_selectors
         ):
-            raise ValueError("Una captura multidisco no puede depender del orden /dev.")
+            _raise_capture_error("Una captura multidisco no puede depender del orden /dev.")
         selected_geometries: list[
             tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes | None]
         ] = []
@@ -3130,9 +3138,9 @@ def capture_task(
             elif detected_table == "gpt":
                 geometry = parse_gpt(device, selected, inventory=document)
             else:
-                raise ValueError("El disco no contiene una tabla GPT o MBR admitida.")
+                _raise_capture_error("El disco no contiene una tabla GPT o MBR admitida.")
             if partition_table and detected_table != partition_table:
-                raise ValueError("Los discos de una imagen multidisco deben compartir layout.")
+                _raise_capture_error("Los discos de una imagen multidisco deben compartir layout.")
             partition_table = detected_table
             boot_code = (
                 validate_mbr_boot_sector(device, geometry) if detected_table == "mbr" else None
@@ -3140,7 +3148,7 @@ def capture_task(
             selected_geometries.append((selected, selector, geometry, boot_code))
         prepare_capture_storage(selected_geometries, opened_mappings)
         if len(selected_geometries) > 1 and partition_table == "mbr":
-            raise ValueError("La captura multidisco BIOS requiere boot sector por disco.")
+            _raise_capture_error("La captura multidisco BIOS requiere boot sector por disco.")
         raw_storage_profiles = [
             geometry.get("storage")
             for _selected, _selector, geometry, _boot in selected_geometries
@@ -3151,21 +3159,21 @@ def capture_task(
         ]
         profile_names = {str(profile.get("profile")) for profile in storage_profiles}
         if len(profile_names) > 1 or len(storage_profiles) != len(raw_storage_profiles):
-            raise ValueError(
+            _raise_capture_error(
                 "Los discos de una captura no pueden mezclar perfiles de almacenamiento."
             )
         if profile_names == {"raid1"}:
             if len(storage_profiles) != len(selected_geometries) or len(selected_geometries) < 2:
-                raise ValueError("La captura RAID1 requiere todos sus discos miembros.")
+                _raise_capture_error("La captura RAID1 requiere todos sus discos miembros.")
             first_array = storage_profiles[0].get("raid_array")
             if not isinstance(first_array, dict):
-                raise ValueError("La captura RAID1 no contiene metadata de array.")
+                _raise_capture_error("La captura RAID1 no contiene metadata de array.")
             member_ids = tuple(
                 str(selector.get("stable_id") or "")
                 for _selected, selector, _geometry, _boot in selected_geometries
             )
             if any(not member or member.startswith("path:") for member in member_ids):
-                raise ValueError("RAID1 requiere identidades estables para todos sus discos.")
+                _raise_capture_error("RAID1 requiere identidades estables para todos sus discos.")
             storage_profile = {
                 "profile": "raid1",
                 "raid_array": {
@@ -3179,10 +3187,10 @@ def capture_task(
                     array.get(key) != first_array.get(key)
                     for key in ("uuid", "metadata", "size_bytes")
                 ):
-                    raise ValueError("Los discos seleccionados no pertenecen al mismo RAID1.")
+                    _raise_capture_error("Los discos seleccionados no pertenecen al mismo RAID1.")
         elif storage_profiles:
             if len(storage_profiles) != 1 or len(selected_geometries) != 1:
-                raise ValueError("LVM y LUKS2 requieren un único disco de origen.")
+                _raise_capture_error("LVM y LUKS2 requieren un único disco de origen.")
             storage_profile = storage_profiles[0]
         else:
             storage_profile = None
@@ -3194,7 +3202,9 @@ def capture_task(
         )
         hot_capture = any(item[1].get("consistency") == "hot" for item in selected_geometries)
         if hot_capture and any(item[1].get("consistency") != "hot" for item in selected_geometries):
-            raise ValueError("Todos los discos de una captura multidisco deben usar el mismo modo.")
+            _raise_capture_error(
+                "Todos los discos de una captura multidisco deben usar el mismo modo."
+            )
         if hot_capture:
             sequence = post_progress(
                 base,
@@ -3386,7 +3396,7 @@ def capture_task(
                 partition.setdefault("artifact", None)
             stable_id = str(selector.get("stable_id") or "")
             if not stable_id:
-                raise ValueError("El selector de captura no contiene una identidad de disco.")
+                _raise_capture_error("El selector de captura no contiene una identidad de disco.")
             disk_payload: dict[str, Any] = {
                 **{key: geometry[key] for key in geometry if key not in {"partitions", "storage"}},
                 "disk_id": stable_id,

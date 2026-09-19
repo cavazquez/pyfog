@@ -26,6 +26,21 @@ class ReleaseCheckError(ValueError):
     """A release invariant was not satisfied."""
 
 
+def _require_bundles(agent_exists: bool, pxe_exists: bool) -> None:
+    if not agent_exists or not pxe_exists:
+        raise ReleaseCheckError("Se deben proporcionar ambos bundles: --agent-dir y --pxe-dir.")
+
+
+def _require_secure_boot_manifest(pxe_dir: Path) -> None:
+    if not (pxe_dir / SECURE_MANIFEST_NAME).is_file():
+        raise ReleaseCheckError("El bundle PXE no contiene firmas Secure Boot requeridas.")
+
+
+def _reject_secure_boot_without_bundles(secure_boot_cert: Path | None) -> None:
+    if secure_boot_cert is not None:
+        raise ReleaseCheckError("--secure-boot-cert requiere bundles de release.")
+
+
 def read_project_version() -> str:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = data.get("project", {}).get("version")
@@ -226,16 +241,13 @@ def main() -> int:
         agent_exists = args.agent_dir.is_dir()
         pxe_exists = args.pxe_dir.is_dir()
         if args.require_artifacts or args.require_secure_boot or agent_exists or pxe_exists:
-            if not agent_exists or not pxe_exists:
-                raise ReleaseCheckError(
-                    "Se deben proporcionar ambos bundles: --agent-dir y --pxe-dir."
-                )
+            _require_bundles(agent_exists, pxe_exists)
             check_agent(args.agent_dir, version)
             check_pxe(args.pxe_dir, version, args.secure_boot_cert)
             if args.require_secure_boot and not (args.pxe_dir / SECURE_MANIFEST_NAME).is_file():
-                raise ReleaseCheckError("El bundle PXE no contiene firmas Secure Boot requeridas.")
+                _require_secure_boot_manifest(args.pxe_dir)
         elif args.secure_boot_cert is not None:
-            raise ReleaseCheckError("--secure-boot-cert requiere bundles de release.")
+            _reject_secure_boot_without_bundles(args.secure_boot_cert)
     except (OSError, ReleaseCheckError) as error:
         sys.stderr.write(f"release-check: error: {error}\n")
         return 1

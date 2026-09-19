@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NoReturn
 
 from pydantic import Field, model_validator
 
@@ -59,6 +59,17 @@ class HookPlan(Schema):
         if len(set(names)) != len(names) or len(set(keys)) != len(keys):
             raise ValueError("Los hooks deben tener nombres y claves de idempotencia únicos.")
         return self
+
+
+def _raise_plugin_error(message: str) -> NoReturn:
+    raise PluginError(message)
+
+
+def _raise_hook_failure(step: HookStep, attempts: int, last_error: PluginError | None) -> NoReturn:
+    raise HookError(
+        f"El hook {step.name} falló tras {attempts} intento(s): "
+        f"{redact_plugin_message(str(last_error or 'error desconocido'))}"
+    )
 
 
 @dataclass(frozen=True)
@@ -128,17 +139,14 @@ def run_post_deploy_hooks(
                         ),
                     )
                     if not result.success:
-                        raise PluginError(result.error)
+                        _raise_plugin_error(result.error)
                     response = result.result
                     break
                 except PluginError as error:
                     last_error = error
             attempts = _attempts
             if response is None:
-                raise HookError(
-                    f"El hook {step.name} falló tras {attempts} intento(s): "
-                    f"{redact_plugin_message(str(last_error or 'error desconocido'))}"
-                )
+                _raise_hook_failure(step, attempts, last_error)
             execution = HookExecution(
                 name=step.name,
                 idempotency_key=step.idempotency_key,

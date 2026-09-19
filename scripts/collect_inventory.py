@@ -28,6 +28,11 @@ MAX_PAYLOAD_BYTES = 1_000_000
 MAX_RESPONSE_BYTES = 1_000_000
 
 
+def _validate_payload_size(payload: bytes) -> None:
+    if len(payload) > MAX_PAYLOAD_BYTES:
+        raise ValueError("El informe supera el límite permitido.")
+
+
 def read_text(path: Path, warnings: list[str], *, optional: bool = False) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip()
@@ -441,8 +446,7 @@ def main() -> None:
         else:
             document = collect()
             payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        if len(payload) > MAX_PAYLOAD_BYTES:
-            raise ValueError("El informe supera el límite permitido.")
+        _validate_payload_size(payload)
         if args.output:
             # Refuse existing files/symlinks, including device paths.
             descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
