@@ -17,6 +17,11 @@ from pyfog.schemas import Schema
 from pyfog.transfer import TransferBlock, TransferManifest
 
 DistributionStrategy = Literal["unicast", "relay", "p2p", "multicast"]
+MAX_MULTICAST_REPAIR_RATIO = 0.15
+MAX_RECEIVER_ID_LENGTH = 128
+MAX_REPAIR_INDICES = 4096
+MAX_REPAIR_SECRET_BYTES = 128
+MIN_REPAIR_SECRET_BYTES = 16
 
 
 class DistributionError(RuntimeError):
@@ -115,7 +120,7 @@ def choose_distribution(
             if item.strategy == "multicast"
             and item.completed
             and item.isolated_failures
-            and item.repair_ratio <= 0.15
+            and item.repair_ratio <= MAX_MULTICAST_REPAIR_RATIO
             and (item.late_join or item.receiver_count == 1)
             and (item.seeder_failover or item.failed_receivers == 0)
         ]
@@ -188,8 +193,10 @@ class RepairRequest(Schema):
     """Receiver-local NACK; it never becomes a broadcast ACK barrier."""
 
     session_id: UUID
-    receiver_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
-    missing_indices: list[int] = Field(min_length=1, max_length=4096)
+    receiver_id: str = Field(
+        min_length=1, max_length=MAX_RECEIVER_ID_LENGTH, pattern=r"^[A-Za-z0-9._:-]+$"
+    )
+    missing_indices: list[int] = Field(min_length=1, max_length=MAX_REPAIR_INDICES)
     auth_tag: str = Field(default="", min_length=0, max_length=128, pattern=r"^[0-9a-f]*$")
 
     @model_validator(mode="after")
@@ -222,12 +229,15 @@ class ReliableMulticastSession:
         self.manifest = manifest
         self.session_id = session_id or uuid4()
         self._repair_secret = repair_secret or secrets.token_bytes(32)
-        if not isinstance(self._repair_secret, bytes) or not 16 <= len(self._repair_secret) <= 128:
+        if (
+            not isinstance(self._repair_secret, bytes)
+            or not MIN_REPAIR_SECRET_BYTES <= len(self._repair_secret) <= MAX_REPAIR_SECRET_BYTES
+        ):
             raise DistributionError("El secreto de reparación no tiene un tamaño seguro.")
         self._states: dict[str, _ReceiverState] = {}
 
     def add_receiver(self, receiver_id: str) -> None:
-        if not receiver_id or len(receiver_id) > 128:
+        if not receiver_id or len(receiver_id) > MAX_RECEIVER_ID_LENGTH:
             raise DistributionError("La identidad del receptor no es válida.")
         if receiver_id in self._states:
             raise DistributionError("El receptor ya pertenece a la sesión.")
@@ -253,7 +263,7 @@ class ReliableMulticastSession:
         missing = self.missing(receiver_id)
         if not missing:
             return None
-        if max_indices <= 0 or max_indices > 4096:
+        if max_indices <= 0 or max_indices > MAX_REPAIR_INDICES:
             raise DistributionError("El límite de reparación no es válido.")
         indices = list(missing[:max_indices])
         return RepairRequest(
