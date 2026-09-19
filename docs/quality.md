@@ -47,4 +47,7 @@ cuentan como cobertura unitaria artificial; sus contratos se validan en los chec
 
 La CI corta la suite de tests a los 120 segundos, la cobertura a los 180 y las migraciones a los 60;
 cada job también tiene un límite total de 10 a 20 minutos. Pytest emite un dump de threads a los 30
-segundos para que un timeout conserve diagnóstico útil.
+segundos para que un timeout conserve diagnóstico útil. Además, publica `coverage.xml`, los reportes
+JUnit y los logs de cada matriz de Python como artefactos por 14 días. `--durations=20`
+`--durations-min=1.0` deja visibles en el resumen de GitHub los 20 tests más lentos y marca como
+lentos los que superan un segundo.
