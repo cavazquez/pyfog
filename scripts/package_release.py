@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def git_executable() -> str:
     executable = shutil.which("git")
     if executable is None:
-        raise ReleaseCheckError("No se encontró git para crear el artefacto de fuente.")
+        msg = "No se encontró git para crear el artefacto de fuente."
+        raise ReleaseCheckError(msg)
     return executable
 
 
@@ -38,19 +39,23 @@ def ensure_clean_source() -> None:
             [git_executable(), "-C", str(ROOT), *arguments], check=False
         )
         if result.returncode != 0:
-            raise ReleaseCheckError("El checkout tiene cambios; empaquetá un commit limpio.")
+            msg = "El checkout tiene cambios; empaquetá un commit limpio."
+            raise ReleaseCheckError(msg)
 
 
 def package(output: Path, expected_version: str | None) -> Path:
     version = check_source(expected_version)
     ensure_clean_source()
     if output.exists() and (output.is_symlink() or not output.is_dir()):
-        raise ReleaseCheckError("El directorio de salida no es seguro.")
+        msg = "El directorio de salida no es seguro."
+        raise ReleaseCheckError(msg)
     if output.resolve() in {ROOT.resolve(), Path("/")}:
-        raise ReleaseCheckError("El directorio de salida es demasiado amplio.")
+        msg = "El directorio de salida es demasiado amplio."
+        raise ReleaseCheckError(msg)
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
-        raise ReleaseCheckError(f"El directorio de salida no está vacío: {output}.")
+        msg = f"El directorio de salida no está vacío: {output}."
+        raise ReleaseCheckError(msg)
 
     commit = git_output("rev-parse", "HEAD")
     archive_name = f"pyfog-{version}-source.tar"
