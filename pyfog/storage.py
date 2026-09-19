@@ -37,7 +37,8 @@ def _uuid_text(value: str) -> str:
     try:
         return str(uuid.UUID(value))
     except (ValueError, AttributeError, TypeError):
-        raise StorageError("El identificador de almacenamiento no es válido.") from None
+        msg = "El identificador de almacenamiento no es válido."
+        raise StorageError(msg) from None
 
 
 @dataclass(frozen=True)
@@ -53,33 +54,40 @@ class ArtifactStore:
         root = self.root
         if root.exists():
             if root.is_symlink() or not root.is_dir():
-                raise StorageError("El almacén de imágenes no es un directorio seguro.")
+                msg = "El almacén de imágenes no es un directorio seguro."
+                raise StorageError(msg)
         else:
             try:
                 root.mkdir(parents=True, mode=0o750)
             except OSError as error:
-                raise StorageError(f"No se pudo crear el almacén de imágenes: {error}") from None
+                msg = f"No se pudo crear el almacén de imágenes: {error}"
+                raise StorageError(msg) from None
         for name in ("staging", "published"):
             directory = root / name
             if directory.exists():
                 if directory.is_symlink() or not directory.is_dir():
-                    raise StorageError(f"La carpeta {name} del almacén no es segura.")
+                    msg = f"La carpeta {name} del almacén no es segura."
+                    raise StorageError(msg)
             else:
                 try:
                     directory.mkdir(mode=0o750)
                 except OSError as error:
-                    raise StorageError(f"No se pudo preparar la carpeta {name}: {error}") from None
+                    msg = f"No se pudo preparar la carpeta {name}: {error}"
+                    raise StorageError(msg) from None
         return root
 
     def check_capacity(self, additional_bytes: int = 0) -> None:
         if additional_bytes < 0 or additional_bytes > self.max_image_bytes:
-            raise StorageError("El tamaño de la imagen supera el límite configurado.")
+            msg = "El tamaño de la imagen supera el límite configurado."
+            raise StorageError(msg)
         try:
             usage = shutil.disk_usage(self.ensure_layout())
         except OSError as error:
-            raise StorageError(f"No se pudo consultar el espacio del almacén: {error}") from None
+            msg = f"No se pudo consultar el espacio del almacén: {error}"
+            raise StorageError(msg) from None
         if usage.free < self.min_free_bytes + additional_bytes:
-            raise StorageError("No hay espacio libre suficiente en el almacén de imágenes.")
+            msg = "No hay espacio libre suficiente en el almacén de imágenes."
+            raise StorageError(msg)
 
     def task_directory(self, task_id: str, *, create: bool = False) -> Path:
         safe_id = _uuid_text(task_id)
@@ -88,12 +96,14 @@ class ArtifactStore:
             directory = self.root / "staging" / safe_id
             if directory.exists():
                 if directory.is_symlink() or not directory.is_dir():
-                    raise StorageError("La carpeta temporal de la tarea no es segura.")
+                    msg = "La carpeta temporal de la tarea no es segura."
+                    raise StorageError(msg)
             else:
                 try:
                     directory.mkdir(mode=0o750)
                 except OSError as error:
-                    raise StorageError(f"No se pudo crear el espacio temporal: {error}") from None
+                    msg = f"No se pudo crear el espacio temporal: {error}"
+                    raise StorageError(msg) from None
             return directory
         return self.root / "staging" / safe_id
 
@@ -113,23 +123,28 @@ class ArtifactStore:
                 current = current / part
                 if current.exists():
                     if current.is_symlink() or not current.is_dir():
-                        raise StorageError("La ruta del artefacto contiene un directorio inseguro.")
+                        msg = "La ruta del artefacto contiene un directorio inseguro."
+                        raise StorageError(msg)
                 elif create_parent:
                     current.mkdir(mode=0o750)
             parent = current.resolve(strict=True)
         except OSError as error:
-            raise StorageError(f"No se pudo acceder a la ruta del artefacto: {error}") from None
+            msg = f"No se pudo acceder a la ruta del artefacto: {error}"
+            raise StorageError(msg) from None
         if parent != base_resolved and base_resolved not in parent.parents:
-            raise StorageError("La ruta del artefacto sale del almacén.")
+            msg = "La ruta del artefacto sale del almacén."
+            raise StorageError(msg)
         path = current / PurePosixPath(safe_relative).name
         if path.exists() and path.is_symlink():
-            raise StorageError("El artefacto no puede ser un enlace simbólico.")
+            msg = "El artefacto no puede ser un enlace simbólico."
+            raise StorageError(msg)
         return path
 
     def artifact_path(self, task_id: str, relative: str, *, create_parent: bool = False) -> Path:
         base = self.task_directory(task_id, create=create_parent)
         if not base.is_dir() or base.is_symlink():
-            raise StorageError("No existe un espacio temporal seguro para la tarea.")
+            msg = "No existe un espacio temporal seguro para la tarea."
+            raise StorageError(msg)
         return self._safe_child(base, relative, create_parent=create_parent)
 
     def write_chunk(
@@ -146,24 +161,31 @@ class ArtifactStore:
         """Append one bounded chunk; return true when it was an idempotent replay."""
 
         if index < 0 or offset < 0:
-            raise StorageError("El índice y el desplazamiento del fragmento no son válidos.")
+            msg = "El índice y el desplazamiento del fragmento no son válidos."
+            raise StorageError(msg)
         if not 0 < len(payload) <= self.max_chunk_bytes:
-            raise StorageError("El tamaño del fragmento no es válido.")
+            msg = "El tamaño del fragmento no es válido."
+            raise StorageError(msg)
         if total_size < 0 or total_size > self.max_image_bytes:
-            raise StorageError("El tamaño declarado del artefacto no es válido.")
+            msg = "El tamaño declarado del artefacto no es válido."
+            raise StorageError(msg)
         if total_size and offset + len(payload) > total_size:
-            raise StorageError("El fragmento supera el tamaño declarado del artefacto.")
+            msg = "El fragmento supera el tamaño declarado del artefacto."
+            raise StorageError(msg)
         if len(sha256) != SHA256_HEX_LENGTH or any(
             character not in "0123456789abcdef" for character in sha256
         ):
-            raise StorageError("La suma del fragmento no es un SHA-256 hexadecimal.")
+            msg = "La suma del fragmento no es un SHA-256 hexadecimal."
+            raise StorageError(msg)
         if hashlib.sha256(payload).hexdigest() != sha256:
-            raise StorageError("La suma del fragmento no coincide con su contenido.")
+            msg = "La suma del fragmento no coincide con su contenido."
+            raise StorageError(msg)
         path = self.artifact_path(task_id, relative, create_parent=True)
         try:
             if not path.exists():
                 if offset != 0:
-                    raise StorageError("El primer fragmento debe comenzar en cero.")
+                    msg = "El primer fragmento debe comenzar en cero."
+                    raise StorageError(msg)
                 descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
                 os.close(descriptor)
             current_size = path.stat().st_size
@@ -172,9 +194,11 @@ class ArtifactStore:
                     source.seek(offset)
                     if hashlib.sha256(source.read(len(payload))).hexdigest() == sha256:
                         return True
-                raise StorageError("El fragmento repetido no coincide con el contenido existente.")
+                msg = "El fragmento repetido no coincide con el contenido existente."
+                raise StorageError(msg)
             if current_size != offset:
-                raise StorageError("El fragmento no continúa el artefacto de forma secuencial.")
+                msg = "El fragmento no continúa el artefacto de forma secuencial."
+                raise StorageError(msg)
             task_root = self.task_directory(task_id)
             stored_size = sum(
                 candidate.stat().st_size
@@ -182,7 +206,8 @@ class ArtifactStore:
                 if candidate.is_file()
             )
             if stored_size + len(payload) > self.max_image_bytes:
-                raise StorageError("Los artefactos superan el límite de tamaño de imagen.")
+                msg = "Los artefactos superan el límite de tamaño de imagen."
+                raise StorageError(msg)
             self.check_capacity(len(payload))
             with path.open("r+b") as target:
                 target.seek(offset)
@@ -190,7 +215,8 @@ class ArtifactStore:
                 target.flush()
                 os.fsync(target.fileno())
         except OSError as error:
-            raise StorageError(f"No se pudo escribir el artefacto: {error}") from None
+            msg = f"No se pudo escribir el artefacto: {error}"
+            raise StorageError(msg) from None
         return False
 
     def verified_blocks(self, task_id: str, relative: str, manifest: TransferManifest) -> set[int]:
@@ -217,11 +243,13 @@ class ArtifactStore:
         """Persist one verified block and make retries idempotent."""
 
         if len(payload) > self.max_chunk_bytes:
-            raise StorageError("El bloque supera el límite configurado.")
+            msg = "El bloque supera el límite configurado."
+            raise StorageError(msg)
         path = self.artifact_path(task_id, relative, create_parent=True)
         try:
             if path.exists() and path.stat().st_size > manifest.size_bytes:
-                raise StorageError("El staging supera el tamaño declarado del artefacto.")
+                msg = "El staging supera el tamaño declarado del artefacto."
+                raise StorageError(msg)
             self.check_capacity(len(payload))
             return write_verified_block(path, manifest, block, payload)
         except (OSError, ValueError) as error:
@@ -263,42 +291,50 @@ class ArtifactStore:
         except OSError as error:
             with contextlib.suppress(OSError):
                 temporary.unlink(missing_ok=True)
-            raise StorageError(f"No se pudo guardar el manifiesto: {error}") from None
+            msg = f"No se pudo guardar el manifiesto: {error}"
+            raise StorageError(msg) from None
 
     def verify_and_publish(self, task_id: str, image_id: str, manifest: ImageManifest) -> Path:
         """Validate all files, then move the task directory into the published namespace."""
 
         if str(manifest.image_id) != _uuid_text(image_id):
-            raise StorageError("El manifiesto pertenece a otra imagen.")
+            msg = "El manifiesto pertenece a otra imagen."
+            raise StorageError(msg)
         if not manifest.publishable:
-            raise StorageError("El manifiesto no autoriza la publicación.")
+            msg = "El manifiesto no autoriza la publicación."
+            raise StorageError(msg)
         try:
             ensure_supported_extended_image(manifest)
         except ValueError as error:
             raise StorageError(str(error)) from None
         total_size = sum(artifact.size_bytes for artifact in manifest.artifacts)
         if total_size > self.max_image_bytes:
-            raise StorageError("Los artefactos superan el límite de tamaño de imagen.")
+            msg = "Los artefactos superan el límite de tamaño de imagen."
+            raise StorageError(msg)
         self.check_capacity()
         directory = self.task_directory(task_id)
         if not directory.is_dir() or directory.is_symlink():
-            raise StorageError("No existe un espacio temporal seguro para la tarea.")
+            msg = "No existe un espacio temporal seguro para la tarea."
+            raise StorageError(msg)
         self._write_manifest(directory, manifest)
         expected = {artifact.path for artifact in manifest.artifacts} | {"manifest.json"}
         try:
             for candidate in directory.rglob("*"):
                 relative = candidate.relative_to(directory).as_posix()
                 if candidate.is_symlink() or (candidate.is_file() and relative not in expected):
-                    raise StorageError("El espacio temporal contiene un archivo no declarado.")
+                    msg = "El espacio temporal contiene un archivo no declarado."
+                    raise StorageError(msg)
         except OSError as error:
-            raise StorageError(f"No se pudo inspeccionar el espacio temporal: {error}") from None
+            msg = f"No se pudo inspeccionar el espacio temporal: {error}"
+            raise StorageError(msg) from None
         try:
             verify_image_artifacts(manifest, directory)
         except ValueError as error:
             raise StorageError(str(error)) from None
         destination = self.published_directory(image_id)
         if destination.exists() or destination.is_symlink():
-            raise StorageError("La imagen ya tiene una publicación.")
+            msg = "La imagen ya tiene una publicación."
+            raise StorageError(msg)
         try:
             directory.rename(destination)
             parent_descriptor = os.open(destination.parent, os.O_RDONLY)
@@ -307,13 +343,15 @@ class ArtifactStore:
             finally:
                 os.close(parent_descriptor)
         except OSError as error:
-            raise StorageError(f"No se pudo publicar la imagen atómicamente: {error}") from None
+            msg = f"No se pudo publicar la imagen atómicamente: {error}"
+            raise StorageError(msg) from None
         return destination
 
     def published_artifact(self, image_id: str, relative: str) -> Path:
         directory = self.published_directory(image_id)
         if not directory.is_dir() or directory.is_symlink():
-            raise StorageError("La publicación de la imagen no existe.")
+            msg = "La publicación de la imagen no existe."
+            raise StorageError(msg)
         return self._safe_child(directory, relative)
 
     def delete_published_image(self, image_id: str) -> bool:
@@ -323,13 +361,16 @@ class ArtifactStore:
         published_root = self.root / "published"
         self.ensure_layout()
         if directory.parent != published_root:
-            raise StorageError("La ruta publicada de la imagen no es segura.")
+            msg = "La ruta publicada de la imagen no es segura."
+            raise StorageError(msg)
         if directory.is_symlink():
-            raise StorageError("La publicación de la imagen no es un directorio seguro.")
+            msg = "La publicación de la imagen no es un directorio seguro."
+            raise StorageError(msg)
         if not directory.exists():
             return False
         if not directory.is_dir():
-            raise StorageError("La publicación de la imagen no es un directorio seguro.")
+            msg = "La publicación de la imagen no es un directorio seguro."
+            raise StorageError(msg)
         try:
             shutil.rmtree(directory)
             parent_descriptor = os.open(published_root, os.O_RDONLY)
@@ -338,7 +379,8 @@ class ArtifactStore:
             finally:
                 os.close(parent_descriptor)
         except OSError as error:
-            raise StorageError(f"No se pudo borrar la publicación de la imagen: {error}") from None
+            msg = f"No se pudo borrar la publicación de la imagen: {error}"
+            raise StorageError(msg) from None
         return True
 
     def remove_task_staging(self, task_id: str) -> bool:
@@ -348,15 +390,18 @@ class ArtifactStore:
         staging_root = self.root / "staging"
         self.ensure_layout()
         if directory == self.root or directory.parent != staging_root:
-            raise StorageError("La ruta temporal de la tarea no es segura.")
+            msg = "La ruta temporal de la tarea no es segura."
+            raise StorageError(msg)
         if not directory.exists():
             return False
         if directory.is_symlink() or not directory.is_dir():
-            raise StorageError("La carpeta temporal de la tarea no es segura.")
+            msg = "La carpeta temporal de la tarea no es segura."
+            raise StorageError(msg)
         try:
             shutil.rmtree(directory)
         except OSError as error:
-            raise StorageError(f"No se pudo limpiar el staging de la tarea: {error}") from None
+            msg = f"No se pudo limpiar el staging de la tarea: {error}"
+            raise StorageError(msg) from None
         return True
 
     def staging_status(self, active_task_ids: Collection[str]) -> dict[str, list[str]]:
@@ -383,7 +428,8 @@ class ArtifactStore:
                 else:
                     orphaned.append(task_id)
         except OSError as error:
-            raise StorageError(f"No se pudo inspeccionar el staging: {error}") from None
+            msg = f"No se pudo inspeccionar el staging: {error}"
+            raise StorageError(msg) from None
         return {"active": active_entries, "orphaned": orphaned, "unsafe": unsafe}
 
     def status(self) -> dict[str, int | str]:
@@ -401,7 +447,8 @@ class ArtifactStore:
                 if entry.is_dir() and not entry.is_symlink()
             )
         except OSError as error:
-            raise StorageError(f"No se pudo consultar el estado del almacén: {error}") from None
+            msg = f"No se pudo consultar el estado del almacén: {error}"
+            raise StorageError(msg) from None
         return {
             "path": str(self.root),
             "free_bytes": usage.free,
