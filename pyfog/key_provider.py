@@ -12,6 +12,9 @@ from pyfog.layouts import Luks2Layout
 from pyfog.plugins import PluginCall, PluginError, PluginRunner
 from pyfog.schemas import Schema
 
+MAX_EPHEMERAL_KEY_BYTES = 4096
+MAX_KEY_PROVIDER_RESPONSE_LENGTH = 8192
+
 
 class KeyProviderError(RuntimeError):
     """A provider did not return an ephemeral key under the expected contract."""
@@ -28,13 +31,13 @@ class Luks2KeyRequest(Schema):
 def decode_ephemeral_key(value: object) -> bytes:
     """Decode a bounded provider response without accepting a key from image metadata."""
 
-    if not isinstance(value, str) or len(value) > 8192:
+    if not isinstance(value, str) or len(value) > MAX_KEY_PROVIDER_RESPONSE_LENGTH:
         raise KeyProviderError("El proveedor no devolvió una clave codificada válida.")
     try:
         key = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError):
         raise KeyProviderError("La clave del proveedor no es Base64 válido.") from None
-    if not 1 <= len(key) <= 4096:
+    if not 1 <= len(key) <= MAX_EPHEMERAL_KEY_BYTES:
         raise KeyProviderError("La clave del proveedor tiene un tamaño inválido.")
     return key
 

@@ -25,6 +25,8 @@ from pydantic import Field, field_validator, model_validator
 from pyfog.schemas import Schema
 
 PLUGIN_API_VERSION = 1
+MAX_PLUGIN_NAME_LENGTH = 80
+MAX_PLUGIN_ARGUMENT_BYTES = 4096
 MAX_PLUGIN_INPUT_BYTES = 256 * 1024
 MAX_PLUGIN_OUTPUT_BYTES = 256 * 1024
 MAX_PLUGIN_TIMEOUT_SECONDS = 300
@@ -41,7 +43,7 @@ class PluginDescriptor(Schema):
     api_version: Literal[1] = 1
     name: str = Field(
         min_length=1,
-        max_length=80,
+        max_length=MAX_PLUGIN_NAME_LENGTH,
         pattern=r"^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
     )
     version: str = Field(
@@ -65,7 +67,11 @@ class PluginDescriptor(Schema):
     @classmethod
     def valid_executable(cls, value: list[str]) -> list[str]:
         if any(
-            not item or "\x00" in item or "\n" in item or "\r" in item or len(item) > 4096
+            not item
+            or "\x00" in item
+            or "\n" in item
+            or "\r" in item
+            or len(item) > MAX_PLUGIN_ARGUMENT_BYTES
             for item in value
         ):
             raise ValueError("El comando del plugin contiene un argumento inválido.")
@@ -76,7 +82,7 @@ class PluginDescriptor(Schema):
     def valid_names(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value) or any(
             not item
-            or len(item) > 80
+            or len(item) > MAX_PLUGIN_NAME_LENGTH
             or not all(character.isalnum() or character in ".-_" for character in item)
             for item in value
         ):
@@ -216,7 +222,7 @@ class PluginRunner:
         descriptor = self.registry.get(plugin_name)
         if (
             not call.operation
-            or len(call.operation) > 80
+            or len(call.operation) > MAX_PLUGIN_NAME_LENGTH
             or not all(character.isalnum() or character in ".-_" for character in call.operation)
         ):
             raise PluginError("La operación del plugin no es válida.")
