@@ -50,7 +50,8 @@ class PairingOptions:
 
 def _validate_payload_size(payload: bytes) -> None:
     if len(payload) > MAX_PAYLOAD_BYTES:
-        raise ValueError("El informe supera el límite permitido.")
+        msg = "El informe supera el límite permitido."
+        raise ValueError(msg)
 
 
 def read_text(path: Path, warnings: list[str], *, optional: bool = False) -> str:
@@ -67,7 +68,8 @@ def disk_inventory(warnings: list[str]) -> list[dict[str, Any]]:
     try:
         executable = shutil.which("lsblk")
         if not executable:
-            raise FileNotFoundError("lsblk")
+            msg = "lsblk"
+            raise FileNotFoundError(msg)
         result = subprocess.run(  # noqa: S603 - fixed arguments and resolved utility, no shell
             [executable, "--json", "--bytes", "--nodeps", "--output", columns],
             check=True,
@@ -117,7 +119,8 @@ def disk_inventory(warnings: list[str]) -> list[dict[str, Any]]:
 def collect(proc: Path = Path("/proc"), sysfs: Path = Path("/sys")) -> dict[str, Any]:
     warnings: list[str] = []
     if platform.system() != "Linux":
-        raise ValueError("Este recolector solo admite Linux.")
+        msg = "Este recolector solo admite Linux."
+        raise ValueError(msg)
     os_release: dict[str, str] = {}
     for line in read_text(Path("/etc/os-release"), warnings).splitlines():
         if "=" not in line or line.startswith("#"):
@@ -159,7 +162,8 @@ def collect(proc: Path = Path("/proc"), sysfs: Path = Path("/sys")) -> dict[str,
             }
         )
     if not interfaces:
-        raise ValueError("No se encontró una interfaz con MAC válida para identificar este equipo.")
+        msg = "No se encontró una interfaz con MAC válida para identificar este equipo."
+        raise ValueError(msg)
     dmi = sysfs / "class/dmi/id"
     system = {
         key: read_text(dmi / filename, warnings)[:200]
@@ -213,9 +217,8 @@ def validate_server(server: str) -> urllib.parse.SplitResult:
         hostname = url.hostname
         port = url.port
     except ValueError:
-        raise ValueError(
-            "Usá una URL base HTTPS sin credenciales. HTTP solo se admite en loopback."
-        ) from None
+        msg = "Usá una URL base HTTPS sin credenciales. HTTP solo se admite en loopback."
+        raise ValueError(msg) from None
     loopback = hostname == "localhost"
     if hostname:
         with contextlib.suppress(ValueError):
@@ -231,9 +234,8 @@ def validate_server(server: str) -> urllib.parse.SplitResult:
         or (url.scheme == "http" and not loopback)
         or (port is not None and not 1 <= port <= MAX_TCP_PORT)
     ):
-        raise ValueError(
-            "Usá una URL base HTTPS sin credenciales. HTTP solo se admite en loopback."
-        )
+        msg = "Usá una URL base HTTPS sin credenciales. HTTP solo se admite en loopback."
+        raise ValueError(msg)
     return url
 
 
@@ -263,24 +265,26 @@ def json_request(endpoint: str, request_spec: JsonRequest) -> dict[str, Any]:
     try:
         with opener.open(request, timeout=30) as response:
             if response.status not in request_spec.expected_status:
-                raise ValueError(f"El servidor devolvió HTTP {response.status}.")
+                msg = f"El servidor devolvió HTTP {response.status}."
+                raise ValueError(msg)
             body = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as error:
-        raise ValueError(
-            f"El servidor respondió HTTP {error.code} durante el emparejamiento."
-        ) from None
+        msg = f"El servidor respondió HTTP {error.code} durante el emparejamiento."
+        raise ValueError(msg) from None
     except urllib.error.URLError:
-        raise ValueError(
-            "No se pudo conectar al servidor. Revisá URL, red y certificado."
-        ) from None
+        msg = "No se pudo conectar al servidor. Revisá URL, red y certificado."
+        raise ValueError(msg) from None
     if len(body) > MAX_RESPONSE_BYTES:
-        raise ValueError("La respuesta del servidor supera el límite permitido.")
+        msg = "La respuesta del servidor supera el límite permitido."
+        raise ValueError(msg)
     try:
         value = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        raise ValueError("El servidor devolvió una respuesta JSON inválida.") from None
+        msg = "El servidor devolvió una respuesta JSON inválida."
+        raise ValueError(msg) from None
     if not isinstance(value, dict):
-        raise TypeError("El servidor devolvió una respuesta JSON inesperada.")
+        msg = "El servidor devolvió una respuesta JSON inesperada."
+        raise TypeError(msg)
     return value
 
 
@@ -288,22 +292,26 @@ def required_uuid(value: object, *, field: str) -> str:
     try:
         return str(uuid.UUID(str(value)))
     except (ValueError, AttributeError, TypeError):
-        raise ValueError(f"La respuesta del servidor no incluye un {field} válido.") from None
+        msg = f"La respuesta del servidor no incluye un {field} válido."
+        raise ValueError(msg) from None
 
 
 def inventory_mac(document: object) -> str:
     if not isinstance(document, dict):
-        raise TypeError("El informe debe ser un objeto JSON.")
+        msg = "El informe debe ser un objeto JSON."
+        raise TypeError(msg)
     interfaces = document.get("interfaces")
     if not isinstance(interfaces, list):
-        raise TypeError("El informe no incluye interfaces de red.")
+        msg = "El informe no incluye interfaces de red."
+        raise TypeError(msg)
     for interface in interfaces:
         if not isinstance(interface, dict):
             continue
         mac = interface.get("mac_address")
         if isinstance(mac, str) and re.fullmatch(r"[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}", mac):
             return mac.lower()
-    raise ValueError("El informe no incluye una MAC válida para solicitar el registro.")
+    msg = "El informe no incluye una MAC válida para solicitar el registro."
+    raise ValueError(msg)
 
 
 def send_inventory(
@@ -329,15 +337,14 @@ def send_inventory(
     try:
         with opener.open(request, timeout=30) as response:
             if response.status not in {200, 201}:
-                raise ValueError(f"El servidor devolvió HTTP {response.status}.")
+                msg = f"El servidor devolvió HTTP {response.status}."
+                raise ValueError(msg)
     except urllib.error.HTTPError as error:
-        raise ValueError(
-            f"El servidor rechazó el informe (HTTP {error.code}). Revisá token, equipo y formato."
-        ) from None
+        msg = f"El servidor rechazó el informe (HTTP {error.code}). Revisá token, equipo y formato."
+        raise ValueError(msg) from None
     except urllib.error.URLError:
-        raise ValueError(
-            "No se pudo conectar al servidor. Revisá URL, red y certificado."
-        ) from None
+        msg = "No se pudo conectar al servidor. Revisá URL, red y certificado."
+        raise ValueError(msg) from None
 
 
 def pair_inventory(
@@ -352,7 +359,8 @@ def pair_inventory(
     options = options or PairingOptions()
     validate_server(server)
     if options.timeout_seconds <= 0 or options.interval_seconds <= 0:
-        raise ValueError("El timeout y el intervalo de emparejamiento deben ser positivos.")
+        msg = "El timeout y el intervalo de emparejamiento deben ser positivos."
+        raise ValueError(msg)
     mac = inventory_mac(document)
     session_id = str(uuid.uuid4())
     challenge = secrets.token_urlsafe(18)
@@ -374,7 +382,8 @@ def pair_inventory(
     request_id = required_uuid(created.get("request_id"), field="request_id")
     poll_token = created.get("poll_token")
     if not isinstance(poll_token, str):
-        raise TypeError("La respuesta del servidor no incluye una capacidad de emparejamiento.")
+        msg = "La respuesta del servidor no incluye una capacidad de emparejamiento."
+        raise TypeError(msg)
     validate_token(poll_token, message="La capacidad de emparejamiento no es válida.")
     deadline = time.monotonic() + options.timeout_seconds
     while True:
@@ -393,7 +402,8 @@ def pair_inventory(
             host_id = required_uuid(status.get("host_id"), field="host_id")
             inventory_token = status.get("inventory_token")
             if not isinstance(inventory_token, str):
-                raise ValueError("La solicitud fue aprobada sin una capacidad de inventario.")
+                msg = "La solicitud fue aprobada sin una capacidad de inventario."
+                raise ValueError(msg)
             validate_token(inventory_token, message="La capacidad de inventario no es válida.")
             result = json_request(
                 f"{base}/api/v1/pairing/requests/{request_id}/inventory",
@@ -406,20 +416,25 @@ def pair_inventory(
                 ),
             )
             if result.get("host_id") != host_id:
-                raise ValueError("El servidor asoció el inventario a otro equipo.")
+                msg = "El servidor asoció el inventario a otro equipo."
+                raise ValueError(msg)
             print("Emparejamiento aprobado; inventario recibido por PyFog.", file=sys.stderr)
             return
         if state == "rejected":
             reason = status.get("reason")
             detail = f": {reason}" if isinstance(reason, str) and reason else "."
-            raise ValueError(f"La solicitud PXE fue rechazada{detail}")
+            msg = f"La solicitud PXE fue rechazada{detail}"
+            raise ValueError(msg)
         if state == "expired":
-            raise ValueError("La solicitud PXE venció antes de ser aprobada.")
+            msg = "La solicitud PXE venció antes de ser aprobada."
+            raise ValueError(msg)
         if state != "pending":
-            raise ValueError("El servidor devolvió un estado de emparejamiento desconocido.")
+            msg = "El servidor devolvió un estado de emparejamiento desconocido."
+            raise ValueError(msg)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise ValueError("Se agotó el tiempo de espera para aprobar la solicitud PXE.")
+            msg = "Se agotó el tiempo de espera para aprobar la solicitud PXE."
+            raise ValueError(msg)
         time.sleep(min(options.interval_seconds, remaining))
 
 
