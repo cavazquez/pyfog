@@ -22,7 +22,10 @@ from pyfog.transfer import (
     write_verified_block,
 )
 
+MAX_RELAY_LEASE_SECONDS = 3600
 MAX_RELAY_RANGE_BYTES = 16 * 1024 * 1024
+SHA256_HEX_LENGTH = 64
+SHA256_PATH_SUFFIX_LENGTH = 62
 
 
 class RelayError(RuntimeError):
@@ -35,7 +38,11 @@ class RelayDescriptor(Schema):
     api_version: int = Field(default=1, ge=1, le=1, strict=True)
     session_id: UUID
     relay_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
-    artifact_sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    artifact_sha256: str = Field(
+        min_length=SHA256_HEX_LENGTH,
+        max_length=SHA256_HEX_LENGTH,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     size_bytes: int = Field(gt=0, le=2**63 - 1, strict=True)
     block_size: int = Field(gt=0, le=MAX_RELAY_RANGE_BYTES, strict=True)
     expires_at: datetime
@@ -59,7 +66,9 @@ class RelayLease:
 
 
 def _valid_digest(value: str) -> str:
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+    if len(value) != SHA256_HEX_LENGTH or any(
+        character not in "0123456789abcdef" for character in value
+    ):
         raise RelayError("El digest del relay no es un SHA-256 lowercase.")
     return value
 
@@ -202,7 +211,7 @@ class RelayCache:
         digest = _valid_digest(digest)
         if not self.has(digest):
             raise RelayError("No se puede crear una lease para un artefacto ausente.")
-        if seconds <= 0 or seconds > 3600:
+        if seconds <= 0 or seconds > MAX_RELAY_LEASE_SECONDS:
             raise RelayError("La duración de la lease del relay no es válida.")
         current = current or datetime.now(UTC)
         current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
@@ -237,7 +246,11 @@ class RelayCache:
             entries = [
                 path
                 for path in self.root.glob("??/*")
-                if path.is_file() and not path.is_symlink() and len(path.name) == 62
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and len(path.name) == SHA256_PATH_SUFFIX_LENGTH
+                )
             ]
             total = sum(path.stat().st_size for path in entries)
             removed: list[str] = []
@@ -260,7 +273,11 @@ class RelayCache:
         entries = [
             path
             for path in self.root.glob("??/*")
-            if path.is_file() and not path.is_symlink() and len(path.name) == 62
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and len(path.name) == SHA256_PATH_SUFFIX_LENGTH
+            )
         ]
         return {"entries": len(entries), "bytes": sum(path.stat().st_size for path in entries)}
 
@@ -277,7 +294,7 @@ def relay_descriptor(
 ) -> RelayDescriptor:
     """Build the control-plane descriptor without embedding a bearer token."""
 
-    if ttl_seconds <= 0 or ttl_seconds > 3600:
+    if ttl_seconds <= 0 or ttl_seconds > MAX_RELAY_LEASE_SECONDS:
         raise RelayError("El TTL del descriptor del relay no es válido.")
     return RelayDescriptor(
         session_id=session_id,
