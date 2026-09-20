@@ -2,6 +2,7 @@ name: pyfog
 
 # Compose de entrada para una instalación LAN de una instancia.
 # Requiere PYFOG_PUBLIC_HOST y deploy/secrets/session-key.
+# Compose local monta este secret como bind mount; debe ser legible por UID 10001.
 
 services:
   app:

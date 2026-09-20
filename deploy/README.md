@@ -18,6 +18,7 @@ de una instancia desde la raíz del repositorio. Usa la misma imagen, volúmenes
 install -d -m 700 deploy/secrets
 openssl rand -base64 48 > deploy/secrets/session-key
 chmod 600 deploy/secrets/session-key
+sudo chown 10001:10001 deploy/secrets/session-key
 export PYFOG_PUBLIC_HOST=pyfog.lab.test
 
 docker compose --profile admin run --rm migrate
@@ -35,6 +36,10 @@ docker compose --profile pxe up -d
 
 El DHCP/TFTP de la LAN sigue siendo externo y debe apuntar al `ipxe.efi` publicado en
 `dist/pxe/tftp/`.
+
+Compose local monta los secrets basados en archivos como bind mounts. Por eso la clave conserva
+`0600`, pero debe pertenecer al UID `10001`, que es el usuario no privilegiado `pyfog` dentro de la
+imagen. No uses `chmod 644` para resolver un error de permisos.
 
 ## Desarrollo
 
@@ -71,6 +76,7 @@ cd deploy
 install -d -m 700 secrets
 openssl rand -base64 48 > secrets/session-key
 chmod 600 secrets/session-key
+sudo chown 10001:10001 secrets/session-key
 export PYFOG_PUBLIC_HOST=pyfog.lab.test
 export PYFOG_SESSION_KEY_FILE="$PWD/secrets/session-key"
 docker compose -f compose.local-ca.yaml --profile admin run --rm migrate

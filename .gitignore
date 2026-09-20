@@ -224,6 +224,7 @@ __marimo__/
 *.db-shm
 *.db-wal
 inventory*.json
+deploy/secrets/
 
 # Disposable QEMU/OVMF laboratory
 .lab/
