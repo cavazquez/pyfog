@@ -551,7 +551,7 @@ build() {
     if [ "$MODE" = imaging ]; then
         tools+=(sfdisk blockdev partprobe mount umount grub-install chroot ssh-keygen mkswap)
         for optional_tool in fsfreeze findmnt e2fsck resize2fs cryptsetup mdadm pvs vgs lvs pvcreate vgcreate lvcreate lvchange btrfs; do
-            if path=$(resolve_tool "$optional_tool"); then
+            if path=$(resolve_tool "$optional_tool") && [ -n "$path" ]; then
                 tools+=("$optional_tool")
             fi
         done
@@ -698,7 +698,7 @@ for entry in manifest.get("rootfs", {}).get("files", []):
         raise SystemExit(f"ruta insegura en manifiesto: {entry['path']}")
 print("Manifiesto y hashes válidos.")
 PY
-    (cd "$directory" && sha256sum --check --strict "$sums")
+    (cd "$directory" && sha256sum --check --strict "$(basename -- "$sums")")
 }
 
 command_name=${1:-}
