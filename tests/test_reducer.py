@@ -2,7 +2,7 @@ import copy
 
 import pytest
 
-import pyfog.reducer as reducer
+from pyfog import reducer
 from pyfog.image_manifest import ImageManifest
 from pyfog.reducer import (
     ReductionError,
