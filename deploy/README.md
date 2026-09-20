@@ -67,7 +67,7 @@ Para borrar únicamente los datos del proyecto de desarrollo, de forma deliberad
 make dev-clean
 ```
 
-## LAN
+## LAN con Caddy local
 
 Antes de arrancar, creá el secreto de sesión fuera del repo y definí `PYFOG_PUBLIC_HOST`:
 
@@ -110,6 +110,84 @@ HTTPS `/boot`; no tiene acceso a la base, al almacén de imágenes ni a discos d
 deben ser provistos por una infraestructura elegida explícitamente y apuntar al bootstrap revisado.
 No se incorpora un servicio DHCP dentro de Compose para evitar anunciarlo accidentalmente en una
 LAN.
+
+## LAN con Caddy centralizado
+
+Este escenario se usa cuando otro Caddy, en la misma red o en otro host, ya administra los
+certificados y publica la IP que resuelve `PYFOG_PUBLIC_HOST`. PyFog no debe levantar el Caddy
+local en ese caso: el Caddy central termina HTTPS y reenvía por una red privada a la aplicación y
+al servidor estático PXE.
+
+La topología queda así:
+
+```text
+cliente/navegador/PXE -- HTTPS --> Caddy central
+                                      | /health, /login, /api -> PyFog:8000
+                                      | /boot/*              -> PyFog:8080
+                                      |
+                                  host PyFog
+```
+
+Desde la raíz del repositorio, usá el overlay incluido:
+
+```bash
+export PYFOG_PUBLIC_HOST=pyfog.example
+export PYFOG_TRUSTED_PROXY_IPS=10.10.0.20/32
+export PYFOG_APP_BIND_ADDRESS=10.10.0.10
+export PYFOG_PXE_BIND_ADDRESS=10.10.0.10
+export PYFOG_PXE_DIR="$PWD/dist/pxe"
+
+docker compose \
+  -f docker-compose.yaml \
+  -f deploy/compose.external-proxy.yaml \
+  --profile admin run --rm migrate
+docker compose \
+  -f docker-compose.yaml \
+  -f deploy/compose.external-proxy.yaml \
+  --profile pxe up -d
+```
+
+Reemplazá `10.10.0.10` por la IP privada del host PyFog y `10.10.0.20` por la IP o CIDR exacto
+del Caddy central. El firewall del host debe permitir los puertos `8000` y `8080` únicamente desde
+el Caddy central; no los expongas a toda la LAN. El overlay pone el Caddy local en un perfil que no
+se activa, publica la app en `8000` y publica el servicio estático PXE en `8080`.
+
+La configuración del Caddy central debe conservar el hostname público y enrutar los dos paths:
+
+```caddyfile
+pyfog.example {
+    handle_path /boot/* {
+        reverse_proxy 10.10.0.10:8080
+    }
+
+    handle {
+        reverse_proxy 10.10.0.10:8000
+    }
+}
+```
+
+El Caddy central debe enviar `Host` y los encabezados `X-Forwarded-*`. PyFog sólo confía en esos
+encabezados desde `PYFOG_TRUSTED_PROXY_IPS`; nunca uses `0.0.0.0/0` ni `*`. El DNS de
+`pyfog.example` debe apuntar al Caddy central, no directamente al host PyFog.
+
+Si el certificado del Caddy central es público, los recolectores pueden conectarse sin `--ca-file`.
+Si pertenece a una CA corporativa privada, instalá esa CA en los clientes y en el agente, o pasala
+explícitamente con `--ca-file`. La CA local de Caddy sólo es necesaria en el escenario de Caddy
+local con `tls internal`.
+
+Antes de publicar PXE, reconstruí el bundle con el hostname real del Caddy central:
+
+```bash
+pxe/build-pxe build \
+  --agent-dir dist/agent \
+  --base-url https://pyfog.example/boot \
+  --ipxe-efi /ruta/controlada/ipxe-amd64.efi \
+  --output-dir dist/pxe
+pxe/build-pxe verify --output-dir dist/pxe
+```
+
+El DHCP/TFTP sigue siendo externo en ambos escenarios. Debe entregar `dist/pxe/tftp/ipxe.efi`,
+mientras el script iPXE descarga kernel e initramfs desde `https://pyfog.example/boot/agent/`.
 
 ## Salud, migraciones y rollback
 

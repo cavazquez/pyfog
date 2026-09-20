@@ -1,0 +1,18 @@
+# Overlay para una instalación donde otro Caddy termina HTTPS.
+# Usar junto con ../docker-compose.yaml; no habilita el Caddy local.
+
+services:
+  caddy:
+    profiles: ["local-proxy"]
+
+  app:
+    ports:
+      - "${PYFOG_APP_BIND_ADDRESS:?Definí PYFOG_APP_BIND_ADDRESS}:${PYFOG_APP_PORT:-8000}:8000"
+    networks:
+      edge:
+
+  pxe:
+    ports:
+      - "${PYFOG_PXE_BIND_ADDRESS:?Definí PYFOG_PXE_BIND_ADDRESS}:${PYFOG_PXE_PORT:-8080}:8080"
+    networks:
+      edge:
