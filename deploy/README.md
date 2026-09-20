@@ -7,6 +7,35 @@ instancia. El modo activo/pasivo requiere desplegar dos instancias contra una ba
 compartida y seguir el contrato de [coordinación HA](../docs/coordinator-ha.md); no se habilita
 agregando un segundo contenedor al Compose de desarrollo.
 
+## Atajo desde la raíz
+
+El archivo [`../docker-compose.yaml`](../docker-compose.yaml) permite ejecutar la instalación LAN
+de una instancia desde la raíz del repositorio. Usa la misma imagen, volúmenes y CA local que
+`compose.local-ca.yaml`; por defecto espera la clave de sesión en
+`deploy/secrets/session-key`:
+
+```bash
+install -d -m 700 deploy/secrets
+openssl rand -base64 48 > deploy/secrets/session-key
+chmod 600 deploy/secrets/session-key
+export PYFOG_PUBLIC_HOST=pyfog.lab.test
+
+docker compose --profile admin run --rm migrate
+docker compose --profile admin run --rm migrate \
+  python -m pyfog create-admin --username admin
+docker compose up -d
+```
+
+Para activar la publicación PXE ya verificada, definí `PYFOG_PXE_DIR` y agregá el perfil:
+
+```bash
+export PYFOG_PXE_DIR="$PWD/dist/pxe"
+docker compose --profile pxe up -d
+```
+
+El DHCP/TFTP de la LAN sigue siendo externo y debe apuntar al `ipxe.efi` publicado en
+`dist/pxe/tftp/`.
+
 ## Desarrollo
 
 Requisitos: Docker Engine con Compose v2, 2 GB libres y puertos locales disponibles. El perfil
