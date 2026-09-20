@@ -81,6 +81,7 @@ services:
     networks:
       backend:
         ipv4_address: 172.30.0.2
+      edge:
 
 secrets:
   pyfog_session_key:
@@ -97,3 +98,4 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+  edge:
